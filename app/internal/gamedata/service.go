@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
+	"github.com/MTEKode/companeroWoW/app/internal/session"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 )
 
@@ -35,9 +36,10 @@ const (
 // Service holds the data sources. Any of them may be nil; the getters then report
 // the data as unavailable instead of failing.
 type Service struct {
-	reader  *bridge.Reader
-	watcher *bridge.SVWatcher
-	store   *store.Store
+	reader   *bridge.Reader
+	watcher  *bridge.SVWatcher
+	store    *store.Store
+	sessions *session.Tracker // optional: the running session, see SetSessions
 
 	startOnce sync.Once
 }
@@ -443,6 +445,12 @@ func (g *Service) Status() (any, error) {
 	if g.watcher != nil {
 		if err := g.watcher.LastError(); err != nil {
 			fields["savedVariablesError"] = err.Error()
+		}
+	}
+	// The addon's own error counter, when it has exported one (for diagnosis only).
+	if h, err := g.Health(); err == nil {
+		if m := asMap(h); truthy(m["available"]) {
+			fields["addonSalud"] = m
 		}
 	}
 	source := sourceSV

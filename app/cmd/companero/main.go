@@ -23,6 +23,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
+	"github.com/MTEKode/companeroWoW/app/internal/session"
 	"github.com/MTEKode/companeroWoW/app/internal/skill"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
@@ -159,6 +160,18 @@ func runApp(cfg *config.Config, dir string) int {
 	watcher := bridge.NewSVWatcherFunc(cfg.SavedVariablesPath, 0)
 	g := gamedata.NewService(reader, watcher, st)
 	g.Start(ctx)
+	// A session left open by an earlier run (a crash) ends at its last data. The tracker
+	// then follows every read of the bridge and is saved in the store; it ends after ten
+	// minutes without data, and Close ends it when the app exits.
+	if n, err := st.CloseOpenSessions(); err != nil {
+		log.Printf("sesiones: %v", err)
+	} else if n > 0 {
+		log.Printf("sesiones: cerradas %d que quedaron abiertas", n)
+	}
+	sessions := session.NewTracker(time.Now, st)
+	reader.Subscribe(sessions.Observe)
+	g.SetSessions(sessions)
+	go sessions.Run(ctx)
 
 	ws := websearch.New(cfg.WebSources, st)
 	// capturar_pantalla also saves each capture where the CLI providers can read it.
@@ -201,6 +214,9 @@ func runApp(cfg *config.Config, dir string) int {
 			return buildStatus(g, providers, watcher, mcpErrs.get())
 		},
 	})
+
+	// The session ends with the app; it is saved before the store closes.
+	sessions.Close()
 
 	// Graceful shutdown: stop the MCP server, wait for it briefly, then the store closes.
 	cancel()

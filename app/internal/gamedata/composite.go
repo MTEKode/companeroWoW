@@ -142,6 +142,16 @@ func (g *Service) PlayerContext() (any, error) {
 			notes = append(notes, "Questie no exportó coordenadas de misiones: la guía no tiene coordenadas exactas.")
 		}
 	}
+	// The addon routes: counts and the top item of each, so that the answer stays short.
+	if gd := guideSummary(g); gd != nil {
+		out["guia"] = gd
+	}
+	if tr := trainingSummary(g); tr != nil {
+		out["entrenamiento"] = tr
+	}
+	if rt := routeOverview(g); rt != nil {
+		out["rutaProfesiones"] = rt
+	}
 	out["datos"] = fresh
 	if !pos.OK && !bridge {
 		notes = append(notes, "No sé la posición exacta: abre WoW en modo ventana o sin bordes.")
@@ -362,6 +372,7 @@ func (g *Service) ProfessionPlan() (any, error) {
 	}
 	trainers := g.knownTrainers()
 	pos := g.playerPosition()
+	plans := profPlanByID(g)
 
 	plan := []map[string]any{}
 	for _, p := range listOf(pm["professions"]) {
@@ -373,25 +384,16 @@ func (g *Service) ProfessionPlan() (any, error) {
 		rank := int(numberOf(m["rank"]))
 		maxRank := int(numberOf(m["maxRank"]))
 		entry := map[string]any{"nombre": name, "nivel": rank, "max": maxRank}
-		left := maxRank - rank
-		entry["entrenarYa"] = maxRank > 0 && left <= nearMaxRankLeft
-		switch {
-		case maxRank <= 0:
-			entry["consejo"] = "No conozco el máximo de esta profesión; míralo en el juego."
-		case left <= nearMaxRankLeft:
-			entry["consejo"] = fmt.Sprintf("Te faltan %d puntos para el máximo (%d): entrena el siguiente rango ya.", left, maxRank)
-		default:
-			entry["consejo"] = fmt.Sprintf("Te faltan %d puntos para el máximo (%d): puedes esperar a acercarte.", left, maxRank)
-		}
-		matches := []map[string]any{}
-		for _, t := range trainers {
-			if t.matches(name) {
-				matches = append(matches, t.view(pos))
-			}
-		}
+		entry["entrenarYa"], entry["consejo"] = trainAdvice(rank, maxRank)
+		matches := trainerViews(trainers, pos, name)
 		entry["entrenadores"] = matches
 		if len(matches) == 0 {
-			entry["nota"] = "No tengo entrenador guardado para " + name + ". Escribe /compa sync cerca del entrenador o busca en la web."
+			entry["nota"] = noTrainerNote(name)
+		}
+		if id := int64(numberOf(m["skillLineID"])); id > 0 {
+			if ruta, ok := routeSummary(plans, id); ok {
+				entry["rutaSkillUp"] = ruta
+			}
 		}
 		plan = append(plan, entry)
 	}

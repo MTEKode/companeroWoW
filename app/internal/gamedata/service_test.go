@@ -172,7 +172,7 @@ func TestCharacterAndSections(t *testing.T) {
 	if spells := objOf(t, svc.Spells)["spells"].([]any); len(spells) != 2 {
 		t.Errorf("spells = %#v", spells)
 	}
-	if profs := objOf(t, svc.Professions)["professions"].([]any); len(profs) != 2 {
+	if profs := objOf(t, svc.Professions)["professions"].([]any); len(profs) != 3 {
 		t.Errorf("professions = %#v", profs)
 	}
 	if reps := objOf(t, svc.Reputations)["reputations"].([]any); len(reps) != 1 {

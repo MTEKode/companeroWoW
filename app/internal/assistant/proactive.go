@@ -34,6 +34,9 @@ const (
 	maxTipLines = 3
 )
 
+// levelUpCode is the event code of PLAYER_LEVEL_UP.
+const levelUpCode uint8 = 1
+
 // tipPriority decides which event wins when a batch holds several codes.
 var tipPriority = []uint8{1, 2, 3, 6, 5, 4}
 
@@ -47,6 +50,8 @@ type proactor struct {
 	persist func(Tip, string)
 	// system returns the game state and player context a tip carries, as a question does.
 	system func() string
+	// training returns the trainable spells, added to the level-up tip only.
+	training func() string
 
 	pending     []uint8
 	windowStart time.Time
@@ -72,9 +77,10 @@ func (a *Assistant) newProactor(notify func(Tip)) *proactor {
 			live, ok := a.g.Live()
 			return ok && live.InCombat
 		},
-		notify:  notify,
-		persist: a.persistTip,
-		system:  a.systemPrompt,
+		notify:   notify,
+		persist:  a.persistTip,
+		system:   a.systemPrompt,
+		training: a.trainingBlock,
 	}
 }
 
@@ -145,6 +151,12 @@ func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip
 	}
 	if p.system != nil {
 		req.System = p.system()
+	}
+	// A level-up tip is most useful with what can be trained now (que_entrenar's data).
+	if code == levelUpCode && p.training != nil {
+		if block := p.training(); block != "" {
+			req.System += "\n\n" + block
+		}
 	}
 	resp, err := p.ask(ctx, req)
 	if err != nil {
