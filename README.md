@@ -13,10 +13,14 @@ Tiene dos piezas:
 - World of Warcraft: Forever en **modo ventana o sin bordes** (la franja de píxeles no se lee en pantalla completa exclusiva).
 - **Microsoft Edge WebView2 Runtime** (en Windows 11 viene instalado; si no, la app te mostrará el enlace de descarga).
 - Al menos un proveedor de IA. Elige uno o varios; se prueban en el orden de `providerOrder`:
-  - **Gemini CLI**: `npm i -g @google/gemini-cli` y luego inicia sesión con `gemini`.
-  - **Codex CLI**: `npm i -g @openai/codex` y luego inicia sesión con `codex`.
-  - **APIs compatibles con OpenAI** (NVIDIA, Z.ai, Alibaba DashScope…): pon la clave en `apiProviders` de `config.json`.
+  - **Antigravity CLI** (`agy`): instálalo con `irm https://antigravity.google/cli/install.ps1 | iex`, ejecuta `agy` una vez y elige tu cuenta personal de Google (Free, Pro o Ultra). Ver [Antigravity CLI](#antigravity-cli).
+  - **Codex CLI**: `npm i -g @openai/codex` y luego inicia sesión con `codex login`.
+  - **APIs compatibles con OpenAI** (NVIDIA, Z.ai…): pon la clave en `.env`. Ver [Claves de API y `.env`](#claves-de-api-y-env).
 - Para compilar: Go 1.27 (sin CGO; no necesitas compilador C).
+
+> **Gemini CLI ya no sirve con cuentas personales.** Google cerró el inicio de sesión con Google para Gemini CLI el 18 de junio de 2026 y pide migrar a Antigravity. La app ya no usa Gemini CLI; una configuración antigua con `"gemini"` en `providerOrder` se cambia sola por `"antigravity"` al arrancar.
+>
+> Tampoco se pueden usar las apps web o de escritorio de Gemini o ChatGPT como proveedor: no tienen API oficial y automatizarlas incumple sus condiciones de uso.
 
 ## Instalación del addon
 
@@ -70,26 +74,20 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
   "account": "",
   "hotkey": "Ctrl+Shift+Space",
   "language": "es",
-  "providerOrder": ["gemini", "codex", "api"],
-  "geminiCommand": "gemini",
+  "providerOrder": ["antigravity", "codex", "api"],
+  "antigravityCommand": "agy",
   "codexCommand": "codex",
   "apiProviders": [
     {
       "name": "nvidia",
       "baseUrl": "https://integrate.api.nvidia.com/v1",
-      "apiKey": "TU_CLAVE_NVIDIA",
-      "model": "NOMBRE_DEL_MODELO"
+      "apiKeyEnv": "NVIDIA_KEY",
+      "model": "meta/llama-4-maverick-17b-128e-instruct"
     },
     {
       "name": "zai",
       "baseUrl": "https://api.z.ai/api/paas/v4",
-      "apiKey": "TU_CLAVE_ZAI",
-      "model": "NOMBRE_DEL_MODELO"
-    },
-    {
-      "name": "alibaba",
-      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-      "apiKey": "TU_CLAVE_DASHSCOPE",
+      "apiKeyEnv": "ZAI_KEY",
       "model": "NOMBRE_DEL_MODELO"
     }
   ],
@@ -114,16 +112,49 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `account` | Cuenta de WTF para SavedVariables. Vacío = la cuenta con el archivo más reciente. |
 | `hotkey` | Atajo global para mostrar u ocultar la ventana. |
 | `language` | Idioma de la interfaz. Las respuestas son siempre en castellano. |
-| `providerOrder` | Orden de los proveedores: `gemini`, `codex`, `api`. `api` usa cada entrada de `apiProviders`, en orden. |
-| `geminiCommand` / `codexCommand` | Nombre o ruta de los comandos de las CLI. |
-| `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `apiKey`, `model`. Sustituye las claves y el modelo por los tuyos. |
-| `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Gemini CLI y Codex CLI. |
+| `providerOrder` | Orden de los proveedores: `antigravity`, `codex`, `api`. `api` usa cada entrada de `apiProviders`, en orden. Un nombre desconocido (como el antiguo `gemini`) se omite. |
+| `antigravityCommand` / `codexCommand` | Nombre o ruta de los comandos de las CLI. Para `antigravityCommand` la app también busca `%LOCALAPPDATA%\agy\bin\agy.exe`. |
+| `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
+| `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
 | `proactive` | `true` activa los consejos proactivos. |
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
 
-Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB).
+Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `.env` (opcional, claves de API), `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB), y las carpetas de trabajo de las CLI (`.agents\mcp_config.json` y `antigravity-settings.json`).
+
+## Antigravity CLI
+
+La app usa **Antigravity CLI** (`agy`) como proveedor principal. Funciona con cuentas personales de Google (Free, Pro o Ultra) y guarda sus credenciales en el Administrador de credenciales de Windows.
+
+1. Instálalo: `irm https://antigravity.google/cli/install.ps1 | iex`
+2. Ejecuta `agy` una vez en una terminal y elige la cuenta personal de Google con la que quieres usarlo.
+3. Comprueba que la app lo ve: `.\dist\CompaneroWoW.exe --diag --diag-out diag.json` debe listar `antigravity` como disponible.
+
+Cómo lo usa la app: cada pregunta es un proceso `agy -p` que se lanza y termina solo (no queda nada residente), con la carpeta de trabajo `%APPDATA%\CompaneroWoW`. Antigravity recibe las herramientas del servidor local (`companero`) mediante `.agents\mcp_config.json`. Sus permisos se fijan en `antigravity-settings.json` que se pasa con `--settings` solo para esa llamada: el modelo puede usar únicamente las herramientas de la app. Se deniegan los comandos de shell, las escrituras y lecturas de archivos y la descarga de URL. Tu configuración global de Antigravity no se modifica. La app nunca usa `--dangerously-skip-permissions`.
+
+Las capturas no se adjuntan a Antigravity en modo headless; el modelo pide la captura con la herramienta `capturar_pantalla`.
+
+## Claves de API y `.env`
+
+Las claves no van en `config.json`. Ponlas en un archivo `.env` con este formato (plantilla en `.env.example`):
+
+```
+NVIDIA_KEY=tu-clave-de-nvidia
+```
+
+La app busca cada variable en este orden: la clave literal `apiKey` de `config.json` (si la hay); la variable de entorno del sistema con ese nombre; y el primer archivo `.env` que la defina, buscado en:
+
+1. `%APPDATA%\CompaneroWoW\.env`
+2. la carpeta del ejecutable (`dist\.env` en desarrollo)
+3. la carpeta de trabajo actual
+4. la carpeta padre del ejecutable (`dist\..\.env`, es decir, la raíz del repositorio en desarrollo)
+
+Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las líneas que empiezan por `#` son comentarios; los valores pueden ir entre comillas simples o dobles; y se aceptan finales de línea de Windows (CRLF).
+
+**Nunca subas `.env` a git.** El repositorio ya lo ignora (`.gitignore`), pero comprueba con `git check-ignore -v .env` que sigue ignorado. Si una clave se filtra, revócala en el panel del proveedor y crea otra.
+
+**Claves no compatibles:** las claves del *Alibaba Coding Plan* no se pueden usar en esta app, porque sus condiciones de uso prohíben usarlas desde aplicaciones.
 
 ## Comandos del addon
 
@@ -133,7 +164,7 @@ Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `companero.db` (
 
 ## Atajos de herramientas (MCP)
 
-Gemini CLI y Codex CLI, y las APIs con herramientas, usan estas herramientas locales (todo el texto en español):
+Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas locales (todo el texto en español):
 
 | Herramienta | Qué devuelve |
 | --- | --- |
@@ -159,7 +190,7 @@ Gemini CLI y Codex CLI, y las APIs con herramientas, usan estas herramientas loc
 
 ## Privacidad
 
-Todo se guarda y se procesa en tu equipo. Lo único que sale de él es la pregunta (y, si la pides, la captura) hacia el proveedor de IA que elijas (Gemini CLI, Codex CLI o tu API), y las búsquedas o páginas que pide la herramienta de búsqueda a las fuentes de `webSources`. El servidor de herramientas escucha solo en `127.0.0.1`.
+Todo se guarda y se procesa en tu equipo. Lo único que sale de él es la pregunta (y, si la pides, la captura) hacia el proveedor de IA que elijas (Antigravity CLI, Codex CLI o tu API), y las búsquedas o páginas que pide la herramienta de búsqueda a las fuentes de `webSources`. El servidor de herramientas escucha solo en `127.0.0.1`.
 
 ## Limitaciones conocidas
 

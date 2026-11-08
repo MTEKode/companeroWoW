@@ -140,10 +140,10 @@ func TestChainParentCancelStopsImmediately(t *testing.T) {
 
 func TestBuildChainOrderAndAPIExpansion(t *testing.T) {
 	cfg := testConfig()
-	cfg.ProviderOrder = []string{"codex", "api", "gemini", "bogus"}
+	cfg.ProviderOrder = []string{"codex", "api", "antigravity", "bogus"}
 	cfg.APIProviders = testAPIProviders()
 	c := BuildChain(&cfg, t.TempDir(), nil)
-	want := []string{"codex", "api:NIM", "api:Z.ai", "gemini"}
+	want := []string{"codex", "api:NIM", "api:Z.ai", "antigravity"}
 	got := c.Providers()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("Providers() = %v, want %v", got, want)

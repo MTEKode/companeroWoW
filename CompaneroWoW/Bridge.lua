@@ -1,5 +1,5 @@
--- Bridge.lua: franja de pixeles (addon -> app), protocolo v1 segun el CONTRATO COMPARTIDO.
--- BuildPayload y EncodeBlocks son funciones puras (testeables offline).
+-- Bridge.lua: franja de pixeles (addon -> app), protocolo v2 (robusto a escalado y desplazamiento de color).
+-- BuildPayload, EncodeBlocks y ComputePixelSize son funciones puras (testeables offline).
 -- Los arrays son 1-based: byte k (0-based del contrato) = payload[k + 1].
 local ADDON_NAME, ns = ...
 ns = ns or {}
@@ -8,9 +8,12 @@ local Call, Clean, Num = ns.Call, ns.Clean, ns.Num
 local floor = math.floor
 
 local PAYLOAD_LEN = 32
-local BLOCK_COUNT = 14
+local PROTOCOL_VERSION = 2
+local BLOCK_COUNT = 29          -- 5 de magia/calibracion + 24 de datos
+local BLOCK_PX = 4              -- lado nominal de cada bloque, en pixeles fisicos
 local REFRESH_SEC = 0.2
-local REFERENCE_UNITS = 768 -- 1 pixel fisico = 768 / altura fisica unidades de UI
+local REFERENCE_UNITS = 768     -- fallback: 1 pixel fisico = 768 / altura fisica unidades de UI
+local NIBBLE_STEP = 17          -- nibble n se codifica como n * 17 (0..255)
 
 ns.bridge = ns.bridge or {}
 local B = ns.bridge
@@ -82,27 +85,59 @@ function ns.BuildPayload(s)
     return p
 end
 
--- payload (32 bytes) + seq -> 14 bloques {r, g, b}.
--- Bloque 1 y 2 = magia; bloque 3 = (version, seq, longitud); bloques 4..14 = 33 bytes
--- (payload + 1 de relleno a 0).
+-- payload (32 bytes) + seq -> 29 bloques {r, g, b} (protocolo v2).
+-- Bloques (1-based): 1 = magia (255,0,255); 2 = magia (0,255,255);
+-- 3 = calibracion (85,170,0); 4 = calibracion (170,85,85); 5 = calibracion (0,255,170);
+-- 6..29 = datos: 72 nibbles (3 por bloque, orden R,G,B).
+-- Los bloques 1..5 dan a cada canal los niveles 0, 85, 170 y 255.
+-- Flujo de bytes: [version=2, seq, 32] ++ payload[32] = 35 bytes = 70 nibbles,
+-- cada byte con el nibble alto primero, y 2 nibbles de relleno a 0.
+-- Cada nibble n se codifica como n * 17.
 function ns.EncodeBlocks(payload, seq)
+    local sq = floor(tonumber(seq) or 0) % 256
+    local stream = { PROTOCOL_VERSION, sq, PAYLOAD_LEN }
+    for k = 1, PAYLOAD_LEN do
+        stream[3 + k] = payload[k] or 0
+    end
+    local nib = {}
+    for k = 1, #stream do
+        nib[2 * k - 1] = floor(stream[k] / 16)
+        nib[2 * k] = stream[k] % 16
+    end
+    nib[71] = 0 -- relleno
+    nib[72] = 0 -- relleno
+
     local blocks = {}
     blocks[1] = { 255, 0, 255 }
     blocks[2] = { 0, 255, 255 }
-    local sq = floor(tonumber(seq) or 0) % 256
-    blocks[3] = { 1, sq, PAYLOAD_LEN }
-    local k = 0 -- indice 0-based dentro de los 33 bytes
-    for b = 4, BLOCK_COUNT do
+    blocks[3] = { 5 * NIBBLE_STEP, 10 * NIBBLE_STEP, 0 }
+    blocks[4] = { 10 * NIBBLE_STEP, 5 * NIBBLE_STEP, 5 * NIBBLE_STEP }
+    blocks[5] = { 0, 15 * NIBBLE_STEP, 10 * NIBBLE_STEP }
+    for b = 6, BLOCK_COUNT do
         local triple = {}
         for c = 1, 3 do
-            local v = 0
-            if k < PAYLOAD_LEN then v = payload[k + 1] or 0 end
-            triple[c] = v
-            k = k + 1
+            triple[c] = nib[(b - 6) * 3 + c] * NIBBLE_STEP
         end
         blocks[b] = triple
     end
     return blocks
+end
+
+-- Tamano de un pixel fisico en unidades del marco de la franja.
+-- physH: altura fisica de pantalla (GetPhysicalScreenSize);
+-- uiHeight/uiScale: GetHeight/GetEffectiveScale de UIParent;
+-- frameScale: GetEffectiveScale del marco de la franja.
+-- Sin UIParent (uiHeight o uiScale nil) cae a 768 / physH.
+function ns.ComputePixelSize(physH, uiHeight, uiScale, frameScale)
+    physH = tonumber(physH)
+    if not physH or physH <= 0 then return nil end
+    uiHeight, uiScale = tonumber(uiHeight), tonumber(uiScale)
+    if not uiHeight or uiHeight <= 0 or not uiScale or uiScale <= 0 then
+        return REFERENCE_UNITS / physH
+    end
+    frameScale = tonumber(frameScale)
+    if not frameScale or frameScale <= 0 then frameScale = 1 end
+    return uiHeight * uiScale / physH / frameScale
 end
 
 -- ---------------------------------------------------------------------------
@@ -163,31 +198,49 @@ function ns.IsStripOn()
     return not (type(db) == "table" and type(db.settings) == "table" and db.settings.strip == false)
 end
 
+-- Lineas de diagnostico para /compa estado: pixel calculado y resolucion fisica.
+function ns.BridgeDebugLines()
+    local physW, physH = ns.Call("GetPhysicalScreenSize")
+    return {
+        string.format("Pixel fisico: %.4f unidades de marco (bloque %dx%d px)", B.pixel or 0, BLOCK_PX, BLOCK_PX),
+        string.format("Resolucion fisica: %sx%s", tostring(physW), tostring(physH)),
+    }
+end
+
+-- Recalcula el tamano del bloque segun la altura fisica de pantalla y UIParent.
+local function recomputeScale()
+    local physW, physH = ns.Call("GetPhysicalScreenSize")
+    local uiH, uiScale
+    local ui = _G.UIParent
+    if ui then
+        uiH = Num(ns.Method(ui, "GetHeight"))
+        uiScale = Num(ns.Method(ui, "GetEffectiveScale"))
+    end
+    local f = B.frame
+    local frameScale = f and Num(ns.Method(f, "GetEffectiveScale")) or nil
+    local px = ns.ComputePixelSize(Num(physH), uiH, uiScale, frameScale)
+    if not px or px <= 0 then px = REFERENCE_UNITS / 1080 end
+    B.pixel = px
+    B.physW, B.physH = Num(physW), Num(physH)
+    local block = BLOCK_PX * px
+    if B.frame then
+        ns.Method(B.frame, "SetSize", BLOCK_COUNT * block, block)
+    end
+    for i = 1, BLOCK_COUNT do
+        local t = B.tex[i]
+        if t then
+            ns.Method(t, "SetSize", block, block)
+            ns.Method(t, "SetPoint", "TOPLEFT", B.frame, "TOPLEFT", (i - 1) * block, 0)
+        end
+    end
+end
+
 local function samePayload(a, b)
     if not a or not b then return false end
     for i = 1, PAYLOAD_LEN do
         if a[i] ~= b[i] then return false end
     end
     return true
-end
-
--- Recalcula el tamano del bloque segun la altura fisica de pantalla.
-local function recomputeScale()
-    local _, physH = ns.Call("GetPhysicalScreenSize")
-    physH = Num(physH)
-    local px = REFERENCE_UNITS / 1080
-    if physH and physH > 0 then px = REFERENCE_UNITS / physH end
-    B.pixel = px
-    local f = B.frame
-    if not f then return end
-    ns.Method(f, "SetSize", 28 * px, 2 * px) -- 14 bloques x 2 px de ancho, 2 px de alto
-    for i = 1, BLOCK_COUNT do
-        local t = B.tex[i]
-        if t then
-            ns.Method(t, "SetSize", 2 * px, 2 * px)
-            ns.Method(t, "SetPoint", "TOPLEFT", f, "TOPLEFT", (i - 1) * 2 * px, 0)
-        end
-    end
 end
 
 local function paint(blocks)
@@ -231,9 +284,15 @@ end
 function ns.InitBridge()
     if B.frame then return B.frame end
     local f = ns.NewFrame("Frame", "CompaneroWoWBridge", nil)
+    if not f and _G.UIParent then
+        f = ns.NewFrame("Frame", "CompaneroWoWBridge", _G.UIParent)
+    end
     if not f then return nil end
     B.frame = f
     ns.Method(f, "SetFrameStrata", "TOOLTIP")
+    ns.Method(f, "SetFrameLevel", 1000)
+    ns.Method(f, "SetIgnoreParentScale", true)
+    ns.Method(f, "SetIgnoreParentAlpha", true)
     if _G.UIParent then
         ns.Method(f, "SetPoint", "TOPLEFT", _G.UIParent, "TOPLEFT", 0, 0)
     else
@@ -251,6 +310,7 @@ function ns.InitBridge()
     recomputeScale()
     ns.Method(f, "RegisterEvent", "UI_SCALE_CHANGED")
     ns.Method(f, "RegisterEvent", "DISPLAY_SIZE_CHANGED")
+    ns.Method(f, "RegisterEvent", "PLAYER_ENTERING_WORLD")
     ns.Method(f, "SetScript", "OnEvent", function()
         ns.SafeCall(recomputeScale)
     end)

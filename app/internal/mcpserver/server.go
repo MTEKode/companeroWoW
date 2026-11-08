@@ -1,5 +1,5 @@
 // Package mcpserver exposes the tool registry over MCP (streamable HTTP) so that
-// Gemini CLI and Codex CLI can call the companion's tools.
+// Antigravity CLI (agy) and Codex CLI can call the companion's tools.
 package mcpserver
 
 import (

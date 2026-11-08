@@ -1,4 +1,4 @@
-// Package bridge reads the pixel strip drawn by the CompaneroWoW addon (protocol v1)
+// Package bridge reads the pixel strip drawn by the CompaneroWoW addon (protocol v2)
 // and the addon's SavedVariables file.
 package bridge
 
@@ -7,34 +7,58 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"sort"
 	"time"
 )
 
-// Protocol v1 layout constants.
+// Protocol v2 layout constants.
+//
+// The strip is a horizontal row of NumBlocks solid squares, each nominally
+// nominalBlockPx physical pixels wide. Each colour channel carries one nibble n
+// (0..15) as the value n*17. Blocks 0..4 are fixed: magic, magic and three
+// calibration blocks that together give every channel the levels 0, 85, 170 and 255.
+// Blocks 5..28 carry 72 nibbles: the 35-byte stream
+// [version, seq, payloadLen] ++ payload[32] (70 nibbles, high nibble first) plus
+// 2 zero padding nibbles.
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 	PayloadLen      = 32
-	NumBlocks       = 14
-	StripWidth      = NumBlocks * blockPx // 28
-	StripHeight     = blockPx             // 2
+	NumBlocks       = 29
+	nominalBlockPx  = 4  // block size on screen for a correctly scaled addon
+	maxBlockPx      = 16 // largest block pitch the decoder accepts
 
-	blockPx        = 2
-	magicTolerance = 2
-	crcPayloadLen  = 31 // bytes 0..30 are covered by the CRC at byte 31
+	// StripWidth and StripHeight are the captured region: enough for a pitch of
+	// maxBlockPx, so that every legitimate pitch is inside it.
+	StripWidth  = NumBlocks * maxBlockPx // 464
+	StripHeight = maxBlockPx             // 16
+
+	minBlockPx     = 1.5
+	nibbleStep     = 17
+	magicTolerance = 40 // per channel, used to locate the magic runs
+	uniformTol     = 12 // max-min per channel inside a block (noise is about +-3)
+	pitchSearch    = 1.0
+	pitchStep      = 0.004
+
+	streamLen     = 3 + PayloadLen // version, seq, length, payload
+	crcPayloadLen = 31             // bytes 0..30 are covered by the CRC at byte 31
 )
 
 // Decoding errors. Use errors.Is to test them.
 var (
-	ErrNoMagic    = errors.New("bridge: pixel magic not found")
-	ErrBadVersion = errors.New("bridge: unsupported pixel protocol version")
-	ErrBadLength  = errors.New("bridge: unexpected payload length")
-	ErrBadCRC     = errors.New("bridge: payload CRC mismatch")
-	ErrBadImage   = errors.New("bridge: pixel strip is missing, too small or not uniform")
+	ErrNoMagic        = errors.New("bridge: pixel magic not found")
+	ErrBadCalibration = errors.New("bridge: pixel calibration is not monotonic")
+	ErrBadVersion     = errors.New("bridge: unsupported pixel protocol version")
+	ErrBadLength      = errors.New("bridge: unexpected payload length")
+	ErrBadCRC         = errors.New("bridge: payload CRC mismatch")
+	ErrBadImage       = errors.New("bridge: pixel strip is missing, too small or not uniform")
 )
 
 var (
 	magic0 = [3]byte{255, 0, 255}
 	magic1 = [3]byte{0, 255, 255}
+	// calExpected lists the known colours of blocks 0..4, the calibration reference.
+	// Per channel the levels are R{255,0,85,170,0}, G{0,255,170,85,255}, B{255,255,0,85,170}.
+	calExpected = [5][3]byte{magic0, magic1, {85, 170, 0}, {170, 85, 85}, {0, 255, 170}}
 )
 
 // LiveState is one decoded snapshot of the game state.
@@ -75,29 +99,107 @@ func CRC8(b []byte) byte {
 	return crc
 }
 
-// DecodeBlocks decodes the 14 raw blocks (3 bytes each) of the strip.
-func DecodeBlocks(blocks [NumBlocks][3]byte) (LiveState, error) {
-	if blocks[0] != magic0 || blocks[1] != magic1 {
-		return LiveState{}, fmt.Errorf("%w: blocks 0-1 are %v %v", ErrNoMagic, blocks[0], blocks[1])
-	}
-	if blocks[2][0] != ProtocolVersion {
-		return LiveState{}, fmt.Errorf("%w: got %d, want %d", ErrBadVersion, blocks[2][0], ProtocolVersion)
-	}
-	if blocks[2][2] != PayloadLen {
-		return LiveState{}, fmt.Errorf("%w: got %d, want %d", ErrBadLength, blocks[2][2], PayloadLen)
-	}
-	seq := blocks[2][1]
+// calPoint maps an observed channel value to the expected one.
+type calPoint struct{ obs, exp float64 }
 
-	// Blocks 3..13 carry 11*3 = 33 bytes: the 32-byte payload plus one padding byte.
-	var raw [PayloadLen + 1]byte
-	k := 0
-	for b := 3; b < NumBlocks; b++ {
-		for c := 0; c < 3; c++ {
-			raw[k] = blocks[b][c]
-			k++
+// channelCal is the piecewise-linear correction of one colour channel.
+// Points are sorted by expected value and strictly increasing in both coordinates.
+type channelCal []calPoint
+
+// newChannelCal builds the correction of channel c from blocks 0..4. Observations
+// that share an expected level are averaged. The result must be strictly
+// monotonic and have at least two distinct levels.
+func newChannelCal(blocks [NumBlocks][3]byte, c int) (channelCal, error) {
+	var pts []calPoint
+	for k := range calExpected {
+		e := float64(calExpected[k][c])
+		o := float64(blocks[k][c])
+		merged := false
+		for i := range pts {
+			if pts[i].exp == e {
+				// Keep a running mean of the observations for this level.
+				pts[i].obs = (pts[i].obs + o) / 2
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			pts = append(pts, calPoint{obs: o, exp: e})
 		}
 	}
-	payload := raw[:PayloadLen]
+	if len(pts) < 2 {
+		return nil, fmt.Errorf("%w: channel %d has %d level(s)", ErrBadCalibration, c, len(pts))
+	}
+	sort.Slice(pts, func(i, j int) bool { return pts[i].exp < pts[j].exp })
+	for i := 1; i < len(pts); i++ {
+		if !(pts[i].obs > pts[i-1].obs) {
+			return nil, fmt.Errorf("%w: channel %d observes %v at level %v but %v at level %v",
+				ErrBadCalibration, c, pts[i-1].obs, pts[i-1].exp, pts[i].obs, pts[i].exp)
+		}
+	}
+	return channelCal(pts), nil
+}
+
+// expected maps an observed value to the expected one. Values outside the
+// calibrated range are extrapolated along the nearest segment, then clamped to 0..255.
+func (cal channelCal) expected(v float64) float64 {
+	n := len(cal)
+	seg := 0
+	switch {
+	case v <= cal[0].obs:
+		seg = 0
+	case v >= cal[n-1].obs:
+		seg = n - 2
+	default:
+		for i := 0; i < n-1; i++ {
+			if v >= cal[i].obs && v <= cal[i+1].obs {
+				seg = i
+				break
+			}
+		}
+	}
+	a, b := cal[seg], cal[seg+1]
+	e := a.exp + (v-a.obs)*(b.exp-a.exp)/(b.obs-a.obs)
+	return math.Max(0, math.Min(255, e))
+}
+
+// nibble converts an observed channel value to its nibble, 0..15.
+func (cal channelCal) nibble(v byte) byte {
+	n := math.Round(cal.expected(float64(v)) / nibbleStep)
+	return byte(math.Max(0, math.Min(15, n)))
+}
+
+// DecodeBlocks decodes the NumBlocks sampled blocks (3 bytes each) of the strip. The
+// values are the observed colours; the calibration from blocks 0..4 is applied.
+func DecodeBlocks(blocks [NumBlocks][3]byte) (LiveState, error) {
+	var cal [3]channelCal
+	for c := 0; c < 3; c++ {
+		var err error
+		if cal[c], err = newChannelCal(blocks, c); err != nil {
+			return LiveState{}, err
+		}
+	}
+
+	// Blocks 5..28: 24 blocks x 3 channels = 72 nibbles, in R,G,B order.
+	var nib [72]byte
+	for b := 5; b < NumBlocks; b++ {
+		for c := 0; c < 3; c++ {
+			nib[(b-5)*3+c] = cal[c].nibble(blocks[b][c])
+		}
+	}
+	var raw [streamLen]byte // version, seq, length, payload; the padding nibbles are dropped
+	for k := 0; k < streamLen; k++ {
+		raw[k] = nib[2*k]<<4 | nib[2*k+1]
+	}
+
+	if raw[0] != ProtocolVersion {
+		return LiveState{}, fmt.Errorf("%w: got %d, want %d", ErrBadVersion, raw[0], ProtocolVersion)
+	}
+	if raw[2] != PayloadLen {
+		return LiveState{}, fmt.Errorf("%w: got %d, want %d", ErrBadLength, raw[2], PayloadLen)
+	}
+	seq := raw[1]
+	payload := raw[3:streamLen]
 	if crc := CRC8(payload[:crcPayloadLen]); crc != payload[crcPayloadLen] {
 		return LiveState{}, fmt.Errorf("%w: computed %#02x, stored %#02x", ErrBadCRC, crc, payload[crcPayloadLen])
 	}
@@ -106,9 +208,14 @@ func DecodeBlocks(blocks [NumBlocks][3]byte) (LiveState, error) {
 	return st, nil
 }
 
-// DecodeImage reads the strip from the top-left of img. Block i is the 2x2 square
-// at x=2i..2i+1, y=0..1. Its data is read exactly from pixel (2i, 0); pixel (2i+1, 1)
-// must match it within tolerance. Magic blocks are accepted within ±2 per channel.
+// DecodeImage reads the strip from the top-left corner of img (region StripWidth x StripHeight).
+//
+//  1. The magic runs in the middle of row 0 give a pitch estimate p0.
+//  2. The pitch is refined by searching the pitch range near p0 for the value at
+//     which every block's interior pixels are uniform.
+//  3. Each block is sampled at its centre (averaged with the interior neighbours
+//     when the pitch is at least 3 px), and the colours are decoded by DecodeBlocks.
+//
 // Pixels outside the strip are ignored.
 func DecodeImage(img image.Image) (LiveState, error) {
 	if img == nil {
@@ -119,45 +226,213 @@ func DecodeImage(img image.Image) (LiveState, error) {
 		return LiveState{}, fmt.Errorf("%w: %dx%d is smaller than %dx%d", ErrBadImage, b.Dx(), b.Dy(), StripWidth, StripHeight)
 	}
 
+	p0, err := estimatePitch(img)
+	if err != nil {
+		return LiveState{}, err
+	}
+	p := refinePitch(img, p0)
+	y0 := int(math.Floor(p / 2))
+
 	var blocks [NumBlocks][3]byte
 	for i := 0; i < NumBlocks; i++ {
-		x := b.Min.X + blockPx*i
-		y := b.Min.Y
-		c := pixelRGB(img, x, y)
-		if i < 2 {
-			want := magic0
-			if i == 1 {
-				want = magic1
-			}
-			if !withinTolerance(c, want, magicTolerance) {
-				return LiveState{}, fmt.Errorf("%w: block %d is %v, want about %v", ErrNoMagic, i, c, want)
-			}
-			c = want
-		}
-		if other := pixelRGB(img, x+1, y+1); !withinTolerance(c, other, magicTolerance) {
-			return LiveState{}, fmt.Errorf("%w: block %d differs across its 2x2 area (%v vs %v)", ErrBadImage, i, c, other)
-		}
-		blocks[i] = c
+		blocks[i] = sampleBlock(img, i, p, y0)
+	}
+	if !withinTolerance(blocks[0], magic0, magicTolerance) || !withinTolerance(blocks[1], magic1, magicTolerance) {
+		return LiveState{}, fmt.Errorf("%w: blocks 0-1 are %v %v", ErrNoMagic, blocks[0], blocks[1])
 	}
 	return DecodeBlocks(blocks)
 }
 
-// EncodeForTest builds the strip for s. It is the inverse of DecodeBlocks and is
-// used by tests and by the UI's diagnostic. s.Seq is ignored; seq is written.
+// estimatePitch measures the pitch from the magic runs in row 0. Block 0 starts at
+// x = s0 and block 1 at s1; their ends give a second estimate. Both are averaged.
+// Boundary pixels blended between the two colours are excluded by the tolerance.
+func estimatePitch(img image.Image) (float64, error) {
+	b := img.Bounds()
+	scanEnd := 4 * maxBlockPx
+	if scanEnd > b.Dx() {
+		scanEnd = b.Dx()
+	}
+	y := b.Min.Y
+	match := func(x int, want [3]byte) bool {
+		return withinTolerance(pixelRGB(img, b.Min.X+x, y), want, magicTolerance)
+	}
+
+	// Run of magic0 from the left edge.
+	s0 := -1
+	for x := 0; x < scanEnd; x++ {
+		if match(x, magic0) {
+			s0 = x
+			break
+		}
+	}
+	if s0 < 0 || s0 > maxBlockPx {
+		return 0, fmt.Errorf("%w: no block 0 at the left edge", ErrNoMagic)
+	}
+	e0 := s0
+	for e0 < scanEnd && match(e0, magic0) {
+		e0++
+	}
+
+	// First run of magic1 after block 0.
+	s1 := -1
+	for x := e0; x < scanEnd; x++ {
+		if match(x, magic1) {
+			s1 = x
+			break
+		}
+	}
+	if s1 < 0 {
+		return 0, fmt.Errorf("%w: no block 1 after block 0", ErrNoMagic)
+	}
+	e1 := s1
+	for e1 < scanEnd && match(e1, magic1) {
+		e1++
+	}
+
+	pa := float64(s1 - s0)
+	pb := float64(e1-s0) / 2
+	p := (pa + pb) / 2
+	if p < minBlockPx || p > maxBlockPx {
+		return 0, fmt.Errorf("%w: block pitch %.2f outside [%.1f, %d]", ErrNoMagic, p, minBlockPx, maxBlockPx)
+	}
+	return p, nil
+}
+
+// blockUniform reports whether the pixels strictly inside block i at pitch p are
+// uniform on row y. Blocks with no interior pixel count as uniform.
+func blockUniform(img image.Image, i int, p float64, y int) bool {
+	b := img.Bounds()
+	lo, hi := interiorRange(i, p)
+	if hi < lo {
+		return true
+	}
+	var mn, mx [3]int
+	for k, x := lo, 0; k <= hi; k, x = k+1, x+1 {
+		c := pixelRGB(img, b.Min.X+k, b.Min.Y+y)
+		for ch := 0; ch < 3; ch++ {
+			v := int(c[ch])
+			if x == 0 || v < mn[ch] {
+				mn[ch] = v
+			}
+			if x == 0 || v > mx[ch] {
+				mx[ch] = v
+			}
+		}
+	}
+	for ch := 0; ch < 3; ch++ {
+		if mx[ch]-mn[ch] > uniformTol {
+			return false
+		}
+	}
+	return true
+}
+
+// refinePitch searches [p0-pitchSearch, p0+pitchSearch] for the pitch that fits
+// the strip best and returns it. A pitch fits when every block's interior pixels
+// are uniform. Among the fitting pitches, the score is the number of interior
+// pixels in total: a pitch that is too small shrinks the interiors, one that is
+// too large pulls neighbouring pixels in. The midpoint of the best-scoring pitches
+// is returned. The magic-run estimate is only accurate to about half a pixel,
+// which is not enough to place the centre of block 27. If no pitch fits, p0 is returned.
+func refinePitch(img image.Image, p0 float64) float64 {
+	lo := math.Max(minBlockPx, p0-pitchSearch)
+	hi := math.Min(maxBlockPx, p0+pitchSearch)
+
+	bestScore, bestFirst, bestLast := -1, -1, -1
+	n := int(math.Round((hi - lo) / pitchStep))
+	for k := 0; k <= n; k++ {
+		score, ok := pitchFit(img, lo+float64(k)*pitchStep)
+		if !ok {
+			continue
+		}
+		switch {
+		case score > bestScore:
+			bestScore, bestFirst, bestLast = score, k, k
+		case score == bestScore:
+			bestLast = k
+		}
+	}
+	if bestScore < 0 {
+		return p0
+	}
+	return lo + float64(bestFirst+bestLast)/2*pitchStep
+}
+
+// pitchFit reports whether pitch p fits the strip (every block uniform on the
+// middle row) and the total number of interior pixels of all blocks.
+func pitchFit(img image.Image, p float64) (score int, ok bool) {
+	y := int(math.Floor(p / 2))
+	for i := 0; i < NumBlocks; i++ {
+		lo, hi := interiorRange(i, p)
+		if hi < lo {
+			continue
+		}
+		score += hi - lo + 1
+		if !blockUniform(img, i, p, y) {
+			return 0, false
+		}
+	}
+	return score, true
+}
+
+// interiorRange returns the first and last pixel column that lie fully inside
+// block i at pitch p (hi < lo when there is none).
+func interiorRange(i int, p float64) (lo, hi int) {
+	lo = int(math.Ceil(float64(i) * p))
+	hi = int(math.Floor(float64(i+1)*p)) - 1
+	return lo, hi
+}
+
+// sampleBlock returns the average colour of block i at pitch p, read on row y.
+// It uses the centre pixel, plus the left and right neighbours when p >= 3 and
+// they lie strictly inside the block.
+func sampleBlock(img image.Image, i int, p float64, y int) [3]byte {
+	b := img.Bounds()
+	start := float64(i) * p
+	end := float64(i+1) * p
+	c := int(math.Floor((float64(i) + 0.5) * p))
+	xs := []int{c}
+	if p >= 3 {
+		for _, x := range []int{c - 1, c + 1} {
+			if float64(x) >= start && float64(x)+1 <= end {
+				xs = append(xs, x)
+			}
+		}
+	}
+	var sum [3]float64
+	for _, x := range xs {
+		px := pixelRGB(img, b.Min.X+x, b.Min.Y+y)
+		for ch := 0; ch < 3; ch++ {
+			sum[ch] += float64(px[ch])
+		}
+	}
+	var out [3]byte
+	for ch := 0; ch < 3; ch++ {
+		out[ch] = byte(math.Round(sum[ch] / float64(len(xs))))
+	}
+	return out
+}
+
+// EncodeForTest builds the v2 strip for s, in the same 28-block layout as the
+// addon's ns.EncodeBlocks. It is the inverse of DecodeBlocks, used by tests and
+// by the UI's diagnostic. s.Seq is ignored; seq is written.
 func EncodeForTest(s LiveState, seq uint8) [NumBlocks][3]byte {
 	payload := encodePayload(s)
-	var raw [PayloadLen + 1]byte
-	copy(raw[:], payload[:])
+	stream := make([]byte, 0, streamLen+2)
+	stream = append(stream, ProtocolVersion, seq, PayloadLen)
+	stream = append(stream, payload[:]...)
+
+	var nib [72]byte
+	for k, v := range stream {
+		nib[2*k] = v >> 4
+		nib[2*k+1] = v & 0x0f
+	}
 
 	var blocks [NumBlocks][3]byte
-	blocks[0] = magic0
-	blocks[1] = magic1
-	blocks[2] = [3]byte{ProtocolVersion, seq, PayloadLen}
-	k := 0
-	for b := 3; b < NumBlocks; b++ {
+	copy(blocks[:], calExpected[:])
+	for bi := 5; bi < NumBlocks; bi++ {
 		for c := 0; c < 3; c++ {
-			blocks[b][c] = raw[k]
-			k++
+			blocks[bi][c] = nib[(bi-5)*3+c] * nibbleStep
 		}
 	}
 	return blocks

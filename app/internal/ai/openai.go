@@ -22,13 +22,13 @@ const maxToolRounds = 8
 const maxResponseBytes = 8 << 20
 
 type openAICompat struct {
-	name    string
-	baseURL string
-	apiKey  string
-	model   string
-	tools   ToolExecutor
-	timeout time.Duration
-	client  *http.Client
+	name     string
+	provider config.APIProvider // the key is resolved on each call: literal, env var or .env
+	baseURL  string
+	model    string
+	tools    ToolExecutor
+	timeout  time.Duration
+	client   *http.Client
 }
 
 // NewOpenAICompat returns a provider for an OpenAI-compatible chat completions endpoint.
@@ -38,22 +38,23 @@ func NewOpenAICompat(p config.APIProvider, tools ToolExecutor, timeout time.Dura
 		timeout = defaultAITimeout
 	}
 	return &openAICompat{
-		name:    "api:" + p.Name,
-		baseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"),
-		apiKey:  strings.TrimSpace(p.APIKey),
-		model:   strings.TrimSpace(p.Model),
-		tools:   tools,
-		timeout: timeout,
-		client:  &http.Client{},
+		name:     "api:" + p.Name,
+		provider: p,
+		baseURL:  strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"),
+		model:    strings.TrimSpace(p.Model),
+		tools:    tools,
+		timeout:  timeout,
+		client:   &http.Client{},
 	}
 }
 
 func (o *openAICompat) Name() string { return o.name }
 
 func (o *openAICompat) Available() error {
+	if _, err := o.provider.ResolveKey(); err != nil {
+		return fmt.Errorf("%s: %w", o.name, err)
+	}
 	switch {
-	case o.apiKey == "":
-		return fmt.Errorf("falta apiKey en %s", o.name)
 	case o.baseURL == "":
 		return fmt.Errorf("falta baseUrl en %s", o.name)
 	case o.model == "":
@@ -130,6 +131,10 @@ func userContent(text string, png []byte) any {
 }
 
 func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
+	key, err := o.provider.ResolveKey()
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: %w", o.name, err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
@@ -159,7 +164,7 @@ func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 
 	for round := 0; round < maxToolRounds; round++ {
-		resp, err := o.post(ctx, chatRequest{Model: o.model, Messages: msgs, Tools: tools})
+		resp, err := o.post(ctx, key, chatRequest{Model: o.model, Messages: msgs, Tools: tools})
 		if err != nil {
 			return Response{}, err
 		}
@@ -226,7 +231,7 @@ func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
 }
 
 // post sends one chat completions request. Non-2xx statuses are errors so the chain falls back.
-func (o *openAICompat) post(ctx context.Context, body chatRequest) (chatResponse, error) {
+func (o *openAICompat) post(ctx context.Context, key string, body chatRequest) (chatResponse, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return chatResponse{}, fmt.Errorf("%s: codificar petición: %w", o.name, err)
@@ -236,7 +241,7 @@ func (o *openAICompat) post(ctx context.Context, body chatRequest) (chatResponse
 		return chatResponse{}, fmt.Errorf("%s: crear petición: %w", o.name, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+key)
 
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
