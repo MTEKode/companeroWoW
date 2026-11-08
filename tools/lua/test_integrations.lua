@@ -69,6 +69,11 @@ end
 
 local KEY = "Tester-Ravencrest"
 local function char() return CompaneroWoWDB.characters[KEY] end
+-- Quita los bloques de integracion del personaje: los escenarios "no disponible" parten de cero.
+local function forgetIntegrations()
+    local c = char()
+    if c then c.training, c.guide, c.profPlan = nil, nil, nil end
+end
 
 -- Tamano aproximado (cadenas y claves) para comprobar el limite de 20 KB por bloque.
 local function approxBytes(v)
@@ -194,6 +199,7 @@ check("profPlan: pasos como mucho 5", #char().profPlan.professions[1].nextSteps 
 -- ---------------------------------------------------------------------------
 outln("addons ausentes:")
 reset({ noWT = true, noRXP = true, noSkillUp = true })
+forgetIntegrations()
 ns.ExportIntegrationsNow()
 c = char()
 eq("sin WhatsTraining: available=false", c.training.available, false)
@@ -203,19 +209,23 @@ eq("sin SkillUpForever: available=false", c.profPlan.available, false)
 check("sin addons: sigue habiendo health", type(c.health) == "table")
 
 reset({ wtReady = false })
+forgetIntegrations()
 ns.ExportIntegrationsNow()
 eq("WhatsTraining no listo: available=false", char().training.available, false)
 
 reset()
+forgetIntegrations()
 _G.RXPCData = nil
 ns.ExportIntegrationsNow()
 eq("RXPCData ausente: available=false", char().guide.available, false)
 reset()
+forgetIntegrations()
 _G.RXPCData.currentGuideName = nil
 ns.ExportIntegrationsNow()
 eq("sin guia activa: available=false", char().guide.available, false)
 
 reset()
+forgetIntegrations()
 _G.SkillUpForever.API.version = 2
 ns.ExportIntegrationsNow()
 eq("version de API no soportada: available=false", char().profPlan.available, false)
@@ -314,6 +324,7 @@ check("estado: SkillUpForever con profesiones", anyPrinted("SkillUpForever: 1 pr
 check("estado: errores capturados", anyPrinted("Errores capturados: "))
 
 reset({ noWT = true, noRXP = true, noSkillUp = true })
+forgetIntegrations()
 SlashCmdList.COMPA("sync")
 printed = {}
 SlashCmdList.COMPA("estado")
@@ -461,6 +472,7 @@ check("estado: linea de errores", ns.HealthStatusLine():find("Errores capturados
 
 -- Un bloque que falla se marca no disponible y su error entra en health.
 reset()
+forgetIntegrations()
 ns.EnsureDB()
 _G.SkillUpForever.API.Professions = function() error("roto") end
 local before2 = ns.errorCount

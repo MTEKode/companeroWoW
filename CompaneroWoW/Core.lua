@@ -2,15 +2,20 @@
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
-local Call, Num = ns.Call, ns.Num
+local Call, Num, Clean = ns.Call, ns.Num, ns.Clean
 
 ns.VERSION = "0.1.0"
 ns.SCHEMA = 1
 
-local SNAPSHOT_THROTTLE = 5 -- segundos
+local SNAPSHOT_THROTTLE = 5  -- segundos
+local PERIODIC_SNAPSHOT = 60 -- segundos entre snapshots periodicos (dentro del mundo, fuera de combate)
 local lastSnapshot = nil     -- tiempo (GetTime) del ultimo snapshot
 local timerPending = false   -- hay un snapshot diferido por throttle
 local combatPending = false  -- hay un snapshot diferido por combate
+local loading = false        -- true entre PLAYER_LEAVING_WORLD / PLAYER_LOGOUT y PLAYER_ENTERING_WORLD
+local periodicStarted = false
+-- Campo protegido -> hay una lectura vacia pendiente de confirmar (dos lecturas consecutivas).
+local emptyPending = {}
 
 local function say(msg)
     ns.Call("print", "|cff00ff00CompaneroWoW|r: " .. msg)
@@ -36,6 +41,15 @@ function ns.InCombat()
     return ns.Call("InCombatLockdown") == true
 end
 
+-- true solo si el jugador esta dentro del mundo y los datos de las APIs son fiables:
+-- no hay pantalla de carga/salida (loading) y el cliente no reporta sesion cerrada.
+function ns.IsFullyInWorld()
+    if loading then return false end
+    if Clean(Call("IsLoggedIn")) == false then return false end
+    if Clean(Call("UnitExists", "player")) == false then return false end
+    return true
+end
+
 local function nowSec()
     local t = Num(Call("GetTime"))
     if t then return t end
@@ -56,8 +70,79 @@ local FIELDS = {
     { "reputations", "CollectReputations" },
 }
 
+-- Campos protegidos: si pasan de datos a vacio/cero, no se aceptan sin confirmar.
+-- Ruta = { campo, subcampo? }. Para inventory se protege la lista de objetos.
+local PROTECTED = {
+    { "professions" },
+    { "quests" },
+    { "inventory", "items" },
+    { "equipment" },
+    { "spells" },
+    { "reputations" },
+    { "character", "money" },
+}
+
+local function pathKey(path)
+    return table.concat(path, ".")
+end
+
+local function getPath(t, path)
+    local cur = t
+    for _, k in ipairs(path) do
+        if type(cur) ~= "table" then return nil end
+        cur = cur[k]
+    end
+    return cur
+end
+
+-- Escribe en t[path]. Si un nivel intermedio falta, no crea tablas nuevas (no pisa el resto).
+local function setPath(t, path, v)
+    local cur = t
+    for i = 1, #path - 1 do
+        cur = cur[path[i]]
+        if type(cur) ~= "table" then return end
+    end
+    cur[path[#path]] = v
+end
+
+local function isEmptyValue(v)
+    if v == nil then return true end
+    if type(v) == "number" then return v == 0 end
+    if type(v) == "table" then return next(v) == nil end
+    return false
+end
+
+-- Decide que valor guardar para un campo protegido. Devuelve el valor y el nuevo estado "pendiente".
+--  - Sin lectura nueva: se conserva el anterior.
+--  - Vacio/cero sobre dato previo fuera del mundo (carga/salida): se conserva el anterior.
+--  - Vacio/cero sobre dato previo dentro del mundo: la primera lectura queda pendiente
+--    y solo se acepta si la siguiente lectura consecutiva sigue vacia.
+--  - Cualquier otro caso: se acepta el valor nuevo.
+local function resolveProtected(oldValue, newValue, fullyIn, wasPending)
+    if newValue == nil then return oldValue, false end
+    if isEmptyValue(newValue) and not isEmptyValue(oldValue) then
+        if not fullyIn then return oldValue, false end
+        if not wasPending then return oldValue, true end
+        return newValue, false
+    end
+    return newValue, false
+end
+
+-- Aplica resolveProtected a cada campo protegido de fresh frente a c (el ultimo snapshot guardado).
+local function mergeProtected(c, fresh, key, fullyIn)
+    for _, path in ipairs(PROTECTED) do
+        local pk = key .. "/" .. pathKey(path)
+        local oldValue = getPath(c, path)
+        local newValue = getPath(fresh, path)
+        local value, pending = resolveProtected(oldValue, newValue, fullyIn, emptyPending[pk] == true)
+        emptyPending[pk] = pending or nil
+        if value ~= newValue then setPath(fresh, path, value) end
+    end
+end
+
 -- Ejecuta todos los collectors y guarda el resultado en characters[CharKey()].
--- Un collector que falla conserva el dato anterior. Devuelve true si se ejecuto.
+-- Un collector que falla conserva el dato anterior. Fuera del mundo (carga/salida) no se
+-- escriben campos vacios sobre datos previos. Devuelve true si se ejecuto.
 function ns.SnapshotAll()
     ns.EnsureDB()
     if ns.InCombat() then
@@ -72,26 +157,35 @@ function ns.SnapshotAll()
         c = {}
         db.characters[key] = c
     end
-    c.updatedAt = ns.Now()
+    local fullyIn = ns.IsFullyInWorld()
+    local fresh = {}
     for _, entry in ipairs(FIELDS) do
-        local collect = ns[entry[2]]
-        local value = ns.SafeCall(collect)
-        if value ~= nil then c[entry[1]] = value end
+        local value = ns.SafeCall(ns[entry[2]])
+        if value ~= nil then fresh[entry[1]] = value end
     end
-    -- Exportacion de Questie: fuera de combate, con su propio throttle de 10 s (Questie.lua).
-    ns.SafeCall(ns.RequestQuestieExport)
-    -- Exportacion de WhatsTraining / RXPGuides / SkillUpForever: mismo criterio (Integrations.lua).
-    ns.SafeCall(ns.RequestIntegrationsExport)
+    mergeProtected(c, fresh, key, fullyIn)
+    for _, entry in ipairs(FIELDS) do
+        if fresh[entry[1]] ~= nil then c[entry[1]] = fresh[entry[1]] end
+    end
+    if fullyIn then
+        c.updatedAt = ns.Now()
+        -- Exportacion de Questie: fuera de combate, con su propio throttle de 10 s (Questie.lua).
+        ns.SafeCall(ns.RequestQuestieExport)
+        -- Exportacion de WhatsTraining / RXPGuides / SkillUpForever: mismo criterio (Integrations.lua).
+        ns.SafeCall(ns.RequestIntegrationsExport)
+    end
     lastSnapshot = nowSec()
     return true
 end
 
 -- Snapshot con throttle (maximo uno cada SNAPSHOT_THROTTLE s). Diferido en combate.
+-- Fuera del mundo no hace nada: el ultimo snapshot bueno se conserva.
 function ns.RequestSnapshot()
     if ns.InCombat() then
         combatPending = true
         return false
     end
+    if not ns.IsFullyInWorld() then return false end
     local t = nowSec()
     if lastSnapshot == nil or t - lastSnapshot >= SNAPSHOT_THROTTLE then
         return ns.SnapshotAll()
@@ -112,10 +206,35 @@ end
 -- ---------------------------------------------------------------------------
 
 local SNAPSHOT_EVENTS = {
-    "PLAYER_ENTERING_WORLD", "QUEST_LOG_UPDATE", "BAG_UPDATE_DELAYED",
+    "QUEST_LOG_UPDATE", "BAG_UPDATE_DELAYED",
     "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "PLAYER_LEVEL_UP",
     "ZONE_CHANGED_NEW_AREA", "GROUP_ROSTER_UPDATE", "UPDATE_FACTION",
 }
+
+-- Marca la hora de salida. Sin collectors: al salir, las APIs pueden devolver vacio/cero.
+-- PLAYER_LEAVING_WORLD tambien ocurre en pantallas de carga: solo se actualiza la marca.
+local function markLoggedOut()
+    local key = ns.CharKey()
+    if not key then return end
+    local db = ns.EnsureDB()
+    local c = db.characters[key]
+    if type(c) ~= "table" then
+        c = {}
+        db.characters[key] = c
+    end
+    c.loggedOutAt = ns.Now()
+end
+
+-- Snapshot periodico (cada PERIODIC_SNAPSHOT s): solo dentro del mundo y fuera de combate.
+local function startPeriodic()
+    if periodicStarted then return end
+    periodicStarted = true
+    ns.Call("C_Timer.NewTicker", PERIODIC_SNAPSHOT, function()
+        ns.SafeCall(function()
+            if ns.IsFullyInWorld() and not ns.InCombat() then ns.RequestSnapshot() end
+        end)
+    end)
+end
 
 local function onEvent(event, name)
     if event == "ADDON_LOADED" then
@@ -125,8 +244,15 @@ local function onEvent(event, name)
         ns.InitBridge()
         if ns.Marks then ns.SafeCall(ns.Marks.Init) end
         ns.RequestSnapshot()
-    elseif event == "PLAYER_LOGOUT" then
-        ns.SnapshotAll()
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        loading = false
+        startPeriodic()
+        ns.RequestSnapshot()
+    elseif event == "PLAYER_LEAVING_WORLD" or event == "PLAYER_LOGOUT" then
+        loading = true
+        markLoggedOut()
+    elseif event == "PLAYER_CAMPING" then
+        ns.RequestSnapshot() -- ultimo momento seguro antes de desconectar
     elseif event == "PLAYER_REGEN_ENABLED" then
         if combatPending then
             combatPending = false
@@ -141,7 +267,10 @@ local eventFrame = ns.NewFrame("Frame")
 if eventFrame then
     ns.Method(eventFrame, "RegisterEvent", "ADDON_LOADED")
     ns.Method(eventFrame, "RegisterEvent", "PLAYER_LOGIN")
+    ns.Method(eventFrame, "RegisterEvent", "PLAYER_ENTERING_WORLD")
+    ns.Method(eventFrame, "RegisterEvent", "PLAYER_LEAVING_WORLD")
     ns.Method(eventFrame, "RegisterEvent", "PLAYER_LOGOUT")
+    ns.Method(eventFrame, "RegisterEvent", "PLAYER_CAMPING")
     ns.Method(eventFrame, "RegisterEvent", "PLAYER_REGEN_ENABLED")
     for _, ev in ipairs(SNAPSHOT_EVENTS) do
         ns.Method(eventFrame, "RegisterEvent", ev)

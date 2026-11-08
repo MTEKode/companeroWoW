@@ -64,6 +64,16 @@ function ns.Clean(v)
     return v
 end
 
+-- Bloque de integracion o de Questie (available = true/false). Una exportacion no disponible
+-- (addon ausente, cargando, error) nunca sustituye a un bloque que si estaba disponible: solo lo
+-- reemplaza una exportacion correcta posterior.
+function ns.PreferAvailable(old, new)
+    local oldOk = type(old) == "table" and old.available == true
+    local newOk = type(new) == "table" and new.available == true
+    if oldOk and not newOk then return old end
+    return new
+end
+
 -- Numero limpio o nil.
 function ns.Num(v)
     v = ns.Clean(v)

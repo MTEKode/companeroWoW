@@ -699,6 +699,7 @@ end
 -- Exporta ahora (sin throttle) y guarda en la entrada del personaje. Devuelve la tabla o nil.
 function ns.ExportQuestieNow()
     if ns.InCombat() then return nil end
+    if not ns.IsFullyInWorld() then return nil end -- carga/salida: Questie puede estar a medias
     local key = ns.CharKey()
     if not key then return nil end
     local db = ns.EnsureDB()
@@ -708,8 +709,9 @@ function ns.ExportQuestieNow()
         db.characters[key] = c
     end
     local data = ns.SafeCall(ns.BuildQuestieExport) or { available = false }
-    c.questie = data
-    Q.last = data
+    -- Una exportacion no disponible no sustituye a una buena anterior.
+    c.questie = ns.PreferAvailable(c.questie, data)
+    Q.last = c.questie
     Q.lastAt = nowSec()
     return data
 end
