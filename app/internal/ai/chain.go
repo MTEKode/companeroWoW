@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -34,21 +35,24 @@ func newChain(timeout time.Duration, providers ...Provider) *Chain {
 	return &Chain{providers: providers, timeout: timeout}
 }
 
-// BuildChain builds the chain from cfg.ProviderOrder. "api" expands to one provider per
-// cfg.APIProviders entry. Unknown names are ignored.
+// BuildChain builds the chain from cfg.ProviderOrder. "antigravity" and "codex" are the CLIs,
+// "api" expands to one provider per cfg.APIProviders entry. Unknown names (such as the retired
+// "gemini") are skipped and logged.
 func BuildChain(cfg *config.Config, workDir string, tools ToolExecutor) *Chain {
 	timeout := aiTimeout(cfg)
 	c := &Chain{timeout: timeout}
 	for _, name := range cfg.ProviderOrder {
 		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "gemini":
-			c.providers = append(c.providers, NewGemini(cfg, workDir))
+		case "antigravity":
+			c.providers = append(c.providers, NewAntigravity(cfg, workDir))
 		case "codex":
 			c.providers = append(c.providers, NewCodex(cfg, workDir))
 		case "api":
 			for _, p := range cfg.APIProviders {
 				c.providers = append(c.providers, NewOpenAICompat(p, tools, timeout))
 			}
+		default:
+			log.Printf("ai: proveedor %q omitido (no existe en esta versión)", name)
 		}
 	}
 	return c

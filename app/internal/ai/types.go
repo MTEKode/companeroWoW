@@ -1,5 +1,5 @@
 // Package ai answers the companion's questions through an ordered chain of providers:
-// the official Gemini and Codex CLIs (spawned on demand, never resident) and
+// the Antigravity (agy) and Codex CLIs (spawned on demand, never resident) and
 // OpenAI-compatible HTTP APIs that run their own tool-calling loop.
 package ai
 
@@ -38,7 +38,7 @@ type Attempt struct {
 
 // Provider is one way of asking the model.
 type Provider interface {
-	Name() string     // "gemini", "codex", "api:<Name>"
+	Name() string     // "antigravity", "codex", "api:<Name>"
 	Available() error // cheap check: binary on PATH / API key configured
 	Ask(ctx context.Context, req Request) (Response, error)
 }

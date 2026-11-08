@@ -46,7 +46,7 @@ const (
 	hintActivate  = "Activa el addon y usa modo ventana sin bordes"
 	hintWoWPath   = "Configura WoWPath en config.json"
 	hintSync      = "Escribe /compa sync en el juego para actualizar los datos"
-	hintNoProvide = "No hay proveedores de IA disponibles: instala Gemini CLI o Codex CLI, o configura una API en config.json"
+	hintNoProvide = "No hay proveedores de IA disponibles: instala Antigravity CLI (agy) o Codex CLI, o define una clave de API en .env"
 )
 
 func init() {
@@ -251,8 +251,8 @@ func providerReport(cfg *config.Config, workDir string) []providerInfo {
 	var out []providerInfo
 	for _, name := range cfg.ProviderOrder {
 		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "gemini":
-			out = append(out, checkProvider(ai.NewGemini(cfg, workDir)))
+		case "antigravity":
+			out = append(out, checkProvider(ai.NewAntigravity(cfg, workDir)))
 		case "codex":
 			out = append(out, checkProvider(ai.NewCodex(cfg, workDir)))
 		case "api":
