@@ -10,7 +10,8 @@ local bit = bit
 
 local MAX_QUESTS = 35
 local MAX_ZONE_QUESTS = 40
-local MAX_NPCS = 40
+local MAX_ZONE_NPCS = 60       -- PNJs con rol en la zona actual
+local MAX_CAPITAL_NPCS = 120   -- PNJs con rol en las capitales de la faccion (total)
 local MAX_STARTER_SPAWNS = 5
 local MAX_OBJECTIVE_SPAWNS = 10
 local EXPORT_THROTTLE = 10 -- segundos entre exportaciones automaticas
@@ -19,11 +20,32 @@ local EXPORT_THROTTLE = 10 -- segundos entre exportaciones automaticas
 ns.Questie = ns.Questie or {}
 local Q = ns.Questie
 
--- Mascaras de npcFlags de Questie que dan rol a un PNJ (orden = prioridad).
+-- Mascaras de QuestieDB.npcFlags (juego Forever: VENDOR=4, TRAINER=16, INNKEEPER=128...) que dan rol.
+-- Orden = prioridad. Los nombres son las claves de db.npcFlags.
 local ROLE_FLAGS = {
     { "FLIGHT_MASTER", "flightmaster" },
     { "INNKEEPER", "innkeeper" },
+    { "BANKER", "banker" },
+    { "AUCTIONEER", "auctioneer" },
+    { "TRAINER", "trainer" },
     { "VENDOR", "vendor" },
+}
+
+-- Palabras de subName (ingles o espanol, en minusculas) que dan rol cuando npcFlags no basta.
+-- Orden = prioridad: "vuelo" antes que "maestro" (Maestro de vuelo = vuelo, no entrenador).
+local ROLE_WORDS = {
+    { "flightmaster", { "flight master", "vuelo" } },
+    { "innkeeper", { "innkeeper", "posadero", "posadera" } },
+    { "banker", { "banker", "banquero", "banquera" } },
+    { "auctioneer", { "auctioneer", "subastador", "subastadora" } },
+    { "trainer", { "trainer", "instructor", "instructora", "maestro", "maestra" } },
+    { "vendor", { "vendor", "vendedor", "vendedora", "proveedor", "proveedora", "suministros" } },
+}
+
+-- Areas (areaId de Questie) de las capitales de cada faccion (QuestieDB corrections/enum/zones.lua).
+local CAPITALS = {
+    Alliance = { 1519, 1537, 1657 }, -- Ventormenta, Forjaz, Darnassus
+    Horde = { 1637, 1638, 1497 },    -- Orgrimmar, Cima del Trueno, Entrañas
 }
 
 local function nowSec()
@@ -353,71 +375,131 @@ local function zoneQuestList(db, zone, mapID, areaId, level, inLog)
     return out
 end
 
--- PNJs con rol (vuelo, posada, vendedor) con posicion en la zona. Cacheado por zona.
-local function zoneNpcCandidates(db, zone, areaId)
-    if Q.npcCache and Q.npcCache.areaId == areaId then return Q.npcCache.list end
-    local list = {}
+-- Rol por npcFlags (claves de db.npcFlags, las de este juego). nil si no tiene ninguno.
+local function roleFromFlags(db, flags)
     local flagTable = db.npcFlags
+    if not flags or flags <= 0 or type(flagTable) ~= "table" then return nil end
+    for _, rf in ipairs(ROLE_FLAGS) do
+        local mask = Num(flagTable[rf[1]])
+        if mask and mask > 0 and bit.band(flags, mask) == mask then return rf[2] end
+    end
+    return nil
+end
+
+-- Rol por subName (ingles o espanol, sin mayusculas). nil si no encaja con ninguna palabra.
+local function roleFromSubtitle(subtitle)
+    if not subtitle then return nil end
+    local s = string.lower(subtitle)
+    for _, rw in ipairs(ROLE_WORDS) do
+        for _, word in ipairs(rw[2]) do
+            if string.find(s, word, 1, true) then return rw[1] end
+        end
+    end
+    return nil
+end
+
+-- Indice global de PNJs con rol o subtitulo: una pasada sobre NPCPointers, cacheada en la sesion.
+-- Entradas { id, name, role, subtitle? }; role = "other" si solo tienen subtitulo.
+-- Los nombres vienen ya localizados por QuestieDB (l10n del cliente); sin traduccion, en ingles.
+local function npcIndex(db)
+    if Q.npcIndex then return Q.npcIndex end
+    local list = {}
     local pointers = db.NPCPointers
-    if type(flagTable) == "table" and type(pointers) == "table" then
+    if type(pointers) == "table" then
         for id in pairs(pointers) do
-            local flags = Num(ns.SafeCall(db.QueryNPCSingle, id, "npcFlags"))
-            if flags and flags > 0 then
-                local role = nil
-                for _, rf in ipairs(ROLE_FLAGS) do
-                    local mask = Num(flagTable[rf[1]])
-                    if mask and mask > 0 and bit.band(flags, mask) == mask then
-                        role = rf[2]
-                        break
-                    end
-                end
-                if role then
-                    local name = Str(ns.SafeCall(db.QueryNPCSingle, id, "name"))
+            local n = Num(id)
+            if n and n > 0 then
+                local subtitle = Str(ns.SafeCall(db.QueryNPCSingle, n, "subName"))
+                if subtitle == "" then subtitle = nil end
+                local role = roleFromFlags(db, Num(ns.SafeCall(db.QueryNPCSingle, n, "npcFlags")))
+                    or roleFromSubtitle(subtitle)
+                if role or subtitle then
+                    local name = Str(ns.SafeCall(db.QueryNPCSingle, n, "name"))
                     if name and string.sub(name, 1, 5) ~= "[DND]" then
-                        local spawns = convertSpawns(ns.SafeCall(db.QueryNPCSingle, id, "spawns"), zone, areaId)
-                        if #spawns > 0 then
-                            list[#list + 1] = {
-                                id = id,
-                                name = name,
-                                role = role,
-                                subtitle = Str(ns.SafeCall(db.QueryNPCSingle, id, "subName")),
-                                spawns = spawns,
-                            }
-                        end
+                        list[#list + 1] = { id = n, name = name, role = role or "other", subtitle = subtitle }
                     end
                 end
             end
         end
     end
     table.sort(list, function(a, b) return a.id < b.id end)
-    Q.npcCache = { areaId = areaId, list = list }
+    Q.npcIndex = list
     return list
 end
 
-local function zoneNpcs(db, zone, areaId, mapID, px, py)
-    local out = {}
-    for _, c in ipairs(zoneNpcCandidates(db, zone, areaId)) do
-        local near = nearestFirst(c.spawns, mapID, px, py)[1]
-        if near then
-            local e = { id = c.id, name = c.name, role = c.role, mapID = near.mapID, x = near.x, y = near.y }
-            if c.subtitle then e.subtitle = c.subtitle end
-            out[#out + 1] = e
+-- PNJs del indice con spawn en alguna de las areas dadas. Cacheado por lista de areas (cambia con la zona).
+-- Devuelve { { npc = entrada del indice, spawns = { [areaId] = { {mapID, x, y}, ... } } }, ... }.
+local function npcCandidates(db, zone, areaIds)
+    local key = table.concat(areaIds, ",")
+    if Q.npcCache and Q.npcCache.key == key then return Q.npcCache.list end
+    local list = {}
+    for _, npc in ipairs(npcIndex(db)) do
+        local raw = ns.SafeCall(db.QueryNPCSingle, npc.id, "spawns")
+        if type(raw) == "table" then
+            local byArea = {}
+            local any = false
+            for _, areaId in ipairs(areaIds) do
+                local spawns = convertSpawns(raw, zone, areaId)
+                if #spawns > 0 then
+                    byArea[areaId] = spawns
+                    any = true
+                end
+            end
+            if any then list[#list + 1] = { npc = npc, spawns = byArea } end
         end
     end
-    -- Mas cercanos primero; sin posicion del jugador, el orden por id.
+    Q.npcCache = { key = key, list = list }
+    return list
+end
+
+-- Entradas { id, name, role, subtitle?, mapID, x, y } de los candidatos con spawn en 'areaIds'
+-- (el spawn mas cercano al jugador), excluyendo los ids de 'skip'. Mas cercanos primero;
+-- sin posicion del jugador en ese mapa, orden por id.
+local function npcEntries(cands, areaIds, skip, mapID, px, py)
     local keyed = {}
-    for i, e in ipairs(out) do
-        local d = math.huge
-        if px and py and e.mapID == mapID then d = math.sqrt((e.x - px) ^ 2 + (e.y - py) ^ 2) end
-        keyed[i] = { d = d, i = i, e = e }
+    for _, c in ipairs(cands) do
+        if not (skip and skip[c.npc.id]) then
+            local spawns = {}
+            for _, areaId in ipairs(areaIds) do
+                for _, s in ipairs(c.spawns[areaId] or {}) do spawns[#spawns + 1] = s end
+            end
+            local near = nearestFirst(spawns, mapID, px, py)[1]
+            if near then
+                local e = { id = c.npc.id, name = c.npc.name, role = c.npc.role, mapID = near.mapID, x = near.x, y = near.y }
+                if c.npc.subtitle then e.subtitle = c.npc.subtitle end
+                local d = math.huge
+                if px and py and near.mapID == mapID then d = math.sqrt((near.x - px) ^ 2 + (near.y - py) ^ 2) end
+                keyed[#keyed + 1] = { d = d, i = #keyed + 1, e = e }
+            end
+        end
     end
     table.sort(keyed, function(a, b)
         if a.d ~= b.d then return a.d < b.d end
         return a.i < b.i
     end)
-    local res = {}
-    for i = 1, math.min(#keyed, MAX_NPCS) do res[i] = keyed[i].e end
-    return res
+    local out = {}
+    for i, k in ipairs(keyed) do out[i] = k.e end
+    return out
+end
+
+-- PNJs con rol para la zona actual (max MAX_ZONE_NPCS) y para las capitales de la faccion
+-- (max MAX_CAPITAL_NPCS, sin repetir los de la zona). Devuelve una lista: zona primero, luego capitales.
+local function zoneNpcs(db, zone, areaId, faction, mapID, px, py)
+    local capitalAreas = {}
+    local areas = { areaId }
+    for _, a in ipairs(CAPITALS[faction] or {}) do
+        capitalAreas[#capitalAreas + 1] = a
+        if a ~= areaId then areas[#areas + 1] = a end
+    end
+    local cands = npcCandidates(db, zone, areas)
+    local zoneList = take(npcEntries(cands, { areaId }, nil, mapID, px, py), MAX_ZONE_NPCS)
+    local skip = {}
+    for _, e in ipairs(zoneList) do skip[e.id] = true end
+    local capList = take(npcEntries(cands, capitalAreas, skip, mapID, px, py), MAX_CAPITAL_NPCS)
+    local out = {}
+    for _, e in ipairs(zoneList) do out[#out + 1] = e end
+    for _, e in ipairs(capList) do out[#out + 1] = e end
+    return out
 end
 
 -- ---------------------------------------------------------------------------
@@ -463,7 +545,8 @@ function ns.BuildQuestieExport()
         if ok and type(list) == "table" then
             out.zoneQuests = { mapID = mapID, list = list }
         end
-        local okN, npcs = pcall(zoneNpcs, db, zone, areaId, mapID, px, py)
+        local faction = Str(Call("UnitFactionGroup", "player"))
+        local okN, npcs = pcall(zoneNpcs, db, zone, areaId, faction, mapID, px, py)
         if okN and type(npcs) == "table" then out.npcs = npcs end
     end
     return out

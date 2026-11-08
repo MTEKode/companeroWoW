@@ -76,6 +76,8 @@ function M.reset()
         noWaypointMaps = {},    -- [mapID] = true -> CanSetUserWaypointOnMap false
         userWaypoint = nil,
         timers = {},            -- C_Timer.After pendientes { sec, fn }
+        faction = "Alliance",   -- UnitFactionGroup("player")
+        locale = "enUS",        -- idioma del cliente: nombres localizados de QuestieDB (si los hay)
     }
     for k, v in pairs(defaults) do M.state[k] = v end
 end
@@ -85,11 +87,18 @@ M.reset()
 -- Datos de Questie de prueba (formato real de QuestieDB / ZoneDB).
 -- Coordenadas de spawns en 0..100, claves = areaId (como Questie).
 -- ---------------------------------------------------------------------------
-local AREA_TO_UI = { [12] = 1429, [40] = 1436 } -- Elwynn, Westfall
-local UI_TO_AREA = { [1429] = 12, [1436] = 40 }
+-- Areas de Questie (areaId) -> uiMapID. Incluye las capitales (1519 Ventormenta, 1637 Orgrimmar...).
+local AREA_TO_UI = {
+    [12] = 1429, [40] = 1436,                       -- Elwynn, Westfall
+    [1519] = 84, [1537] = 87, [1657] = 89,          -- Ventormenta, Forjaz, Darnassus
+    [1637] = 85, [1638] = 88, [1497] = 90,          -- Orgrimmar, Cima del Trueno, Entrañas
+}
+local UI_TO_AREA = {}
+for area, ui in pairs(AREA_TO_UI) do UI_TO_AREA[ui] = area end
 M.AREA_TO_UI = AREA_TO_UI
 
-local NPC_FLAGS = { VENDOR = 0x80, FLIGHT_MASTER = 0x2000, INNKEEPER = 0x10000 }
+-- Mismas mascaras que npcFlags del juego Forever (QuestieDB corrections/enum/expansions.lua).
+local NPC_FLAGS = { VENDOR = 4, FLIGHT_MASTER = 8, TRAINER = 16, INNKEEPER = 128, BANKER = 256, AUCTIONEER = 4096 }
 
 local NPC = {
     [1000] = { name = "Marshal Dughan", npcFlags = 0, spawns = { [12] = { { 45.2, 67.1 } } } },
@@ -98,6 +107,16 @@ local NPC = {
     [1003] = { name = "Posadera Ana", npcFlags = NPC_FLAGS.INNKEEPER, spawns = { [12] = { { 30, 30 } } } },
     [1004] = { name = "[DND] Ocultito", npcFlags = NPC_FLAGS.VENDOR, spawns = { [12] = { { 1, 1 } } } },
     [1006] = { name = "Capitán Westfall", npcFlags = 0, spawns = { [40] = { { 25, 25 } } } },
+    -- Capital de Ventormenta (Alliance). 1200 solo por subtitulo, en ingles y en espanol (loc).
+    [1200] = { name = "Lirio the Herbalist", npcFlags = 0, subName = "Herbalism Trainer",
+        loc = { esES = { name = "Lirio el herborista", subName = "Instructora de Herboristería" } },
+        spawns = { [1519] = { { 40, 60 } } } },
+    [1201] = { name = "Banquero Tharn", subName = "Banquero", npcFlags = NPC_FLAGS.BANKER, spawns = { [1519] = { { 40, 40 } } } },
+    [1202] = { name = "Armero Olaf", subName = "Armero", npcFlags = 0, spawns = { [1519] = { { 55, 35 } } } },
+    [1204] = { name = "Instructor de Armas Brunn", npcFlags = NPC_FLAGS.TRAINER, spawns = { [1519] = { { 60, 20 } } } },
+    [1205] = { name = "Vendedor de Pan Mara", npcFlags = NPC_FLAGS.VENDOR, spawns = { [1519] = { { 62, 22 } } } },
+    -- Capital de Orgrimmar (Horde): rol solo por subtitulo ("Suministros" = vendedor).
+    [1203] = { name = "Cocinera Grukk", subName = "Suministros de Cocina", npcFlags = 0, spawns = { [1637] = { { 30, 30 } } } },
     [1100] = { name = "Lobo", npcFlags = 0, spawns = {
         [12] = { { 30, 40 }, { 20, 80 }, { 10, 10 }, { 50, 50 }, { 60, 60 }, { 70, 70 },
                  { 80, 80 }, { 90, 90 }, { 33, 33 }, { 44, 44 }, { 55, 55 }, { 66, 66 } },
@@ -153,19 +172,44 @@ local function fieldOf(tbl, id, key)
 end
 
 -- Instala QuestieLoader / QuestieDB / ZoneDB de prueba.
+-- opts: failQuest = questID que lanza error; failNpc = npcID que lanza error;
+-- noZone = sin ZoneDB; zoneFill = N PNJs extra con subtitulo "Maestro de armas" en la zona 12 (Elwynn);
+-- capitalFill = N PNJs extra con subtitulo "Vendedor" en Ventormenta (1519).
 function M.installQuestie(opts)
     opts = opts or {}
+    local S = M.state
     local modules = {}
+
+    -- Tabla de PNJs de esta instalacion (copia de la base + relleno para pruebas de limites).
+    local npcs = {}
+    for id, row in pairs(NPC) do npcs[id] = row end
+    for i = 1, (opts.zoneFill or 0) do
+        npcs[9000 + i] = { name = "Maestro de Armas " .. i, subName = "Maestro de armas", npcFlags = 0,
+            spawns = { [12] = { { i, i } } } }
+    end
+    for i = 1, (opts.capitalFill or 0) do
+        npcs[9500 + i] = { name = "Vendedor " .. i, subName = "Vendedor", npcFlags = 0,
+            spawns = { [1519] = { { (i % 99) + 1, (i * 7 % 99) + 1 } } } }
+    end
+
     local QuestieDB = {
         npcFlags = NPC_FLAGS,
         NPCPointers = {},
     }
-    for id in pairs(NPC) do QuestieDB.NPCPointers[id] = true end
+    for id in pairs(npcs) do QuestieDB.NPCPointers[id] = true end
     QuestieDB.QueryQuestSingle = function(id, key)
         if opts.failQuest == id then error("boom") end
         return fieldOf(QUEST, id, key)
     end
-    QuestieDB.QueryNPCSingle = function(id, key) return fieldOf(NPC, id, key) end
+    -- Como Questie: nombre y subtitulo en el idioma del cliente si hay traduccion; si no, ingles.
+    QuestieDB.QueryNPCSingle = function(id, key)
+        if opts.failNpc == id then error("boom") end
+        local row = npcs[id]
+        if type(row) ~= "table" then return nil end
+        local loc = row.loc and row.loc[S.locale]
+        if loc and loc[key] ~= nil then return loc[key] end
+        return row[key]
+    end
     QuestieDB.QueryObjectSingle = function(id, key) return fieldOf(OBJECT, id, key) end
     QuestieDB.QueryItemSingle = function(id, key) return fieldOf(ITEM, id, key) end
     modules.QuestieDB = QuestieDB
@@ -201,6 +245,7 @@ function M.installGameAPI()
     _G.time = function() return S.now end
     _G.GetTime = function() return S.clock end
     _G.UnitLevel = function() return S.level end
+    _G.UnitFactionGroup = function() return S.faction end
     _G.UnitName = function() return "Tester" end
     _G.GetNormalizedRealmName = function() return "Ravencrest" end
     _G.InCombatLockdown = function() return S.inCombat == true end
@@ -286,7 +331,7 @@ function M.installGameAPI()
 end
 
 function M.uninstallGameAPI()
-    for _, name in ipairs({ "time", "GetTime", "UnitLevel", "UnitName", "GetNormalizedRealmName",
+    for _, name in ipairs({ "time", "GetTime", "UnitLevel", "UnitName", "UnitFactionGroup", "GetNormalizedRealmName",
                             "InCombatLockdown", "ReloadUI", "C_AddOns", "C_Timer", "C_Map", "UiMapPoint",
                             "C_SuperTrack", "C_QuestLog", "MapCanvasDataProviderMixin", "CreateFromMixins",
                             "WorldMapFrame", "GameTooltip" }) do

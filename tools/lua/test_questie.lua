@@ -80,6 +80,7 @@ local function scenario()
     ns.Questie.pending = false
     ns.Questie.zoneCache = nil
     ns.Questie.npcCache = nil
+    ns.Questie.npcIndex = nil
     return S
 end
 
@@ -200,14 +201,104 @@ eq("zoneQuests starter id 1002", zq.starter.id, 1002)
 eq("zoneQuests starter mapID", zq.starter.mapID, 1429)
 near("zoneQuests starter x 0.40", zq.starter.x, 0.4, 1e-9)
 
+-- PNJs: 2 de la zona (Elwynn) + 5 de Ventormenta (capital Alliance), sin [DND] ni sin rol/subtitulo.
 local npcIds = {}
 for _, n in ipairs(data.npcs or {}) do npcIds[n.id] = n end
-eq("npcs: 2 PNJ con rol (sin [DND])", data.npcs and #data.npcs, 2)
+eq("npcs: 7 PNJ (2 zona + 5 capital, sin [DND])", data.npcs and #data.npcs, 7)
+eq("npcs: zona primero (mapID 1429)", data.npcs and data.npcs[1].mapID, 1429)
 eq("npcs: vuelo 1002 rol flightmaster", npcIds[1002] and npcIds[1002].role, "flightmaster")
 eq("npcs: subtitulo 'Vuelo'", npcIds[1002] and npcIds[1002].subtitle, "Vuelo")
 eq("npcs: posadera 1003 rol innkeeper", npcIds[1003] and npcIds[1003].role, "innkeeper")
 eq("npcs: [DND] excluido", npcIds[1004], nil)
+eq("npcs: sin rol ni subtitulo (Dughan, Kel) excluidos", (npcIds[1000] or npcIds[1001]), nil)
 eq("npcs: coordenadas 0..1", inRange(npcIds[1002] and npcIds[1002].x), true)
+
+-- Capital de Ventormenta (uiMap 84): roles por subtitulo, por npcFlags y "other".
+local lirio = npcIds[1200]
+eq("capital: 1200 rol trainer por subtitulo 'Herbalism Trainer'", lirio and lirio.role, "trainer")
+eq("capital: nombre ingles sin traduccion", lirio and lirio.name, "Lirio the Herbalist")
+eq("capital: subtitulo conservado", lirio and lirio.subtitle, "Herbalism Trainer")
+eq("capital: uiMapID de Ventormenta = 84", lirio and lirio.mapID, 84)
+near("capital: x 0.40", lirio and lirio.x, 0.4, 1e-9)
+near("capital: y 0.60", lirio and lirio.y, 0.6, 1e-9)
+eq("capital: 1201 banquero por flag BANKER", npcIds[1201] and npcIds[1201].role, "banker")
+eq("capital: 1202 solo subtitulo 'Armero' -> other", npcIds[1202] and npcIds[1202].role, "other")
+eq("capital: 1202 subtitulo 'Armero' conservado", npcIds[1202] and npcIds[1202].subtitle, "Armero")
+eq("capital: 1204 instructor por flag TRAINER", npcIds[1204] and npcIds[1204].role, "trainer")
+eq("capital: 1205 vendedor por flag VENDOR", npcIds[1205] and npcIds[1205].role, "vendor")
+eq("capital de Orgrimmar (1203) no sale siendo Alliance", npcIds[1203], nil)
+
+-- Localizacion: nombres y subtitulos en esES cuando Questie los traduce; si no, ingles.
+scenario()
+W.state.locale = "esES"
+local esNpcs = {}
+for _, n in ipairs(ns.BuildQuestieExport().npcs or {}) do esNpcs[n.id] = n end
+eq("esES: nombre localizado de 1200", esNpcs[1200] and esNpcs[1200].name, "Lirio el herborista")
+eq("esES: subtitulo 'Instructora de Herboristería' -> trainer", esNpcs[1200] and esNpcs[1200].role, "trainer")
+eq("esES: subtitulo localizado conservado", esNpcs[1200] and esNpcs[1200].subtitle, "Instructora de Herboristería")
+eq("esES: sin traduccion -> ingles (Armero Olaf)", esNpcs[1202] and esNpcs[1202].name, "Armero Olaf")
+eq("esES: 1002 sigue igual", esNpcs[1002] and esNpcs[1002].subtitle, "Vuelo")
+
+-- Faccion Horde: capital Orgrimmar; Ventormenta fuera.
+scenario()
+W.state.faction = "Horde"
+local hordeNpcs = {}
+for _, n in ipairs(ns.BuildQuestieExport().npcs or {}) do hordeNpcs[n.id] = n end
+eq("Horde: 3 PNJ (2 zona + 1 capital)", #(ns.BuildQuestieExport().npcs or {}), 3)
+eq("Horde: cocinera 1203 rol vendor por 'Suministros'", hordeNpcs[1203] and hordeNpcs[1203].role, "vendor")
+eq("Horde: uiMapID de Orgrimmar = 85", hordeNpcs[1203] and hordeNpcs[1203].mapID, 85)
+eq("Horde: sin PNJ de Ventormenta", hordeNpcs[1200], nil)
+
+-- Faccion desconocida: solo la zona.
+scenario()
+W.state.faction = nil
+eq("sin faccion: solo los 2 PNJ de la zona", #(ns.BuildQuestieExport().npcs or {}), 2)
+
+-- Un PNJ que falla en Questie se omite; los demas siguen.
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ failNpc = 1200 })
+local failNpcData = ns.BuildQuestieExport()
+check("fallo en PNJ: la exportacion sigue disponible", failNpcData.available == true and failNpcData.npcs ~= nil)
+local failIds = {}
+for _, n in ipairs(failNpcData.npcs or {}) do failIds[n.id] = n end
+eq("fallo en PNJ: 1200 omitido", failIds[1200], nil)
+check("fallo en PNJ: 1201 sigue", failIds[1201] ~= nil)
+
+-- Limites: 72 candidatos en la zona -> 60; 135 en la capital -> 120. Mas cercanos primero.
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ zoneFill = 70, capitalFill = 130 })
+local capped = ns.BuildQuestieExport()
+local zoneN, capN, lastD = 0, 0, -1
+local sortedOk = true
+for _, n in ipairs(capped.npcs or {}) do
+    if n.mapID == 1429 then
+        zoneN = zoneN + 1
+        local d = math.sqrt((n.x - 0.45) ^ 2 + (n.y - 0.67) ^ 2)
+        if d < lastD - 1e-12 then sortedOk = false end
+        lastD = d
+    elseif n.mapID == 84 then
+        capN = capN + 1
+    end
+end
+eq("limite zona: 60 PNJ (de 72)", zoneN, 60)
+eq("limite capital: 120 PNJ (de 135)", capN, 120)
+eq("limite total: 180 PNJ", #(capped.npcs or {}), 180)
+check("zona: mas cercanos primero", sortedOk)
+
+-- Tamano aproximado del bloque questie (SavedVariables) con 180 PNJ: < 60 KB.
+local function serializedSize(v)
+    if type(v) == "table" then
+        local n = 2
+        for k, x in pairs(v) do n = n + #tostring(k) + 3 + serializedSize(x) + 1 end
+        return n
+    elseif type(v) == "string" then
+        return #v + 2
+    end
+    return #tostring(v)
+end
+check("bloque questie < 60 KB con 180 PNJ", serializedSize(capped) < 60 * 1024, tostring(serializedSize(capped)))
 
 -- ---------------------------------------------------------------------------
 outln("(c) caps y omisiones")
