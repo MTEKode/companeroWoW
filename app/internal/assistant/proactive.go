@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
@@ -31,8 +30,8 @@ const (
 	maxPendingAge = 5 * time.Minute
 	// tickEvery is how often the loop checks the deadlines when no event arrives.
 	tickEvery = time.Second
-	// maxTipSentences limits each tip.
-	maxTipSentences = 3
+	// maxTipLines limits each tip: two short lines plus the optional map-mark line.
+	maxTipLines = 3
 )
 
 // tipPriority decides which event wins when a batch holds several codes.
@@ -138,14 +137,14 @@ func (p *proactor) clear() {
 // generate asks the chain for the tip of one event code.
 func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip, string, error) {
 	req := ai.Request{
-		System: SystemPrompt,
+		Skill:  SystemPrompt,
 		Prompt: tipPrompts[code] + " " + proactiveInstruction,
 	}
 	resp, err := p.ask(ctx, req)
 	if err != nil {
 		return Tip{}, "", err
 	}
-	text := limitSentences(resp.Text, maxTipSentences)
+	text := limitLines(resp.Text, maxTipLines)
 	if text == "" {
 		return Tip{}, "", errors.New("respuesta vacía")
 	}
@@ -195,28 +194,24 @@ func (a *Assistant) RunProactive(ctx context.Context, events <-chan bridge.LiveS
 	}
 }
 
-// limitSentences keeps at most n sentences of text, on one line. A sentence ends at
-// '.', '!' or '?' followed by a space or the end of the text.
-func limitSentences(text string, n int) string {
-	flat := strings.Join(strings.Fields(text), " ")
-	if flat == "" || n <= 0 {
+// limitLines keeps at most n non-empty lines of text, trimming each line. Lines are kept
+// as they are, so a "📍 /compa marca" command is never split or joined to other text.
+func limitLines(text string, n int) string {
+	if n <= 0 {
 		return ""
 	}
-	count := 0
-	runes := []rune(flat)
-	for i, r := range runes {
-		if r != '.' && r != '!' && r != '?' {
+	var out []string
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		if i+1 < len(runes) && !unicode.IsSpace(runes[i+1]) {
-			continue
-		}
-		count++
-		if count == n {
-			return string(runes[:i+1])
+		out = append(out, line)
+		if len(out) == n {
+			break
 		}
 	}
-	return flat
+	return strings.Join(out, "\n")
 }
 
 // formatTipHistory is the text stored in the history for a tip.

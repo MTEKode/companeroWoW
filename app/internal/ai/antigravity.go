@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/skill"
 )
 
 const (
@@ -26,6 +28,9 @@ const (
 	antigravityImageNote = "El usuario ha adjuntado una captura: usa la herramienta capturar_pantalla para verla."
 	// antigravitySettingsFile is the per-session settings file passed with --settings.
 	antigravitySettingsFile = "antigravity-settings.json"
+	// antigravitySkillLine asks for the workspace skill by name; agy also activates skills
+	// by their description, the explicit mention makes it deterministic.
+	antigravitySkillLine = "Aplica la skill \"" + skill.Name + "\" de este workspace a la respuesta."
 )
 
 // antigravityAllow lets the model use only the companion's MCP server.
@@ -93,6 +98,14 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 	if err := writeAntigravityMCP(filepath.Join(a.workDir, ".agents", "mcp_config.json"), a.mcpURL); err != nil {
 		return Response{}, err
+	}
+	// The skill lives in the workspace (.agents/skills/companero/SKILL.md, plus AGENTS.md as
+	// always-on rules). When it cannot be written, the instructions travel inline instead.
+	if _, err := skill.DeployAntigravity(a.workDir); err != nil {
+		log.Printf("antigravity: skill inline (no pude escribir el workspace): %v", err)
+	} else {
+		req.Skill = ""
+		req.System = antigravitySkillLine + "\n\n" + req.System
 	}
 	settingsPath := filepath.Join(a.workDir, antigravitySettingsFile)
 	if err := writeAntigravitySettings(settingsPath); err != nil {

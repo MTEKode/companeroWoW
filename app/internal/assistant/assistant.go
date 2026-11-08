@@ -20,7 +20,11 @@ import (
 )
 
 // historyTurns is how many previous messages are sent with each question.
-const historyTurns = 20
+const historyTurns = 10
+
+// historyAnswerRunes caps each earlier assistant answer sent back as history; the full
+// text stays in the store and in the overlay.
+const historyAnswerRunes = 600
 
 // asker is the part of ai.Chain the assistant uses. Tests inject a fake.
 type asker interface {
@@ -65,12 +69,36 @@ func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot boo
 	if q == "" {
 		return ai.Response{}, errors.New("escribe una pregunta")
 	}
+	resp, err := a.ask(ctx, q, withScreenshot, a.history())
+	if err != nil {
+		return resp, err
+	}
+	a.persist(store.ChatMsg{Role: "user", Content: q})
+	a.persist(store.ChatMsg{Role: "assistant", Content: resp.Text, Provider: resp.Provider})
+	return resp, nil
+}
+
+// Answer asks one question as if it were the first of a conversation: no history is
+// sent and nothing is stored. The evaluation harness uses it so that each scripted
+// question is independent and the user's chat is left alone.
+func (a *Assistant) Answer(ctx context.Context, question string, withScreenshot bool) (ai.Response, error) {
+	q := strings.TrimSpace(question)
+	if q == "" {
+		return ai.Response{}, errors.New("escribe una pregunta")
+	}
+	return a.ask(ctx, q, withScreenshot, nil)
+}
+
+// ask builds the request (skill, game state, history, optional screenshot) and calls the
+// chain. It stores nothing.
+func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, history []ai.Message) (ai.Response, error) {
 	if a.asker == nil {
 		return ai.Response{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
 	req := ai.Request{
-		System:  a.systemPrompt(),
-		History: a.history(),
+		Skill:   SystemPrompt,
+		System:  a.stateBlock(),
+		History: history,
 		Prompt:  q,
 	}
 	if withScreenshot {
@@ -81,13 +109,7 @@ func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot boo
 			req.ImagePNG = png
 		}
 	}
-	resp, err := a.asker.Ask(ctx, req)
-	if err != nil {
-		return resp, err
-	}
-	a.persist(store.ChatMsg{Role: "user", Content: q})
-	a.persist(store.ChatMsg{Role: "assistant", Content: resp.Text, Provider: resp.Provider})
-	return resp, nil
+	return a.asker.Ask(ctx, req)
 }
 
 // ClearHistory deletes every stored chat message.
@@ -106,12 +128,8 @@ func (a *Assistant) History(n int) ([]store.ChatMsg, error) {
 	return a.st.RecentMessages(n)
 }
 
-// systemPrompt is the fixed system prompt followed by the current game state.
-func (a *Assistant) systemPrompt() string {
-	return SystemPrompt + "\n\n" + a.stateBlock()
-}
-
-// history converts the stored messages into the chain's history format.
+// history converts the stored messages into the chain's history format. Earlier answers
+// are cut to historyAnswerRunes so that the prompt stays small.
 func (a *Assistant) history() []ai.Message {
 	msgs, err := a.History(historyTurns)
 	if err != nil {
@@ -123,9 +141,22 @@ func (a *Assistant) history() []ai.Message {
 		if m.Role != "user" && m.Role != "assistant" {
 			continue
 		}
-		out = append(out, ai.Message{Role: m.Role, Content: m.Content})
+		content := m.Content
+		if m.Role == "assistant" {
+			content = truncateRunes(content, historyAnswerRunes)
+		}
+		out = append(out, ai.Message{Role: m.Role, Content: content})
 	}
 	return out
+}
+
+// truncateRunes keeps at most n runes of s, marking the cut with an ellipsis.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n])) + "…"
 }
 
 func (a *Assistant) persist(m store.ChatMsg) {

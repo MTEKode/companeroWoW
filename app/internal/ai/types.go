@@ -16,7 +16,8 @@ type Message struct {
 
 // Request is one question for the providers.
 type Request struct {
-	System   string    // Spanish system prompt (built by the assistant task)
+	System   string    // per-question context: the "Estado actual" block
+	Skill    string    // static instructions (the companero skill); empty once a CLI reads them from its own files
 	History  []Message // previous turns, oldest first
 	Prompt   string
 	ImagePNG []byte // optional screenshot to attach

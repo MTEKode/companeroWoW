@@ -64,8 +64,8 @@ func TestToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(list.Tools) != 19 {
-		t.Fatalf("ListTools returned %d tools, want 19", len(list.Tools))
+	if len(list.Tools) != 22 {
+		t.Fatalf("ListTools returned %d tools, want 22", len(list.Tools))
 	}
 	for _, tool := range list.Tools {
 		if tool.Description == "" || tool.InputSchema == nil {

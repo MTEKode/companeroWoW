@@ -13,6 +13,8 @@ const (
 	StyleMeta
 	StyleTip
 	StyleError
+	// StyleMark highlights a map mark line of an answer (see marca.go).
+	StyleMark
 )
 
 // Span is a piece of text with one style. A link run holds its URL as the text.

@@ -139,7 +139,7 @@ func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
 	defer cancel()
 
 	msgs := make([]chatMessage, 0, len(req.History)+3)
-	if sys := strings.TrimSpace(req.System); sys != "" {
+	if sys := systemText(Request{Skill: req.Skill, System: req.System}); sys != "" {
 		msgs = append(msgs, chatMessage{Role: "system", Content: sys})
 	}
 	for _, m := range req.History {

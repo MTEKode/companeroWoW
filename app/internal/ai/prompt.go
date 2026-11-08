@@ -17,7 +17,21 @@ func buildPrompt(req Request, imageLine string) string {
 	if len(hist) > maxHistoryTurns {
 		hist = hist[len(hist)-maxHistoryTurns:]
 	}
-	return renderPrompt(req.System, hist, imageLine, req.Prompt)
+	return renderPrompt(systemText(req), hist, imageLine, req.Prompt)
+}
+
+// systemText is the instruction text of a request for a CLI: the skill (when the provider
+// could not read it from a file) followed by the per-question context.
+func systemText(req Request) string {
+	skill := strings.TrimSpace(req.Skill)
+	ctx := strings.TrimSpace(req.System)
+	switch {
+	case skill == "":
+		return ctx
+	case ctx == "":
+		return skill
+	}
+	return skill + "\n\n" + ctx
 }
 
 // renderPrompt lays out the system prompt, the given history turns and the question.
@@ -56,20 +70,21 @@ func buildPromptCapped(req Request, imageLine string, limit int) string {
 	if len(hist) > maxHistoryTurns {
 		hist = hist[len(hist)-maxHistoryTurns:]
 	}
-	text := renderPrompt(req.System, hist, imageLine, req.Prompt)
+	system := systemText(req)
+	text := renderPrompt(system, hist, imageLine, req.Prompt)
 	for len(hist) > 0 && utf8.RuneCountInString(text) > limit {
 		hist = hist[1:]
-		text = renderPrompt(req.System, hist, imageLine, req.Prompt)
+		text = renderPrompt(system, hist, imageLine, req.Prompt)
 	}
 	if utf8.RuneCountInString(text) > limit {
-		r := []rune(req.System)
+		r := []rune(system)
 		over := utf8.RuneCountInString(text) - limit
 		if over < len(r) {
-			req.System = string(r[:len(r)-over])
+			system = string(r[:len(r)-over])
 		} else {
-			req.System = ""
+			system = ""
 		}
-		text = renderPrompt(req.System, nil, imageLine, req.Prompt)
+		text = renderPrompt(system, nil, imageLine, req.Prompt)
 	}
 	if utf8.RuneCountInString(text) > limit {
 		r := []rune(text)

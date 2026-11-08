@@ -97,6 +97,63 @@ CompaneroWoWDB = {
 			["reputations"] = {
 				{ ["factionID"] = 76, ["name"] = "Orgrimmar", ["standing"] = 6, ["current"] = 12000, ["max"] = 21000 },
 			},
+			["questie"] = {
+				["available"] = true,
+				["version"] = "fixture",
+				["exportedAt"] = 1793880000,
+				["quests"] = {
+					[90001] = {
+						["questID"] = 90001,
+						["name"] = "The Warchief's Orders",
+						["level"] = 37,
+						["requiredLevel"] = 30,
+						["starters"] = {
+							{ ["kind"] = "npc", ["id"] = 3296, ["name"] = "Garrosh Hellscream", ["spawns"] = { { ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 } } },
+						},
+						["finishers"] = {
+							{ ["kind"] = "npc", ["id"] = 3296, ["name"] = "Garrosh Hellscream", ["spawns"] = { { ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 } } },
+						},
+						["objectives"] = {
+							{ ["index"] = 1, ["kind"] = "monster", ["id"] = 4017, ["name"] = "Gnoll Raider", ["required"] = 8, ["spawns"] = {
+								{ ["mapID"] = 1, ["x"] = 0.4200, ["y"] = 0.6100 },
+								{ ["mapID"] = 85, ["x"] = 0.3100, ["y"] = 0.5500 },
+								{ ["mapID"] = 1, ["x"] = 0.3900, ["y"] = 0.7300 },
+							} },
+							{ ["index"] = 2, ["kind"] = "event", ["id"] = 0, ["name"] = "Report to Garrosh", ["required"] = 1, ["spawns"] = { { ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 } } },
+						},
+						["preQuests"] = {},
+						["nextQuest"] = 0,
+					},
+					[90002] = {
+						["questID"] = 90002,
+						["name"] = "Herbs for the Shamans",
+						["level"] = 36,
+						["requiredLevel"] = 30,
+						["starters"] = {
+							{ ["kind"] = "npc", ["id"] = 3001, ["name"] = "Thrall's Scout", ["spawns"] = { { ["mapID"] = 1, ["x"] = 0.4410, ["y"] = 0.5520 } } },
+						},
+						["finishers"] = {
+							{ ["kind"] = "npc", ["id"] = 3002, ["name"] = "Herbalist Ruth", ["spawns"] = { { ["mapID"] = 1, ["x"] = 0.4480, ["y"] = 0.5600 } } },
+						},
+						["objectives"] = {
+							{ ["index"] = 1, ["kind"] = "item", ["id"] = 2453, ["name"] = "Peacebloom", ["required"] = 6, ["spawns"] = { { ["mapID"] = 1, ["x"] = 0.4300, ["y"] = 0.5900 } } },
+						},
+						["preQuests"] = {},
+						["nextQuest"] = 0,
+					},
+				},
+				["zoneQuests"] = {
+					["mapID"] = 85,
+					["list"] = {
+						{ ["questID"] = 90010, ["name"] = "Trial of Strength", ["level"] = 35, ["requiredLevel"] = 30,
+						  ["starter"] = { ["kind"] = "npc", ["id"] = 3296, ["name"] = "Garrosh Hellscream", ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 } },
+					},
+				},
+				["npcs"] = {
+					{ ["id"] = 3296, ["name"] = "Garrosh Hellscream", ["role"] = "other", ["subtitle"] = "Warchief", ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 },
+					{ ["id"] = 3010, ["name"] = "Hanna Rel", ["role"] = "trainer", ["subtitle"] = "Herbalism Trainer", ["mapID"] = 85, ["x"] = 0.4950, ["y"] = 0.4100 },
+				},
+			},
 		},
 	},
 	["maps"] = {

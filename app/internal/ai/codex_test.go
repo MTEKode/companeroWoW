@@ -148,6 +148,10 @@ func leftovers(t *testing.T, dir string) []string {
 	}
 	var names []string
 	for _, e := range entries {
+		// AGENTS.md is the skill the provider deploys on purpose, not a leftover.
+		if e.Name() == "AGENTS.md" {
+			continue
+		}
 		names = append(names, e.Name())
 	}
 	return names
