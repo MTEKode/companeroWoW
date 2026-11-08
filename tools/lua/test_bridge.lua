@@ -211,13 +211,20 @@ ns.AppendU32(out, 0x01020304)
 eq("AppendU32 big-endian", table.concat(out, ","), "1,2,3,4")
 
 -- ---------------------------------------------------------------------------
-print("(f) ComputePixelSize")
-near("physH 1440, UIParent 768 eff 1, marco 1 -> 0.5333", ns.ComputePixelSize(1440, 768, 1, 1), 768 / 1440, 1e-9)
-near("UIParent eff 0.75 -> 0.4", ns.ComputePixelSize(1440, 768, 0.75, 1), 0.4, 1e-9)
-near("marco eff 0.5 -> doble", ns.ComputePixelSize(1440, 768, 1, 0.5), 2 * 768 / 1440, 1e-9)
-near("sin marco eff -> usa 1", ns.ComputePixelSize(1440, 768, 1, nil), 768 / 1440, 1e-9)
+print("(f) ComputePixelSize: 1 pixel fisico = 1 / escala del marco")
+-- Caso real: Windows 133 %. GetPhysicalScreenSize devuelve 1080 (escalado) pero la pantalla
+-- tiene 1440 px fisicos: UIParent mide 768 unidades con escala efectiva 1.875 -> 768 * 1.875 = 1440.
+near("physH 1080 (DPI), UIParent 768 x 1.875, marco 1.875 -> 1/1.875", ns.ComputePixelSize(1080, 768, 1.875, 1.875), 1 / 1.875, 1e-9)
+near("bloque de 4 px fisicos mide 4 / 1.875 unidades", 4 * ns.ComputePixelSize(1080, 768, 1.875, 1.875), 4 / 1.875, 1e-9)
+-- Comprobacion fisica: bloque * escala del marco = 4 pixeles fisicos.
+near("bloque 4 px * escala marco = 4 px fisicos", 4 * ns.ComputePixelSize(1080, 768, 1.875, 1.875) * 1.875, 4, 1e-9)
+near("con physH 1440 o 1080 el resultado es el mismo", ns.ComputePixelSize(1440, 768, 1.875, 1.875), ns.ComputePixelSize(1080, 768, 1.875, 1.875), 1e-9)
+near("UIParent 768 eff 1, marco 1 -> 1", ns.ComputePixelSize(1440, 768, 1, 1), 1, 1e-9)
+near("marco eff 0.5 -> 2 unidades por pixel", ns.ComputePixelSize(1440, 768, 1, 0.5), 2, 1e-9)
+near("sin marco eff -> usa 1", ns.ComputePixelSize(1440, 768, 1, nil), 1, 1e-9)
 eq("sin UIParent -> fallback 768/physH", ns.ComputePixelSize(1080, nil, nil, nil), 768 / 1080)
-eq("physH invalida -> nil", ns.ComputePixelSize(0, 768, 1, 1), nil)
+eq("sin UIParent (escala nil) -> fallback 768/physH", ns.ComputePixelSize(1440, 768, nil, 1), 768 / 1440)
+eq("physH invalida y sin UIParent -> nil", ns.ComputePixelSize(0, nil, nil, 1), nil)
 
 -- ---------------------------------------------------------------------------
 if failures > 0 then
