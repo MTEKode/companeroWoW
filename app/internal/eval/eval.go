@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,15 +174,23 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 		if err != nil {
 			rec.Error = err.Error()
 		}
+		var raw []tools.CallRecord
 		if drain != nil {
-			rec.Tools = toolCalls(drain())
+			raw = drain()
+			rec.Tools = toolCalls(raw)
 		}
 		injected := ""
 		if cr, ok := asker.(contextReporter); ok {
 			injected = cr.LastContext()
 		}
-		rec.Checks = CheckAnswer(q, rec.Answer, rec.Tools, err)
-		rec.Checks = append(rec.Checks, NoiseCheck(rec.Answer, rec.Tools, injected), LatencyCheck(rec.DurationSec))
+		// The screenshot is attached whenever the question asks for one; a failed capture is
+		// not visible here, so the flag is the question's, not the capture's.
+		ev := Evidence{Calls: rec.Tools, Injected: injected, Screenshot: q.Screenshot}
+		for _, r := range raw {
+			ev.Output += "\n" + r.Text
+		}
+		rec.Checks = checkAnswer(q, rec.Answer, ev, err)
+		rec.Checks = append(rec.Checks, noiseCheck(rec.Answer, ev), LatencyCheck(rec.DurationSec))
 		rec.Passed = allOK(rec.Checks)
 		rep.Records = append(rep.Records, rec)
 		rep.Total++
@@ -191,8 +201,52 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 	return rep
 }
 
-// CheckAnswer runs the automatic checks of one answer. err is the error of the ask, if any.
+// Evidence is what an answer was based on: the tool calls, the full text of their outputs,
+// the player context block sent with the question and whether a screenshot was attached.
+type Evidence struct {
+	Calls      []ToolCall
+	Output     string // full tool output text; when empty, the outputs of Calls are used
+	Injected   string // the player context block sent with the question
+	Screenshot bool   // a screenshot of the game window was attached
+}
+
+// text is every piece of data an answer may quote: the player context and the tool outputs.
+func (e Evidence) text() string {
+	if e.Output != "" {
+		return e.Injected + "\n" + e.Output
+	}
+	s := e.Injected
+	for _, c := range e.Calls {
+		s += "\n" + c.Output
+	}
+	return s
+}
+
+// covers reports whether the evidence holds one of the named tools. The player context sent
+// with the question counts as contexto_jugador and an attached screenshot as
+// capturar_pantalla: that data was there, even though no call was made for it.
+func (e Evidence) covers(names []string) bool {
+	for _, n := range names {
+		switch {
+		case n == "contexto_jugador" && e.Injected != "":
+			return true
+		case n == "capturar_pantalla" && e.Screenshot:
+			return true
+		}
+		if usedAny(e.Calls, []string{n}) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckAnswer runs the automatic checks of one answer, given only its tool calls. err is the
+// error of the ask, if any. Run uses checkAnswer with the full evidence.
 func CheckAnswer(q Question, answer string, calls []ToolCall, err error) []Check {
+	return checkAnswer(q, answer, Evidence{Calls: calls}, err)
+}
+
+func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 	var out []Check
 	trimmed := strings.TrimSpace(answer)
 	out = append(out, Check{Name: "respuesta", OK: err == nil && trimmed != "", Detail: errDetail(err, trimmed)})
@@ -218,15 +272,16 @@ func CheckAnswer(q Question, answer string, calls []ToolCall, err error) []Check
 		out = append(out, Check{Name: "fuente", OK: CitesSource(trimmed), Detail: "debe citar la fuente o un enlace"})
 	}
 	if len(q.Tools) > 0 {
-		out = append(out, Check{Name: "herramientas", OK: usedAny(calls, q.Tools),
-			Detail: "esperadas una de: " + strings.Join(q.Tools, ", ")})
+		out = append(out, Check{Name: "herramientas", OK: ev.covers(q.Tools),
+			Detail: "esperadas una de: " + strings.Join(q.Tools, ", ") + " (el contexto precargado cuenta como contexto_jugador y la captura adjunta como capturar_pantalla)"})
 	}
 	budget := maxToolCalls
-	if usedAny(calls, webTools) {
+	if usedAny(ev.Calls, webTools) {
 		budget = maxWebToolCalls
 	}
-	out = append(out, Check{Name: "pocas_herramientas", OK: len(calls) <= budget,
-		Detail: fmt.Sprintf("%d llamadas (máximo %d)", len(calls), budget)})
+	out = append(out, Check{Name: "pocas_herramientas", OK: len(ev.Calls) <= budget,
+		Detail: fmt.Sprintf("%d llamadas (máximo %d)", len(ev.Calls), budget)})
+	out = append(out, groundingCheck(answer, ev))
 	return out
 }
 
@@ -235,13 +290,20 @@ func CheckAnswer(q Question, answer string, calls []ToolCall, err error) []Check
 // flagged as stale. injected is the player context the assistant sent with the question; the
 // tool outputs are read too.
 func NoiseCheck(answer string, calls []ToolCall, injected string) Check {
+	return noiseCheck(answer, Evidence{Calls: calls, Injected: injected})
+}
+
+// windowPhrases and syncPhrases are the only advice the noise check looks for. Other words
+// such as "ventana de entrenamiento" (a profession window) are not window-mode advice.
+var (
+	windowPhrases = []string{"ventana sin bordes", "modo ventana"}
+	syncPhrases   = []string{"/compa sync", "sincroniz"}
+)
+
+func noiseCheck(answer string, ev Evidence) Check {
 	// Compact JSON (the injected context) and indented JSON (the tool outputs) are both
 	// normalised to "key": value so that one set of patterns matches them.
-	evidence := injected
-	for _, c := range calls {
-		evidence += "\n" + c.Output
-	}
-	evidence = strings.NewReplacer(": ", ":").Replace(evidence)
+	evidence := strings.NewReplacer(": ", ":").Replace(ev.text())
 	bridge := strings.Contains(evidence, `"puenteConectado":true`)
 	// Data is there when a tool reports it available, or when the player context carries the
 	// location or the character (the pre-consulted block has no top-level "available").
@@ -249,8 +311,8 @@ func NoiseCheck(answer string, calls []ToolCall, injected string) Check {
 		strings.Contains(evidence, `"ubicacion":{`) || strings.Contains(evidence, `"personaje":{`)
 	stale := strings.Contains(evidence, "más de 10 minutos") || strings.Contains(evidence, "No hay datos del addon")
 	low := strings.ToLower(answer)
-	mentionsWindow := strings.Contains(low, "ventana")
-	mentionsSync := strings.Contains(low, "sync") || strings.Contains(low, "sincroniz")
+	mentionsWindow := containsAny(low, windowPhrases)
+	mentionsSync := containsAny(low, syncPhrases)
 	switch {
 	case mentionsWindow && bridge:
 		return Check{Name: "ruido", OK: false, Detail: "menciona la ventana sin bordes con el puente conectado"}
@@ -272,6 +334,131 @@ var coordRE = regexp.MustCompile(`\(\d{1,3}\.\d, \d{1,3}\.\d\)`)
 // HasCoordinates reports whether text contains a "(x, y)" pair or a mark command.
 func HasCoordinates(text string) bool {
 	return coordRE.MatchString(text) || strings.Contains(text, "/compa marca")
+}
+
+// groundTolerance is how far a coordinate of the answer may be from the number of the evidence
+// it comes from, in map units (the 0..100 scale).
+const groundTolerance = 0.2
+
+// groundWindow is how many characters may separate the x and the y of a pair in the evidence.
+// A JSON object or a sentence holds both values close together.
+const groundWindow = 160
+
+var (
+	// pairRE matches "(x, y)" the way the answer writes a place.
+	pairRE = regexp.MustCompile(`\((\d{1,3}(?:\.\d+)?),\s*(\d{1,3}(?:\.\d+)?)\)`)
+	// markRE matches the coordinates of "/compa marca [mapID] x y [texto]".
+	markRE = regexp.MustCompile(`/compa marca\s+(?:\d+\s+)?(\d{1,3}(?:\.\d+)?)\s+(\d{1,3}(?:\.\d+)?)`)
+	// numberRE matches a number in the evidence; a longer digit run is one number.
+	numberRE = regexp.MustCompile(`\d+(?:\.\d+)?`)
+)
+
+// answerPair is a coordinate the answer gives, with the text it was written as.
+type answerPair struct {
+	x, y float64
+	text string
+}
+
+// answerCoordinates lists the "(x, y)" pairs and the /compa marca coordinates of an answer.
+func answerCoordinates(answer string) []answerPair {
+	var out []answerPair
+	for _, m := range pairRE.FindAllStringSubmatch(answer, -1) {
+		out = append(out, newPair(m[1], m[2], m[0]))
+	}
+	for _, m := range markRE.FindAllStringSubmatch(answer, -1) {
+		out = append(out, newPair(m[1], m[2], strings.TrimSpace(m[0])))
+	}
+	return out
+}
+
+func newPair(xs, ys, text string) answerPair {
+	x, _ := strconv.ParseFloat(xs, 64)
+	y, _ := strconv.ParseFloat(ys, 64)
+	return answerPair{x: x, y: y, text: text}
+}
+
+// located is a number of the evidence with its position in the text.
+type located struct {
+	v   float64
+	pos int
+}
+
+// evidenceNumbers lists the numbers of the evidence. A decimal between 0 and 1 is also taken
+// on the 0..100 scale, because some tools report map coordinates that way.
+func evidenceNumbers(text string) []located {
+	var out []located
+	for _, loc := range numberRE.FindAllStringIndex(text, -1) {
+		s := text[loc[0]:loc[1]]
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			continue
+		}
+		out = append(out, located{v: v, pos: loc[0]})
+		if v <= 1 && strings.Contains(s, ".") {
+			out = append(out, located{v: v * 100, pos: loc[0]})
+		}
+	}
+	return out
+}
+
+// pairGrounded reports whether the evidence holds the pair: a number within tolerance of x and
+// a number within tolerance of y, written close to each other.
+func pairGrounded(p answerPair, nums []located) bool {
+	for _, a := range nums {
+		if !nearly(a.v, p.x) {
+			continue
+		}
+		for _, b := range nums {
+			if nearly(b.v, p.y) && absInt(a.pos-b.pos) <= groundWindow {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nearly(v, want float64) bool {
+	return math.Abs(v-want) <= groundTolerance+1e-9
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// groundingCheck fails when the answer gives a coordinate that no tool output and no player
+// context holds: an invented place is worse than no place. Answers without coordinates pass.
+func groundingCheck(answer string, ev Evidence) Check {
+	pairs := answerCoordinates(answer)
+	if len(pairs) == 0 {
+		return Check{Name: "grounding", OK: true, Detail: "sin coordenadas que comprobar"}
+	}
+	nums := evidenceNumbers(ev.text())
+	var missing []string
+	for _, p := range pairs {
+		if !pairGrounded(p, nums) {
+			missing = append(missing, p.text)
+		}
+	}
+	if len(missing) > 0 {
+		return Check{Name: "grounding", OK: false,
+			Detail: fmt.Sprintf("%d de %d coordenadas sin respaldo en las herramientas o el contexto: %s",
+				len(missing), len(pairs), strings.Join(missing, ", "))}
+	}
+	return Check{Name: "grounding", OK: true,
+		Detail: fmt.Sprintf("%d coordenadas respaldadas por las herramientas o el contexto", len(pairs))}
+}
+
+// containsAny reports whether s contains one of the phrases.
+func containsAny(s string, phrases []string) bool {
+	for _, p := range phrases {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 var refusalPhrases = []string{"no puedo", "no voy a", "no es posible", "no te puedo", "no ayudo", "incumpl", "términos de servicio", "no se puede"}
