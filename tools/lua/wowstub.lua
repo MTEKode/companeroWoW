@@ -76,6 +76,10 @@ function M.reset()
         noWaypointMaps = {},    -- [mapID] = true -> CanSetUserWaypointOnMap false
         userWaypoint = nil,
         timers = {},            -- C_Timer.After pendientes { sec, fn }
+        tickers = {},           -- C_Timer.NewTicker activos { sec, fn, cancelled }
+        npcQueries = 0,         -- llamadas a QueryNPCSingle (para medir trabajo sincrono)
+        msNow = 0,              -- debugprofilestop(): reloj en ms
+        msStep = 0,             -- cuanto avanza el reloj en cada llamada (0 = sin limite de tiempo)
         faction = "Alliance",   -- UnitFactionGroup("player")
         locale = "enUS",        -- idioma del cliente: nombres localizados de QuestieDB (si los hay)
     }
@@ -203,6 +207,7 @@ function M.installQuestie(opts)
     end
     -- Como Questie: nombre y subtitulo en el idioma del cliente si hay traduccion; si no, ingles.
     QuestieDB.QueryNPCSingle = function(id, key)
+        S.npcQueries = S.npcQueries + 1
         if opts.failNpc == id then error("boom") end
         local row = npcs[id]
         if type(row) ~= "table" then return nil end
@@ -261,7 +266,19 @@ function M.installGameAPI()
             rec("C_Timer.After", sec)
             S.timers[#S.timers + 1] = { sec = sec, fn = fn }
         end,
+        -- Ticker: el test lo avanza con M.tickAll(). Cancel lo quita de la lista.
+        NewTicker = function(sec, fn)
+            rec("C_Timer.NewTicker", sec)
+            local t = { sec = sec, fn = fn, cancelled = false }
+            function t:Cancel() self.cancelled = true end
+            S.tickers[#S.tickers + 1] = t
+            return t
+        end,
     }
+    _G.debugprofilestop = function()
+        S.msNow = S.msNow + S.msStep
+        return S.msNow
+    end
 
     _G.C_Map = {
         GetBestMapForUnit = function() return S.mapID end,
@@ -328,6 +345,32 @@ function M.installGameAPI()
         RefreshAllDataProviders = function() rec("WorldMapFrame:RefreshAllDataProviders") end,
     }
     _G.GameTooltip = newObject()
+end
+
+-- Numero de tickers vivos (no cancelados).
+function M.activeTickers()
+    local n = 0
+    for _, t in ipairs(M.state.tickers) do
+        if not t.cancelled then n = n + 1 end
+    end
+    return n
+end
+
+-- Avanza una vez cada ticker vivo (como un tick del juego). Quita los cancelados.
+function M.tickAll()
+    local alive = {}
+    for _, t in ipairs(M.state.tickers) do
+        if not t.cancelled then alive[#alive + 1] = t end
+    end
+    M.state.tickers = alive
+    for _, t in ipairs(alive) do
+        if not t.cancelled then t.fn() end
+    end
+    local still = {}
+    for _, t in ipairs(M.state.tickers) do
+        if not t.cancelled then still[#still + 1] = t end
+    end
+    M.state.tickers = still
 end
 
 function M.uninstallGameAPI()

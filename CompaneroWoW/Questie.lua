@@ -398,58 +398,197 @@ local function roleFromSubtitle(subtitle)
     return nil
 end
 
--- Indice global de PNJs con rol o subtitulo: una pasada sobre NPCPointers, cacheada en la sesion.
--- Entradas { id, name, role, subtitle? }; role = "other" si solo tienen subtitulo.
+-- ---------------------------------------------------------------------------
+-- Trabajo incremental de PNJs: coroutines troceadas por tick (C_Timer.NewTicker).
+-- La exportacion NO espera: mientras el trabajo corre, questie.npcs no aparece; al terminar
+-- se reexporta sola (ExportQuestieNow). Nunca corre en combate ni de forma sincrona en SnapshotAll.
+-- Presupuesto por tick: NPC_TICK_MS (si existe debugprofilestop) y NPC_TICK_UNITS (un PNJ = una unidad).
+-- ---------------------------------------------------------------------------
+
+local NPC_TICK_SEC = 0.05   -- intervalo entre ticks
+local NPC_TICK_MS = 4       -- presupuesto de tiempo por tick
+local NPC_TICK_UNITS = 200  -- presupuesto de unidades por tick
+local NPC_CACHE_MAX = 6     -- listas de candidatos (una por zona) que se guardan
+
+local npcTasks = {}         -- { co, kind = "index" | "cands", key, onDone, cancelled }
+local npcTicker = nil       -- ticker de C_Timer.NewTicker activo
+local npcTickAfter = false  -- fallback sin NewTicker: cadena de C_Timer.After
+
+local function nowMs()
+    return Num(ns.Call("debugprofilestop"))
+end
+
+local function stopTicker()
+    if npcTicker then
+        ns.Method(npcTicker, "Cancel")
+        npcTicker = nil
+    end
+end
+
+-- Avanza las tareas dentro del presupuesto. Devuelve true si queda trabajo.
+local function runTasks()
+    -- En combate no se avanza: los trabajos siguen pendientes y se retoman fuera de combate.
+    if ns.InCombat() then return #npcTasks > 0 end
+    local t0 = nowMs()
+    local units, i = 0, 1
+    while i <= #npcTasks and units < NPC_TICK_UNITS do
+        local now = nowMs()
+        if t0 and now and now - t0 >= NPC_TICK_MS then break end
+        local task = npcTasks[i]
+        if task.cancelled then
+            table.remove(npcTasks, i)
+        else
+            local ok, n = coroutine.resume(task.co)
+            if not ok then
+                table.remove(npcTasks, i)
+                task.error = tostring(n)
+                if task.kind == "index" then Q.npcIndexFailed = true end
+            elseif coroutine.status(task.co) == "dead" then
+                table.remove(npcTasks, i)
+                if task.onDone then ns.SafeCall(task.onDone, task) end
+            else
+                -- Trabajo en curso (yield 1): sigue en esta misma tarea hasta agotar el presupuesto.
+                -- Esperando (yield 0): pasa a la siguiente tarea.
+                local cost = Num(n) or 1
+                units = units + math.max(1, cost)
+                if cost <= 0 then i = i + 1 end
+            end
+        end
+    end
+    return #npcTasks > 0
+end
+
+local function tickAfter()
+    ns.Call("C_Timer.After", NPC_TICK_SEC, function()
+        if runTasks() then tickAfter() else npcTickAfter = false end
+    end)
+end
+
+local function ensureTicker()
+    if npcTicker or npcTickAfter or #npcTasks == 0 then return end
+    npcTicker = ns.Call("C_Timer.NewTicker", NPC_TICK_SEC, function()
+        if not runTasks() then stopTicker() end
+    end)
+    if not npcTicker then
+        npcTickAfter = true
+        tickAfter()
+    end
+end
+
+local function addTask(task)
+    npcTasks[#npcTasks + 1] = task
+    ensureTicker()
+end
+
+-- Indice global de PNJs con rol o subtitulo (cacheado en la sesion). Una pasada incremental
+-- sobre NPCPointers. Entradas { id, name, role, subtitle? }; role = "other" si solo tiene subtitulo.
 -- Los nombres vienen ya localizados por QuestieDB (l10n del cliente); sin traduccion, en ingles.
-local function npcIndex(db)
-    if Q.npcIndex then return Q.npcIndex end
-    local list = {}
-    local pointers = db.NPCPointers
-    if type(pointers) == "table" then
-        for id in pairs(pointers) do
-            local n = Num(id)
-            if n and n > 0 then
-                local subtitle = Str(ns.SafeCall(db.QueryNPCSingle, n, "subName"))
+local function indexWork(db)
+    return function()
+        local ids, n = {}, 0
+        local pointers = db.NPCPointers
+        if type(pointers) == "table" then
+            for id in pairs(pointers) do
+                n = n + 1
+                ids[n] = id
+                if n % 500 == 0 then coroutine.yield(1) end
+            end
+        end
+        local list = {}
+        for i = 1, n do
+            local id = Num(ids[i])
+            if id and id > 0 then
+                local subtitle = Str(ns.SafeCall(db.QueryNPCSingle, id, "subName"))
                 if subtitle == "" then subtitle = nil end
-                local role = roleFromFlags(db, Num(ns.SafeCall(db.QueryNPCSingle, n, "npcFlags")))
+                local role = roleFromFlags(db, Num(ns.SafeCall(db.QueryNPCSingle, id, "npcFlags")))
                     or roleFromSubtitle(subtitle)
                 if role or subtitle then
-                    local name = Str(ns.SafeCall(db.QueryNPCSingle, n, "name"))
+                    local name = Str(ns.SafeCall(db.QueryNPCSingle, id, "name"))
                     if name and string.sub(name, 1, 5) ~= "[DND]" then
-                        list[#list + 1] = { id = n, name = name, role = role or "other", subtitle = subtitle }
+                        list[#list + 1] = { id = id, name = name, role = role or "other", subtitle = subtitle }
                     end
                 end
             end
+            coroutine.yield(1)
         end
+        table.sort(list, function(a, b) return a.id < b.id end)
+        Q.npcIndex = list
     end
-    table.sort(list, function(a, b) return a.id < b.id end)
-    Q.npcIndex = list
-    return list
 end
 
--- PNJs del indice con spawn en alguna de las areas dadas. Cacheado por lista de areas (cambia con la zona).
--- Devuelve { { npc = entrada del indice, spawns = { [areaId] = { {mapID, x, y}, ... } } }, ... }.
-local function npcCandidates(db, zone, areaIds)
-    local key = table.concat(areaIds, ",")
-    if Q.npcCache and Q.npcCache.key == key then return Q.npcCache.list end
-    local list = {}
-    for _, npc in ipairs(npcIndex(db)) do
-        local raw = ns.SafeCall(db.QueryNPCSingle, npc.id, "spawns")
-        if type(raw) == "table" then
-            local byArea = {}
-            local any = false
-            for _, areaId in ipairs(areaIds) do
-                local spawns = convertSpawns(raw, zone, areaId)
-                if #spawns > 0 then
-                    byArea[areaId] = spawns
-                    any = true
-                end
-            end
-            if any then list[#list + 1] = { npc = npc, spawns = byArea } end
-        end
+local function ensureIndex(db)
+    if Q.npcIndex or Q.npcIndexFailed then return end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "index" and not t.cancelled then return end
     end
-    Q.npcCache = { key = key, list = list }
-    return list
+    addTask({ kind = "index", co = coroutine.create(indexWork(db)) })
+end
+
+-- Candidatos de una zona: PNJs del indice con spawn en 'areas' (ids de area de Questie).
+-- Espera al indice si aun no esta listo. Devuelve { { npc, spawns = { [areaId] = {{mapID,x,y}...} } } }.
+local function candWork(db, zone, areas, key)
+    return function()
+        while not Q.npcIndex do
+            if Q.npcIndexFailed then return end
+            coroutine.yield(0)
+        end
+        local cands = {}
+        for _, npc in ipairs(Q.npcIndex) do
+            local raw = ns.SafeCall(db.QueryNPCSingle, npc.id, "spawns")
+            if type(raw) == "table" then
+                local byArea, any = {}, false
+                for _, areaId in ipairs(areas) do
+                    local spawns = convertSpawns(raw, zone, areaId)
+                    if #spawns > 0 then
+                        byArea[areaId] = spawns
+                        any = true
+                    end
+                end
+                if any then cands[#cands + 1] = { npc = npc, spawns = byArea } end
+            end
+            coroutine.yield(1)
+        end
+        Q.npcCands = Q.npcCands or {}
+        local count = 0
+        for _ in pairs(Q.npcCands) do count = count + 1 end
+        if count >= NPC_CACHE_MAX then Q.npcCands = {} end
+        Q.npcCands[key] = cands
+    end
+end
+
+-- Al terminar una lista de candidatos, reexporta (solo si quedo guardada).
+local function onCandsDone(task)
+    if Q.npcCands and Q.npcCands[task.key] then ns.SafeCall(ns.ExportQuestieNow) end
+end
+
+-- Pide la lista de candidatos de la zona (idempotente). Cancela la de otra zona: solo una a la vez.
+local function requestNpcCandidates(db, zone, areas, key)
+    if Q.npcCands and Q.npcCands[key] then return end
+    if Q.npcIndexFailed then return end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "cands" and t.key == key and not t.cancelled then return end
+    end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "cands" then t.cancelled = true end
+    end
+    ensureIndex(db)
+    addTask({ kind = "cands", key = key, co = coroutine.create(candWork(db, zone, areas, key)), onDone = onCandsDone })
+end
+
+-- Cancela y olvida todo el trabajo de PNJs (el indice y las zonas guardadas). Para pruebas y recargas.
+function ns.Questie.ResetNpc()
+    for _, t in ipairs(npcTasks) do t.cancelled = true end
+    npcTasks = {}
+    stopTicker()
+    npcTickAfter = false
+    Q.npcIndex = nil
+    Q.npcIndexFailed = nil
+    Q.npcCands = nil
+end
+
+-- Numero de tareas de PNJs pendientes (para pruebas).
+function ns.Questie.PendingNpcTasks()
+    return #npcTasks
 end
 
 -- Entradas { id, name, role, subtitle?, mapID, x, y } de los candidatos con spawn en 'areaIds'
@@ -483,15 +622,20 @@ local function npcEntries(cands, areaIds, skip, mapID, px, py)
 end
 
 -- PNJs con rol para la zona actual (max MAX_ZONE_NPCS) y para las capitales de la faccion
--- (max MAX_CAPITAL_NPCS, sin repetir los de la zona). Devuelve una lista: zona primero, luego capitales.
+-- (max MAX_CAPITAL_NPCS, sin repetir los de la zona). Devuelve zona primero, luego capitales.
+-- Devuelve nil mientras la lista de candidatos de la zona no esta lista (se pide en segundo plano).
 local function zoneNpcs(db, zone, areaId, faction, mapID, px, py)
-    local capitalAreas = {}
-    local areas = { areaId }
+    local areas, capitalAreas = { areaId }, {}
     for _, a in ipairs(CAPITALS[faction] or {}) do
         capitalAreas[#capitalAreas + 1] = a
         if a ~= areaId then areas[#areas + 1] = a end
     end
-    local cands = npcCandidates(db, zone, areas)
+    local key = table.concat(areas, ",")
+    local cands = Q.npcCands and Q.npcCands[key]
+    if not cands then
+        requestNpcCandidates(db, zone, areas, key)
+        return nil
+    end
     local zoneList = take(npcEntries(cands, { areaId }, nil, mapID, px, py), MAX_ZONE_NPCS)
     local skip = {}
     for _, e in ipairs(zoneList) do skip[e.id] = true end

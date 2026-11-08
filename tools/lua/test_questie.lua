@@ -79,12 +79,26 @@ local function scenario()
     ns.Questie.lastAt = nil
     ns.Questie.pending = false
     ns.Questie.zoneCache = nil
-    ns.Questie.npcCache = nil
-    ns.Questie.npcIndex = nil
+    ns.Questie.ResetNpc()
     return S
 end
 
 local function inRange(v) return type(v) == "number" and v >= 0 and v <= 1 end
+
+-- Los PNJs se construyen en segundo plano (ticker): avanza los tickers hasta que no quede trabajo.
+local function pumpNpcs()
+    local guard = 0
+    while W.activeTickers() > 0 and guard < 100000 do
+        W.tickAll()
+        guard = guard + 1
+    end
+end
+-- Exportacion completa: arranca el trabajo de PNJs, lo termina y vuelve a exportar.
+local function buildFull()
+    ns.BuildQuestieExport()
+    pumpNpcs()
+    return ns.BuildQuestieExport()
+end
 
 -- Distancia y orden de referencia (independiente del addon).
 local function nearestOf(points, px, py)
@@ -114,7 +128,10 @@ check("estado sin Questie: texto 'no disponible'", string.find(ns.QuestieStatusL
 -- ---------------------------------------------------------------------------
 outln("(b) exportacion con Questie: forma del contrato")
 scenario()
-local data = ns.BuildQuestieExport()
+local early = ns.BuildQuestieExport()
+check("la exportacion no espera a los PNJ: quests presentes", early.quests ~= nil and early.zoneQuests ~= nil)
+eq("la exportacion no espera a los PNJ: npcs ausente al principio", early.npcs, nil)
+local data = buildFull()
 eq("available = true", data.available, true)
 eq("version de Questie", data.version, "12.6.4")
 check("exportedAt presente", type(data.exportedAt) == "number")
@@ -232,7 +249,7 @@ eq("capital de Orgrimmar (1203) no sale siendo Alliance", npcIds[1203], nil)
 scenario()
 W.state.locale = "esES"
 local esNpcs = {}
-for _, n in ipairs(ns.BuildQuestieExport().npcs or {}) do esNpcs[n.id] = n end
+for _, n in ipairs(buildFull().npcs or {}) do esNpcs[n.id] = n end
 eq("esES: nombre localizado de 1200", esNpcs[1200] and esNpcs[1200].name, "Lirio el herborista")
 eq("esES: subtitulo 'Instructora de Herboristería' -> trainer", esNpcs[1200] and esNpcs[1200].role, "trainer")
 eq("esES: subtitulo localizado conservado", esNpcs[1200] and esNpcs[1200].subtitle, "Instructora de Herboristería")
@@ -243,8 +260,8 @@ eq("esES: 1002 sigue igual", esNpcs[1002] and esNpcs[1002].subtitle, "Vuelo")
 scenario()
 W.state.faction = "Horde"
 local hordeNpcs = {}
-for _, n in ipairs(ns.BuildQuestieExport().npcs or {}) do hordeNpcs[n.id] = n end
-eq("Horde: 3 PNJ (2 zona + 1 capital)", #(ns.BuildQuestieExport().npcs or {}), 3)
+for _, n in ipairs(buildFull().npcs or {}) do hordeNpcs[n.id] = n end
+eq("Horde: 3 PNJ (2 zona + 1 capital)", #(buildFull().npcs or {}), 3)
 eq("Horde: cocinera 1203 rol vendor por 'Suministros'", hordeNpcs[1203] and hordeNpcs[1203].role, "vendor")
 eq("Horde: uiMapID de Orgrimmar = 85", hordeNpcs[1203] and hordeNpcs[1203].mapID, 85)
 eq("Horde: sin PNJ de Ventormenta", hordeNpcs[1200], nil)
@@ -252,13 +269,13 @@ eq("Horde: sin PNJ de Ventormenta", hordeNpcs[1200], nil)
 -- Faccion desconocida: solo la zona.
 scenario()
 W.state.faction = nil
-eq("sin faccion: solo los 2 PNJ de la zona", #(ns.BuildQuestieExport().npcs or {}), 2)
+eq("sin faccion: solo los 2 PNJ de la zona", #(buildFull().npcs or {}), 2)
 
 -- Un PNJ que falla en Questie se omite; los demas siguen.
 scenario()
 W.uninstallQuestie()
 W.installQuestie({ failNpc = 1200 })
-local failNpcData = ns.BuildQuestieExport()
+local failNpcData = buildFull()
 check("fallo en PNJ: la exportacion sigue disponible", failNpcData.available == true and failNpcData.npcs ~= nil)
 local failIds = {}
 for _, n in ipairs(failNpcData.npcs or {}) do failIds[n.id] = n end
@@ -269,7 +286,7 @@ check("fallo en PNJ: 1201 sigue", failIds[1201] ~= nil)
 scenario()
 W.uninstallQuestie()
 W.installQuestie({ zoneFill = 70, capitalFill = 130 })
-local capped = ns.BuildQuestieExport()
+local capped = buildFull()
 local zoneN, capN, lastD = 0, 0, -1
 local sortedOk = true
 for _, n in ipairs(capped.npcs or {}) do
@@ -306,7 +323,7 @@ scenario()
 for i = 1, 40 do
     W.state.questLog[#W.state.questLog + 1] = { questID = 5000 + i, title = "Extra " .. i, level = 9 }
 end
-local capped = ns.BuildQuestieExport()
+local capped = buildFull()
 local nCap = 0
 for _ in pairs(capped.quests) do nCap = nCap + 1 end
 eq("maximo 35 misiones", nCap, 35)
@@ -394,6 +411,7 @@ scenario()
 S = W.state
 printed = {}
 W.reset() -- limpia llamadas; el estado queda por defecto (Elwynn)
+ns.Questie.ResetNpc()
 S = W.state
 W.installGameAPI()
 W.installQuestie()
@@ -507,6 +525,91 @@ eq("objetivos no emparejados: no marca", #W.callsNamed("C_Map.SetUserWaypoint"),
 check("objetivos no emparejados: avisa", anyPrinted("No puedo emparejar"), lastPrinted())
 
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+outln("(h) PNJs en segundo plano: troceado, sin combate, sin trabajo sincrono")
+local Q = ns.Questie
+
+-- Sin trabajo sincrono: la exportacion y SnapshotAll no recorren los PNJ.
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ zoneFill = 2000 })
+S = W.state
+S.npcQueries = 0
+local early2 = ns.BuildQuestieExport()
+check("exportacion: pocas consultas de PNJ (sin escaneo)", S.npcQueries < 100, tostring(S.npcQueries))
+eq("exportacion: npcs ausente hasta terminar el trabajo", early2.npcs, nil)
+check("exportacion: indice no construido de forma sincrona", Q.npcIndex == nil)
+check("exportacion: trabajo de PNJs pendiente", ns.Questie.PendingNpcTasks() > 0)
+
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ zoneFill = 2000 })
+S = W.state
+S.npcQueries = 0
+ns.SnapshotAll()
+check("SnapshotAll: pocas consultas de PNJ (sin escaneo)", S.npcQueries < 100, tostring(S.npcQueries))
+check("SnapshotAll: indice no construido de forma sincrona", Q.npcIndex == nil)
+pumpNpcs()
+check("SnapshotAll: el trabajo termina en segundo plano", Q.npcIndex ~= nil)
+
+-- Troceado: un tick avanza por unidades (200 PNJ) y no termina con 2000+ PNJ.
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ zoneFill = 2000 })
+S = W.state
+ns.BuildQuestieExport()
+S.npcQueries = 0
+W.tickAll()
+check("un tick: avanza pero no termina", Q.npcIndex == nil and S.npcQueries > 0, tostring(S.npcQueries))
+check("un tick: acotado (<= 200 PNJ x 3 consultas)", S.npcQueries <= 200 * 3 + 10, tostring(S.npcQueries))
+pumpNpcs()
+check("tras los ticks: indice listo", Q.npcIndex ~= nil)
+local saved = CompaneroWoWDB.characters["Tester-Ravencrest"].questie
+check("tras los ticks: la exportacion se guarda sola", saved and saved.npcs ~= nil)
+eq("PNJ guardados: 60 zona + 5 capital", #((saved and saved.npcs) or {}), 65)
+
+-- Presupuesto de tiempo: cada lectura de reloj cuesta 1 ms; el tick corta al llegar a 4 ms.
+scenario()
+W.uninstallQuestie()
+W.installQuestie({ zoneFill = 2000 })
+S = W.state
+S.msStep = 1
+ns.BuildQuestieExport()
+local worst = 0
+for _ = 1, 5 do
+    local before = S.npcQueries
+    W.tickAll()
+    worst = math.max(worst, S.npcQueries - before)
+end
+check("presupuesto de tiempo: ningun tick hace mas de 40 consultas", worst <= 40, tostring(worst))
+check("presupuesto de tiempo: sigue sin terminar tras 5 ticks", Q.npcIndex == nil and ns.Questie.PendingNpcTasks() > 0)
+S.msStep = 0
+pumpNpcs()
+check("presupuesto de tiempo: termina al seguir", Q.npcIndex ~= nil)
+
+-- Combate: no avanza; fuera de combate, termina.
+scenario()
+S = W.state
+S.inCombat = true
+ns.BuildQuestieExport()
+for _ = 1, 5 do W.tickAll() end
+check("en combate: el trabajo de PNJs no avanza", Q.npcIndex == nil and ns.Questie.PendingNpcTasks() > 0)
+S.inCombat = false
+pumpNpcs()
+check("fuera de combate: el trabajo termina", Q.npcIndex ~= nil)
+
+-- Mismo resultado en dos construcciones (indice y candidatos recalculados).
+scenario()
+local first = buildFull()
+ns.Questie.ResetNpc()
+local second = buildFull()
+local same = #first.npcs == #second.npcs
+for i = 1, #first.npcs do
+    local a, b = first.npcs[i], second.npcs[i]
+    if a.id ~= b.id or a.role ~= b.role or a.mapID ~= b.mapID or a.x ~= b.x or a.y ~= b.y then same = false end
+end
+check("mismo resultado al recalcular desde cero", same and #first.npcs == 7)
+
 if failures > 0 then
     outln("FAILED: " .. failures .. " check(s)")
     os.exit(1)
