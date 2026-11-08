@@ -102,10 +102,16 @@ type window struct {
 	avoid   Rect
 	avoidOK bool
 
-	answers chan entry         // answers from the ask goroutine
+	answers chan answer        // answers from the ask goroutine
 	tips    chan assistant.Tip // tips from the tip goroutine
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	// askCancel cancels the question in flight; askGen identifies it, so that the answer of
+	// a cancelled or superseded question is dropped. noticeAt is when notice was set.
+	askCancel context.CancelFunc
+	askGen    int
+	noticeAt  time.Time
 }
 
 // Run creates the panel and runs its message loop on the calling thread, which must be
@@ -135,7 +141,7 @@ func Run(opts Options) error {
 		opts:    opts,
 		ctx:     ctx,
 		cancel:  cancel,
-		answers: make(chan entry, 1),
+		answers: make(chan answer, 1),
 		tips:    make(chan assistant.Tip, tipQueueSize),
 	}
 	w.inst = call(procGetModuleHandleW, 0)
@@ -175,6 +181,11 @@ func Run(opts Options) error {
 	// Re-send the frame so the window procedure removes the standard frame.
 	call(procSetWindowPos, hwnd, 0, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
 	call(procSetLayeredWindowAttrs, hwnd, 0, panelAlpha, lwaAlpha)
+	// Keep the panel out of screenshots, so a capture of the game does not show it. Older
+	// Windows lack the flag; the panel then simply appears in captures.
+	if call(procSetWindowDisplayAffinity, hwnd, wdaExcludeFromCapture) == 0 {
+		log.Printf("ui: captura sin excluir el panel (Windows no lo admite)")
+	}
 	log.Printf("ui: ventana creada en %d,%d (%dx%d), %d ppp", w.state.X, w.state.Y, w.state.W, w.state.H, w.dpi)
 
 	w.makeBrushes()
@@ -472,7 +483,11 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		}
 	case wmCommand:
 		if lp == w.send {
-			w.submit()
+			if w.busy {
+				w.cancelAsk()
+			} else {
+				w.submit()
+			}
 			return 0
 		}
 		if lp == 0 {
@@ -524,6 +539,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		w.drainTips()
 		return 0
 	case msgStatus:
+		w.expireNotice()
 		w.enforceAvoid()
 		w.refreshStatus()
 		return 0
@@ -539,8 +555,8 @@ func loWordCmd(wp uintptr) int {
 	return int(wp & 0xFFFF)
 }
 
-// editProc is the subclassed input: Enter sends, Shift+Enter inserts a line break, and
-// Escape hides the panel.
+// editProc is the subclassed input: Enter sends, Shift+Enter inserts a line break, Escape
+// cancels the question in flight or, when none is, hides the panel.
 func editProc(hwnd, msg, wp, lp uintptr) uintptr {
 	if w := current; w != nil {
 		switch msg {
@@ -550,7 +566,11 @@ func editProc(hwnd, msg, wp, lp uintptr) uintptr {
 				return 0
 			}
 			if wp == vkEscape {
-				w.hide()
+				if w.busy {
+					w.cancelAsk()
+				} else {
+					w.hide()
+				}
 				return 0
 			}
 		case wmChar:
@@ -638,7 +658,11 @@ func (w *window) drawSend(di *drawItemStruct) {
 	}
 	fillRect(di.HDC, r, w.brushes.button)
 	frameRect(di.HDC, r, w.brushes.gold)
-	drawText(di.HDC, "Enviar", r, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.ui, color)
+	label := "Enviar"
+	if w.busy {
+		label = "Cancelar"
+	}
+	drawText(di.HDC, label, r, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.ui, color)
 }
 
 // paint draws the background, the header with its buttons, the frame and the status bar.
@@ -740,13 +764,13 @@ func (w *window) saveGeometry() {
 func (w *window) registerHotkey() {
 	hk, err := ParseHotkey(w.opts.Hotkey)
 	if err != nil {
-		w.notice = fmt.Sprintf("Atajo no válido en config.json: %v", err)
+		w.setNotice(fmt.Sprintf("Atajo no válido en config.json: %v", err))
 		log.Printf("ui: atajo no válido: %v", err)
 		return
 	}
 	hwnd := w.hwnd
 	if err := startHotkey(hk, func() { postMessage(hwnd, msgToggle, 0, 0) }); err != nil {
-		w.notice = fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk)
+		w.setNotice(fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk))
 		log.Printf("ui: atajo %s: %v", hk, err)
 		return
 	}
@@ -773,7 +797,7 @@ func (w *window) clearHistory() {
 	if w.opts.Backend != nil {
 		if err := w.opts.Backend.ClearHistory(); err != nil {
 			log.Printf("ui: borrar historial: %v", err)
-			w.notice = "No pude borrar el historial"
+			w.setNotice("No pude borrar el historial")
 			w.refreshStatus()
 			return
 		}
@@ -802,23 +826,50 @@ func (w *window) submit() {
 	setWindowText(w.input, "")
 	w.add(entry{Kind: entryUser, Text: text})
 	w.busy = true
-	call(procEnableWindow, w.send, 0)
+	w.askGen++
+	ctx, cancel := context.WithCancel(w.ctx)
+	w.askCancel = cancel
+	call(procInvalidateRect, w.send, 0, 1)
 	w.refreshStatus()
-	go w.ask(text, withShot)
+	go w.ask(ctx, w.askGen, text, withShot)
+}
+
+// cancelAsk stops the question in flight: the button and Escape do this while the
+// assistant is thinking. The panel is free again at once; the answer of the cancelled
+// question, if it still arrives, is dropped.
+func (w *window) cancelAsk() {
+	if !w.busy {
+		return
+	}
+	if w.askCancel != nil {
+		w.askCancel()
+		w.askCancel = nil
+	}
+	w.askGen++
+	w.busy = false
+	w.setNotice("Pregunta cancelada")
+	call(procInvalidateRect, w.send, 0, 1)
+	w.refreshStatus()
 }
 
 // ask runs the question in the background and hands the answer to the UI thread.
-func (w *window) ask(text string, withShot bool) {
-	e := w.answer(text, withShot)
-	w.answers <- e
+func (w *window) ask(ctx context.Context, gen int, text string, withShot bool) {
+	e := w.answer(ctx, text, withShot)
+	w.answers <- answer{gen: gen, e: e}
 	postMessage(w.hwnd, msgAnswer, 0, 0)
 }
 
-func (w *window) answer(text string, withShot bool) entry {
+// answer is one question's result, tagged with the question's generation.
+type answer struct {
+	gen int
+	e   entry
+}
+
+func (w *window) answer(ctx context.Context, text string, withShot bool) entry {
 	if w.opts.Backend == nil {
 		return entry{Kind: entryError, Text: askError(errors.New("el asistente no está disponible"))}
 	}
-	resp, err := w.opts.Backend.Ask(w.ctx, text, withShot)
+	resp, err := w.opts.Backend.Ask(ctx, text, withShot)
 	if err != nil {
 		return entry{Kind: entryError, Text: askError(err)}
 	}
@@ -828,12 +879,33 @@ func (w *window) answer(text string, withShot bool) entry {
 // drainAnswers shows the answer that the ask goroutine delivered.
 func (w *window) drainAnswers() {
 	select {
-	case e := <-w.answers:
+	case a := <-w.answers:
+		if a.gen != w.askGen {
+			return // the question was cancelled or superseded
+		}
 		w.busy = false
-		w.add(e)
-		call(procEnableWindow, w.send, 1)
+		if w.askCancel != nil {
+			w.askCancel()
+			w.askCancel = nil
+		}
+		w.add(a.e)
+		call(procInvalidateRect, w.send, 0, 1)
 		w.refreshStatus()
 	default:
+	}
+}
+
+// setNotice shows a transient message in the status line; it clears after noticeTTL.
+func (w *window) setNotice(text string) {
+	w.notice = text
+	w.noticeAt = time.Now()
+}
+
+// expireNotice clears the transient message once it has been shown for noticeTTL.
+func (w *window) expireNotice() {
+	if w.notice != "" && noticeExpired(w.noticeAt, time.Now()) {
+		w.notice = ""
+		w.noticeAt = time.Time{}
 	}
 }
 
@@ -856,9 +928,9 @@ func (w *window) drainTips() {
 func (w *window) linkClicked(text string) {
 	if cmd, ok := CommandFromLink(text); ok {
 		if err := CopyText(cmd); err != nil {
-			w.notice = "No pude copiar la marca: " + err.Error()
+			w.setNotice("No pude copiar la marca: " + err.Error())
 		} else {
-			w.notice = CopiedNotice
+			w.setNotice(CopiedNotice)
 		}
 		w.refreshStatus()
 		return
@@ -879,7 +951,7 @@ func (w *window) openLink(raw string) {
 	runtime.KeepAlive(op)
 	runtime.KeepAlive(target)
 	if r <= 32 {
-		w.notice = "No pude abrir el enlace en el navegador"
+		w.setNotice("No pude abrir el enlace en el navegador")
 		w.refreshStatus()
 	}
 }

@@ -45,6 +45,8 @@ type proactor struct {
 	combat  func() bool
 	notify  func(Tip)
 	persist func(Tip, string)
+	// system returns the game state and player context a tip carries, as a question does.
+	system func() string
 
 	pending     []uint8
 	windowStart time.Time
@@ -72,6 +74,7 @@ func (a *Assistant) newProactor(notify func(Tip)) *proactor {
 		},
 		notify:  notify,
 		persist: a.persistTip,
+		system:  a.systemPrompt,
 	}
 }
 
@@ -140,6 +143,9 @@ func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip
 		Skill:  SystemPrompt,
 		Prompt: tipPrompts[code] + " " + proactiveInstruction,
 	}
+	if p.system != nil {
+		req.System = p.system()
+	}
 	resp, err := p.ask(ctx, req)
 	if err != nil {
 		return Tip{}, "", err
@@ -153,7 +159,7 @@ func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip
 
 // persistTip stores the tip as an assistant message with Provider "proactivo:<provider>".
 func (a *Assistant) persistTip(t Tip, provider string) {
-	a.persist(store.ChatMsg{Role: "assistant", Content: formatTipHistory(t), Provider: "proactivo:" + provider})
+	a.persist(store.ChatMsg{Role: "assistant", Content: formatTipHistory(t), Provider: proactivePrefix + provider})
 }
 
 // pickCode returns the highest-priority code of the batch.

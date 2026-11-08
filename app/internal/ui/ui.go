@@ -7,11 +7,14 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/assistant"
@@ -160,10 +163,36 @@ func toAnswerMsgs(in []store.ChatMsg) []answerMsg {
 	return out
 }
 
-// askError turns an assistant error into the text shown to the user.
+// noticeTTL is how long a transient notice (a copy result, a failed action) stays in the
+// status line before it clears.
+const noticeTTL = 5 * time.Second
+
+// noticeExpired reports whether a notice set at `at` has been shown for noticeTTL.
+func noticeExpired(at, now time.Time) bool {
+	return !at.IsZero() && now.Sub(at) >= noticeTTL
+}
+
+// askError turns an assistant error into the one-line Spanish text shown to the user.
+// The full error chain is written to the log.
 func askError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return "No pude responder: " + err.Error()
+	log.Printf("ui: pregunta sin respuesta: %v", err)
+	return friendlyError(err)
+}
+
+// friendlyError is the user-facing summary of an assistant error.
+func friendlyError(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "La respuesta tardó demasiado (más de 2 min 30 s). Inténtalo de nuevo."
+	case errors.Is(err, context.Canceled):
+		return "Pregunta cancelada."
+	case strings.Contains(err.Error(), "ningún proveedor de IA respondió"):
+		return "No respondió ningún proveedor; revisa que hayas iniciado sesión en agy/codex o la clave de NVIDIA."
+	case strings.Contains(err.Error(), "no hay proveedores de IA configurados"):
+		return "No hay proveedores de IA configurados; revisa providerOrder y apiProviders en config.json."
+	}
+	return "No pude responder. El detalle está en companero.log."
 }
