@@ -32,7 +32,7 @@ func TestCodexReadsSkillFromAgentsFileAndKeepsItOutOfPrompt(t *testing.T) {
 	if !strings.Contains(stdin, "Estado actual") {
 		t.Error("the per-question state must still travel in the prompt")
 	}
-	data, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	data, err := os.ReadFile(filepath.Join(workDir, "codex", "AGENTS.md"))
 	if err != nil || !strings.Contains(string(data), skillText) {
 		t.Fatalf("AGENTS.md missing the skill: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestCodexSkillInlineWhenAgentsFileCannotBeWritten(t *testing.T) {
 	// AGENTS.md held by a folder makes the deploy fail: the skill then travels inside the
 	// prompt, so the answer still follows the rules.
 	workDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(workDir, "AGENTS.md"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(workDir, "codex", "AGENTS.md"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fr := &fakeRunner{fn: func(spec cmdSpec) (cmdResult, error) {

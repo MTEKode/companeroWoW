@@ -22,13 +22,15 @@ var (
 	dotenvCache = map[string]dotenvEntry{}
 )
 
-// dotenvPaths lists the .env files searched for API keys, in order: %APPDATA%\CompaneroWoW,
-// the folder of the executable, the working directory and the parent of the executable's
-// folder (dist\..\.env is the repository root during development).
-// DotenvPaths lists the .env files that may hold API keys. The Antigravity sessions deny
-// reading them.
+// DotenvPaths lists the .env files that may hold API keys, in search order. The Antigravity
+// sessions deny reading them.
 func DotenvPaths() []string { return dotenvPaths() }
 
+// dotenvPaths lists the .env files searched for API keys: %APPDATA%\CompaneroWoW\.env and the
+// folder of the executable. The working directory is not searched: it can be any folder, and a
+// key file there could be picked up by accident. During development the repository root is
+// searched too, but only when the executable runs from <repo>\dist and <repo>\app\go.mod exists
+// (see devRepoRoot).
 func dotenvPaths() []string {
 	var paths []string
 	if dir, err := DefaultDir(); err == nil {
@@ -40,14 +42,24 @@ func dotenvPaths() []string {
 		}
 		exeDir := filepath.Dir(exe)
 		paths = append(paths, filepath.Join(exeDir, ".env"))
-		if wd, err := os.Getwd(); err == nil {
-			paths = append(paths, filepath.Join(wd, ".env"))
+		if root := devRepoRoot(exeDir); root != "" {
+			paths = append(paths, filepath.Join(root, ".env"))
 		}
-		paths = append(paths, filepath.Join(filepath.Dir(exeDir), ".env"))
-	} else if wd, err := os.Getwd(); err == nil {
-		paths = append(paths, filepath.Join(wd, ".env"))
 	}
 	return uniquePaths(paths)
+}
+
+// devRepoRoot returns the repository root when exeDir is <repo>\dist and <repo>\app\go.mod
+// exists, the layout of a development build. Otherwise it returns "".
+func devRepoRoot(exeDir string) string {
+	if !strings.EqualFold(filepath.Base(exeDir), "dist") {
+		return ""
+	}
+	root := filepath.Dir(exeDir)
+	if _, err := os.Stat(filepath.Join(root, "app", "go.mod")); err != nil {
+		return ""
+	}
+	return root
 }
 
 func uniquePaths(paths []string) []string {

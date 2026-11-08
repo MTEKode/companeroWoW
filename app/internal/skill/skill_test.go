@@ -106,7 +106,7 @@ func TestDeployAllRepairsDeletedAndOutdatedFiles(t *testing.T) {
 	if !Installed(dir) {
 		t.Fatal("freshly deployed files must count as installed")
 	}
-	if err := os.WriteFile(AgentsPath(dir), []byte("viejo"), 0o644); err != nil {
+	if err := os.WriteFile(AgentsPath(filepath.Join(dir, "agy")), []byte("viejo"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if Installed(dir) {
@@ -118,7 +118,7 @@ func TestDeployAllRepairsDeletedAndOutdatedFiles(t *testing.T) {
 	if !Installed(dir) {
 		t.Fatal("DeployAll must repair an outdated file")
 	}
-	if err := os.Remove(WorkspaceSkillPath(dir)); err != nil {
+	if err := os.Remove(WorkspaceSkillPath(filepath.Join(dir, "agy"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := DeployAll(dir); err != nil || !Installed(dir) {
@@ -133,5 +133,34 @@ func TestDeployFailsWhenWorkDirIsAFile(t *testing.T) {
 	}
 	if err := DeployAll(file); err == nil {
 		t.Fatal("deploying under a regular file must fail with an error, not panic")
+	}
+}
+
+func TestDeployAllWritesOnlyIntoWorkspacesAndRemovesStaleAgents(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ".agents", "skills", "companero")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "SKILL.md"), []byte("viejo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeployAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".agents")); !os.IsNotExist(err) {
+		t.Error("the stale root .agents folder must be removed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Error("no AGENTS.md may be written to the data folder root")
+	}
+	if _, err := os.Stat(WorkspaceSkillPath(filepath.Join(dir, "agy"))); err != nil {
+		t.Errorf("agy workspace skill missing: %v", err)
+	}
+	if _, err := os.Stat(AgentsPath(filepath.Join(dir, "codex"))); err != nil {
+		t.Errorf("codex workspace AGENTS.md missing: %v", err)
+	}
+	if _, err := os.Stat(AgentsPath(filepath.Join(dir, "agy"))); err != nil {
+		t.Errorf("agy workspace AGENTS.md missing: %v", err)
 	}
 }

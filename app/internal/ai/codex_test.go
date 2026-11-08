@@ -3,8 +3,12 @@ package ai
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
 )
 
 // writeLastMessage simulates codex writing its final message to the -o file.
@@ -35,7 +39,8 @@ func TestCodexBuildsReadOnlyExecWithMCPOverride(t *testing.T) {
 		t.Fatalf("runner called %d times", len(fr.calls))
 	}
 	spec := fr.calls[0]
-	if spec.Path != "/fake/bin/codex" || spec.Dir != workDir {
+	workspace := filepath.Join(workDir, "codex")
+	if spec.Path != "/fake/bin/codex" || spec.Dir != workspace {
 		t.Errorf("Path=%q Dir=%q", spec.Path, spec.Dir)
 	}
 	if len(spec.Args) == 0 || spec.Args[0] != "exec" {
@@ -43,7 +48,7 @@ func TestCodexBuildsReadOnlyExecWithMCPOverride(t *testing.T) {
 	}
 	for _, want := range [][2]string{
 		{"-s", "read-only"},
-		{"-C", workDir},
+		{"-C", workspace},
 		{"--color", "never"},
 	} {
 		if got := argValue(spec.Args, want[0]); got != want[1] {
@@ -74,8 +79,26 @@ func TestCodexBuildsReadOnlyExecWithMCPOverride(t *testing.T) {
 	if !strings.Contains(spec.Stdin, "Pregunta: ¿dónde?") || !strings.Contains(spec.Stdin, "Sistema") {
 		t.Errorf("stdin = %q", spec.Stdin)
 	}
-	if left := leftovers(t, workDir); len(left) != 0 {
+	if left := leftovers(t, workspace); len(left) != 0 {
 		t.Errorf("temporary files left behind: %v", left)
+	}
+	// The token travels in the environment, never in the command line.
+	if !slices.Contains(spec.Env, "COMPANERO_MCP_TOKEN="+mcpserver.Token()) {
+		t.Errorf("env %v lacks the MCP token", spec.Env)
+	}
+	for _, a := range spec.Args {
+		if strings.Contains(a, mcpserver.Token()) {
+			t.Errorf("the MCP token appears in the arguments: %v", spec.Args)
+		}
+	}
+	for _, want := range []string{
+		`mcp_servers.companero.bearer_token_env_var="COMPANERO_MCP_TOKEN"`,
+		`default_permissions="companero"`,
+		`permissions.companero.filesystem={":minimal"="read", ":project_roots"={"."="read"}}`,
+	} {
+		if !overrides[want] {
+			t.Errorf("missing -c %s in %v", want, spec.Args)
+		}
 	}
 }
 

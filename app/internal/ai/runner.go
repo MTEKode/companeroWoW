@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ type cmdSpec struct {
 	Args  []string // arguments, passed without a shell
 	Dir   string   // working directory
 	Stdin string   // full prompt text
+	Env   []string // extra KEY=value pairs for the child, on top of the app's environment
 }
 
 // cmdResult is what a finished invocation produced. A non-zero exit is reported in
@@ -42,8 +44,14 @@ const maxCapturedBytes = 8 << 20
 type execRunner struct{}
 
 func (execRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
+	if err := refuseBatchFile(spec.Path); err != nil {
+		return cmdResult{}, err
+	}
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
+	if len(spec.Env) > 0 {
+		cmd.Env = append(os.Environ(), spec.Env...)
+	}
 	cmd.Stdin = strings.NewReader(spec.Stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitWriter{buf: &stdout, max: maxCapturedBytes}
@@ -55,7 +63,14 @@ func (execRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
 	}
 	cmd.WaitDelay = 5 * time.Second
 
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		// The child joins the app's job object, so it dies with the app even if the app crashes.
+		if jerr := joinJob(cmd.Process); jerr != nil {
+			log.Printf("ai: el proceso %s no entra en el job object (se usa taskkill): %v", filepath.Base(spec.Path), jerr)
+		}
+		err = cmd.Wait()
+	}
 	res := cmdResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return res, ctxErr
@@ -175,4 +190,15 @@ func tailText(b []byte, n int) string {
 		return "…" + string(r[len(r)-n:])
 	}
 	return s
+}
+
+// refuseBatchFile rejects .cmd and .bat files. cmd.exe re-parses their arguments, so a prompt
+// in argv could inject commands. The providers run the real executable instead: agy.exe, or
+// node.exe with the codex script.
+func refuseBatchFile(path string) error {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cmd", ".bat":
+		return fmt.Errorf("no se ejecuta %s: los ficheros por lotes pasan los argumentos por cmd.exe", filepath.Base(path))
+	}
+	return nil
 }

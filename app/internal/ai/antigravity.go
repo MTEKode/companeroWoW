@@ -17,6 +17,7 @@ import (
 
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
 	"github.com/MTEKode/companeroWoW/app/internal/skill"
 )
 
@@ -48,10 +49,10 @@ var agyNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}$`)
 var antigravityAllow = []string{"mcp(" + mcpServerName + "/*)"}
 
 // antigravityDeny overrides any allow rule (deny > ask > allow), including the user's global
-// settings: shell and any command, unsandboxed execution, file writes and URL fetches.
-// Reads are not denied as a whole: read_file(*) would also deny the screens folder, and a deny
-// cannot be carved out by an allow. Instead, the workspace holds no secrets, reads outside it
-// need approval (refused in a headless run) and the secret files are denied by path.
+// settings: shell and any command, unsandboxed execution, file writes and URL fetches. The
+// secret files are denied by path in protectedFiles. Reads outside the workspace need approval
+// anyway, which a headless run refuses; the deny list holds even if the user's global settings
+// allow more.
 var antigravityDeny = []string{"command(*)", "unsandboxed(*)", "write_file(*)", "read_url(*)", "execute_url(*)"}
 
 // antigravity is the Antigravity CLI (agy) in headless mode: one `agy -p` process per question,
@@ -128,10 +129,13 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, fmt.Errorf("CLI antigravity (agy) no disponible: %w", err)
 	}
+	if err := refuseBatchFile(exe); err != nil {
+		return Response{}, err
+	}
 	if err := os.MkdirAll(a.workspace, 0o755); err != nil {
 		return Response{}, fmt.Errorf("crear carpeta de trabajo: %w", err)
 	}
-	if err := writeAntigravityMCP(filepath.Join(a.workspace, ".agents", "mcp_config.json"), a.mcpURL); err != nil {
+	if err := writeAntigravityMCP(filepath.Join(a.workspace, ".agents", "mcp_config.json"), a.mcpURL, mcpserver.Token()); err != nil {
 		return Response{}, err
 	}
 	// The skill lives in the workspace (.agents/skills/companero/SKILL.md, plus AGENTS.md as
@@ -189,23 +193,57 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	return Response{Text: text, Provider: a.Name()}, nil
 }
 
-// protectedFiles lists the files agy must never read: the API keys in every .env path, and the
-// companion's database and configuration. Files are denied by exact path, never a folder that
-// holds the screens folder.
+// appDataFileNames are the files of the data folder that never leave the PC, listed by name so
+// that they are denied even before they exist (the log rotates to companero.log.1).
+var appDataFileNames = []string{
+	"companero.db", "companero.db-wal", "companero.db-shm",
+	"companero.log", "companero.log.1", "config.json", "window.json",
+}
+
+// userSecretFolders are the folders of the user's profile that hold keys and credentials.
+var userSecretFolders = []string{".ssh", ".aws", ".gemini"}
+
+// protectedFiles lists what agy must never read, as exact paths (a deny on a folder covers
+// everything below it, and a deny beats an allow):
+//   - every .env path that may hold API keys (see config.DotenvPaths) and ~\.env;
+//   - the companion's database, log, configuration, window state and evaluation reports, which
+//     are every file of the data folder: the folder is listed at each question;
+//   - the user's ~\.ssh, ~\.aws and ~\.gemini folders;
+//   - the MCP registration of the workspace, which holds the bearer token of this session.
+//
+// The data folder's sub-folders are denied too, except the workspace (agy) and the screens
+// folder that agy reads on purpose: a deny on the data folder would also cover the screens.
 func (a *antigravity) protectedFiles() []string {
 	files := append([]string{}, config.DotenvPaths()...)
-	files = append(files,
-		filepath.Join(a.workDir, "companero.db"),
-		filepath.Join(a.workDir, "config.json"),
-	)
+	for _, name := range appDataFileNames {
+		files = append(files, filepath.Join(a.workDir, name))
+	}
+	files = append(files, a.dataFolderDenies()...)
+	files = append(files, filepath.Join(a.workspace, ".agents", "mcp_config.json"))
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		files = append(files,
-			filepath.Join(home, ".env"),
-			filepath.Join(home, ".ssh"),
-			filepath.Join(home, ".aws"),
-		)
+		files = append(files, filepath.Join(home, ".env"))
+		for _, name := range userSecretFolders {
+			files = append(files, filepath.Join(home, name))
+		}
 	}
 	return files
+}
+
+// dataFolderDenies lists the entries of the data folder that agy may not read: every file, and
+// every folder except the workspace and the screens folder.
+func (a *antigravity) dataFolderDenies() []string {
+	entries, err := os.ReadDir(a.workDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && (e.Name() == antigravityWorkspaceDir || e.Name() == filepath.Base(a.screensDir())) {
+			continue
+		}
+		out = append(out, filepath.Join(a.workDir, e.Name()))
+	}
+	return out
 }
 
 // agyResult is the payload of a finished run: the json envelope itself, or the "result"
@@ -314,8 +352,9 @@ func agyErrorText(raw json.RawMessage) string {
 }
 
 // writeAntigravityMCP registers the companion's MCP server in the workspace file
-// <workDir>\agy\.agents\mcp_config.json. Other servers and keys already in the file are kept.
-func writeAntigravityMCP(path, url string) error {
+// <workDir>\agy\.agents\mcp_config.json, with the session's bearer token in its headers. Other
+// servers and keys already in the file are kept.
+func writeAntigravityMCP(path, url, token string) error {
 	doc, existing, err := readJSONObject(path)
 	if err != nil {
 		return err
@@ -326,6 +365,7 @@ func writeAntigravityMCP(path, url string) error {
 	}
 	servers[mcpServerName] = map[string]any{
 		"serverUrl":      url,
+		"headers":        map[string]any{"Authorization": "Bearer " + token},
 		"timeoutSeconds": antigravityMCPTimeoutSec,
 	}
 	doc["mcpServers"] = servers
@@ -334,9 +374,9 @@ func writeAntigravityMCP(path, url string) error {
 
 // writeAntigravitySettings writes the per-session settings passed with --settings. The file is
 // owned by the companion, so it is rewritten whole. The user's global settings are untouched.
-// The screens folder is allowed for reading; each protected file is denied by its exact path.
-// A deny on a folder would also cover the screens folder when the folder is inside it, so only
-// files are denied.
+// The screens folder is allowed for reading. Each protected path is denied: files by name and
+// folders such as ~.ssh recursively. The data folder is never denied as a whole, because a deny
+// on it would also cover the screens folder (deny beats allow); protectedFiles lists its entries.
 func writeAntigravitySettings(path, screens string, protected []string) error {
 	allow := append(append([]string{}, antigravityAllow...), readRule(screens))
 	deny := append([]string{}, antigravityDeny...)

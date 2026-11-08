@@ -17,3 +17,6 @@ func killProcessTree(p *os.Process) error {
 	}
 	return p.Kill()
 }
+
+// joinJob has no job object on this OS.
+func joinJob(*os.Process) error { return nil }

@@ -101,7 +101,7 @@ func AgentsPath(workDir string) string {
 	return filepath.Join(workDir, "AGENTS.md")
 }
 
-// DeployCodex writes AGENTS.md into workDir, the folder Codex runs in. It reports
+// DeployCodex writes AGENTS.md into workDir, the codex workspace (the folder Codex runs in). It reports
 // whether the file was written.
 func DeployCodex(workDir string) (bool, error) {
 	return writeIfChanged(AgentsPath(workDir), []byte(AgentsMarkdown()))
@@ -121,20 +121,40 @@ func DeployAntigravity(workDir string) (bool, error) {
 	return changed || ch2, nil
 }
 
-// DeployAll deploys to every file-based provider under workDir. It is called on startup;
-// providers call it again before each question, so a deleted or outdated file is repaired.
+// Workspace folders under the data directory: agy runs in agyWorkspace and codex in
+// codexWorkspace. Each provider deploys its own copy of the skill there.
+const (
+	agyWorkspace   = "agy"
+	codexWorkspace = "codex"
+	// staleAgentsDir is the root-level .agents folder of earlier versions. Antigravity now runs
+	// in agyWorkspace, so this folder is removed on startup.
+	staleAgentsDir = ".agents"
+)
+
+// DeployAll deploys the skill to every file-based provider: the agy workspace (the workspace
+// skill and AGENTS.md) and the codex workspace (AGENTS.md). It also removes the stale root
+// .agents folder of earlier versions, and nothing else of the data directory. It is called on
+// startup; providers call the deploy functions again before each question, so a deleted or
+// outdated file is repaired.
 func DeployAll(workDir string) error {
-	if _, err := DeployCodex(workDir); err != nil {
+	if err := os.RemoveAll(filepath.Join(workDir, staleAgentsDir)); err != nil {
+		return fmt.Errorf("quitar %s: %w", filepath.Join(workDir, staleAgentsDir), err)
+	}
+	if _, err := DeployCodex(filepath.Join(workDir, codexWorkspace)); err != nil {
 		return err
 	}
-	_, err := DeployAntigravity(workDir)
+	_, err := DeployAntigravity(filepath.Join(workDir, agyWorkspace))
 	return err
 }
 
-// Installed reports whether the files written by DeployAll exist and match the current
-// skill text.
+// Installed reports whether the files written by DeployAll exist in both workspaces and match
+// the current skill text.
 func Installed(workDir string) bool {
-	return upToDate(WorkspaceSkillPath(workDir), Markdown()) && upToDate(AgentsPath(workDir), AgentsMarkdown())
+	agy := filepath.Join(workDir, agyWorkspace)
+	codex := filepath.Join(workDir, codexWorkspace)
+	return upToDate(WorkspaceSkillPath(agy), Markdown()) &&
+		upToDate(AgentsPath(agy), AgentsMarkdown()) &&
+		upToDate(AgentsPath(codex), AgentsMarkdown())
 }
 
 func upToDate(path, want string) bool {

@@ -10,10 +10,10 @@ import (
 	"golang.org/x/net/html"
 )
 
-// ddgSearch runs one DuckDuckGo HTML query restricted to domain (site: operator).
-func (c *Client) ddgSearch(ctx context.Context, q, domain string) ([]Hit, error) {
+// ddgSearch runs one DuckDuckGo HTML query restricted to the domains (site: operators in one query).
+func (c *Client) ddgSearch(ctx context.Context, q string, domains []string) ([]Hit, error) {
 	v := url.Values{}
-	v.Set("q", q+" site:"+domain)
+	v.Set("q", q+" "+siteOperator(domains))
 	body, _, err := c.get(ctx, c.ddgEndpoint+"?"+v.Encode())
 	if err != nil {
 		return nil, err
@@ -120,4 +120,16 @@ func textOf(n *html.Node) string {
 	}
 	walk(n)
 	return collapse(sb.String())
+}
+
+// siteOperator builds the site: restriction of one query: "site:a" or "(site:a OR site:b)".
+func siteOperator(domains []string) string {
+	sites := make([]string, 0, len(domains))
+	for _, d := range domains {
+		sites = append(sites, "site:"+d)
+	}
+	if len(sites) == 1 {
+		return sites[0]
+	}
+	return "(" + strings.Join(sites, " OR ") + ")"
 }
