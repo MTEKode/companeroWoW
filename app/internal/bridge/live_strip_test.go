@@ -104,3 +104,12 @@ func TestDecodeImageNeverWrongOnDamagedStrip(t *testing.T) {
 		assertSameState(t, s, got)
 	}
 }
+
+// checkLive7p5Fixture pins the state of the 7.5 px live capture (map 1433, the player at
+// level 18 with 6000 copper), as decoded when the capture was taken.
+func checkLive7p5Fixture(t *testing.T, got LiveState) {
+	t.Helper()
+	if got.Seq != 76 || got.MapID != 1433 || got.Level != 18 || got.XPPct != 37 || got.Money != 5976 || got.FreeBagSlots != 14 {
+		t.Fatalf("7.5 px fixture decoded to %+v, want seq 76, map 1433, level 18, xp 37%%, money 5976, 14 free slots", got)
+	}
+}
