@@ -267,6 +267,7 @@ end
 -- Exporta ahora (sin throttle) a la entrada del personaje. Fuera de combate. Devuelve la entrada o nil.
 function ns.ExportIntegrationsNow()
     if ns.InCombat() then return nil end
+    if not ns.IsFullyInWorld() then return nil end -- carga/salida: las fuentes pueden no estar listas
     local key = ns.CharKey()
     if not key then return nil end
     local db = ns.EnsureDB()
@@ -275,9 +276,10 @@ function ns.ExportIntegrationsNow()
         c = {}
         db.characters[key] = c
     end
-    c.training = fit(safeBlock(trainingBlock))
-    c.guide = fit(safeBlock(guideBlock))
-    c.profPlan = fit(safeBlock(profPlanBlock))
+    -- Un bloque no disponible no sustituye a uno disponible anterior (ns.PreferAvailable).
+    c.training = ns.PreferAvailable(c.training, fit(safeBlock(trainingBlock)))
+    c.guide = ns.PreferAvailable(c.guide, fit(safeBlock(guideBlock)))
+    c.profPlan = ns.PreferAvailable(c.profPlan, fit(safeBlock(profPlanBlock)))
     -- Va al final: los bloques anteriores pueden haber contado errores silenciados.
     c.health = { luaErrors = ns.errorCount or 0, lastError = ns.lastError }
     lastExportAt = nowSec()
