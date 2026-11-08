@@ -382,4 +382,159 @@ function M.uninstallGameAPI()
     end
 end
 
+
+-- ---------------------------------------------------------------------------
+-- Addons fuente de Integrations.lua: WhatsTraining (WT_API), RXPGuides (RXPCData), SkillUpForever.API.
+-- Son datos de prueba con la forma publica de cada API; se instalan y desinstalan por separado.
+-- ---------------------------------------------------------------------------
+
+-- Estados de WT_API.Status (valores reales de WhatsTraining/Categories.lua).
+M.WT_STATUS = {
+    AVAILABLE = "available", NEXTLEVEL = "nextLevel", NOTLEVEL = "notLevel", MISSINGREQS = "missingReqs",
+    MISSINGTALENT = "missingTalent", IGNORED = "ignored", KNOWN = "known", KNOWN_PET = "knownPet",
+    PET = "pet", WEAPON_AVAILABLE = "weaponAvailable", WEAPON_NEXTLEVEL = "weaponNextLevel",
+    WEAPON_NOTLEVEL = "weaponNotLevel", WEAPON_KNOWN = "weaponKnown", WEAPON_IGNORED = "weaponIgnored",
+}
+
+-- Hechizos de prueba: 3 disponibles, 2 del siguiente nivel, 1 de otro estado, y 2 que no se exportan (conocido, ignorado).
+local function defaultSpells()
+    local st = M.WT_STATUS
+    return {
+        { id = 201, name = "Golpe heroico", subText = "Rango 2", level = 18, cost = 1200, status = st.AVAILABLE },
+        { id = 202, name = "Carga", subText = nil, level = 4, cost = 50, status = st.AVAILABLE },
+        { id = 203, name = "Desarmar", subText = "Rango 1", level = 10, cost = 300, status = st.AVAILABLE },
+        { id = 204, name = "Mordisco", subText = nil, level = 12, cost = 0, status = st.NEXTLEVEL },
+        { id = 205, name = "Tajo", subText = nil, level = 14, cost = 0, status = st.NEXTLEVEL },
+        { id = 206, name = "Veneno", subText = nil, level = 30, cost = 0, status = st.NOTLEVEL },
+        { id = 207, name = "Conocido", subText = nil, level = 2, cost = 0, status = st.KNOWN },
+        { id = 208, name = "Ignorado", subText = nil, level = 3, cost = 0, status = st.IGNORED },
+    }
+end
+
+-- Genera n hechizos disponibles (para probar el tope de 40).
+function M.manySpells(n)
+    local out = {}
+    for i = 1, n do
+        out[i] = { id = 5000 + i, name = "Hechizo " .. i, subText = "Rango 1", level = (i % 60) + 1,
+                   cost = i * 10, status = M.WT_STATUS.AVAILABLE }
+    end
+    return out
+end
+
+-- Instala WT_API, RXPGuides/RXPCData y SkillUpForever.API con datos de prueba (en M.state.addons).
+-- opts.wtReady = false -> WT_API.IsReady() false; opts.wtSpells = lista de hechizos; opts.noSkillUp = true
+-- omite SkillUpForever; opts.noRXP = true omite RXPGuides; opts.noWT = true omite WhatsTraining.
+function M.installAddons(opts)
+    opts = opts or {}
+    local S = M.state
+    S.addons = {
+        wtReady = opts.wtReady ~= false,
+        wtSpells = opts.wtSpells or defaultSpells(),
+        wtCallbacks = {},          -- [event] = { fn, ... }
+        skillCalls = 0,            -- llamadas a SkillUpForever.API.Professions
+        profs = {
+            { name = "Sastrería", skillLineID = 197, rank = 68, maxRank = 75, icon = 1,
+              base = 68, max = 75, recipes = {
+                  { spellID = 3908, name = "Túnica de lino", count = 3, fromRank = 68, toRank = 72 },
+                  { spellID = 3909, name = "Bolsa de lino", count = 2, fromRank = 72, toRank = 75 },
+              } },
+        },
+        names = { [2589] = "Tela de lino" },  -- C_Item.GetItemNameByID (ids sin nombre -> nil)
+    }
+    local A = S.addons
+
+    if not opts.noWT then
+        _G.WT_API = {
+            version = 1,
+            Status = M.WT_STATUS,
+            Event = { READY = "Ready", SPELLS_CHANGED = "SpellsChanged", LEVEL_CHANGED = "LevelChanged" },
+            IsReady = function() return A.wtReady end,
+            GetSpells = function()
+                local out = {}
+                for _, r in ipairs(A.wtSpells) do
+                    local c = {}
+                    for k, v in pairs(r) do c[k] = v end
+                    out[#out + 1] = c
+                end
+                return out
+            end,
+            RegisterCallback = function(owner, event, fn)
+                rec("WT_API.RegisterCallback", owner, event)
+                A.wtCallbacks[event] = A.wtCallbacks[event] or {}
+                table.insert(A.wtCallbacks[event], fn)
+            end,
+        }
+    end
+
+    if not opts.noRXP then
+        _G.RXPGuides = { RegisterGuide = function() end, ImportGuide = function() end }
+        _G.RXPCData = {
+            currentStep = 12, currentStepId = "s12",
+            currentGuideGroup = "Leveling", currentGuideName = "Elwynn 1-10",
+            guideProgress = {},
+        }
+    end
+
+    if not opts.noSkillUp then
+        _G.SkillUpForever = { API = {
+            version = 1,
+            Professions = function()
+                A.skillCalls = A.skillCalls + 1
+                local out = {}
+                for _, p in ipairs(A.profs) do
+                    local recipes = {}
+                    for _, r in ipairs(p.recipes) do
+                        recipes[#recipes + 1] = { spellID = r.spellID, name = r.name, count = r.count,
+                                                  fromRank = r.fromRank, toRank = r.toRank }
+                    end
+                    out[#out + 1] = { name = p.name, skillLineID = p.skillLineID, rank = p.base,
+                                      maxRank = p.max, recipes = recipes }
+                end
+                return out
+            end,
+            RequiredMaterials = function(recipeID, crafts)
+                rec("SkillUpForever.RequiredMaterials", recipeID, crafts)
+                crafts = crafts or 1
+                return { { itemID = 2589, count = 2 * crafts }, { itemID = 4306, count = crafts } }
+            end,
+            ShoppingList = function(skillLineID)
+                rec("SkillUpForever.ShoppingList", skillLineID)
+                return { {
+                    profession = "Sastrería", skillLine = skillLineID, target = 75, total = 0, unpriced = 0,
+                    items = {
+                        { itemID = 2589, need = 30, have = 0, missing = 30, source = "vendor" },
+                        { itemID = 4306, need = 5, have = 5, missing = 0, source = "vendor" },
+                    },
+                } }
+            end,
+        } }
+    end
+
+    _G.C_Item = _G.C_Item or {}
+    _G.C_Item.GetItemNameByID = function(id) return A.names[id] end
+end
+
+-- Quita WT_API, RXPGuides, RXPCData, SkillUpForever y C_Item (para probar addons ausentes).
+function M.uninstallAddons()
+    _G.WT_API = nil
+    _G.RXPGuides = nil
+    _G.RXPCData = nil
+    _G.SkillUpForever = nil
+    if _G.C_Item then _G.C_Item.GetItemNameByID = nil end
+    M.state.addons = nil
+end
+
+-- Dispara un evento de WT_API a sus callbacks registrados.
+function M.fireWT(event, ...)
+    local list = M.state.addons and M.state.addons.wtCallbacks[event] or {}
+    for _, fn in ipairs(list) do fn(event, ...) end
+end
+
+-- Ejecuta (y vacia) los C_Timer.After pendientes, como si hubiera pasado su tiempo.
+function M.runTimers()
+    local pending = M.state.timers
+    M.state.timers = {}
+    for _, t in ipairs(pending) do t.fn() end
+end
+
 return M
