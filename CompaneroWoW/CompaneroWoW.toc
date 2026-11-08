@@ -1,0 +1,8 @@
+## Interface: 110200
+## Title: CompaneroWoW
+## Notes: Addon companion for World of Warcraft
+## Author: Marcos
+## Version: 0.1.0
+## SavedVariables: CompaneroWoWDB
+
+CompaneroWoW.lua
