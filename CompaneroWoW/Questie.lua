@@ -67,10 +67,10 @@ end
 local function questieModules()
     local loader = _G.QuestieLoader
     if type(loader) ~= "table" or type(loader.ImportModule) ~= "function" then return nil end
-    local ok, db = pcall(loader.ImportModule, loader, "QuestieDB")
+    local ok, db = ns.Pcall(loader.ImportModule, loader, "QuestieDB")
     if not ok or type(db) ~= "table" then return nil end
     if type(db.QueryQuestSingle) ~= "function" or type(db.QueryNPCSingle) ~= "function" then return nil end
-    local okZ, zone = pcall(loader.ImportModule, loader, "ZoneDB")
+    local okZ, zone = ns.Pcall(loader.ImportModule, loader, "ZoneDB")
     if not okZ or type(zone) ~= "table" or type(zone.GetUiMapIdByAreaId) ~= "function" then zone = nil end
     return db, zone
 end
@@ -671,7 +671,7 @@ function ns.BuildQuestieExport()
     for _, e in ipairs(entries) do
         inLog[e.questID] = true
         if count < MAX_QUESTS then
-            local ok, q = pcall(buildQuest, db, zone, e.info, e.questID, mapID, px, py)
+            local ok, q = ns.Pcall(buildQuest, db, zone, e.info, e.questID, mapID, px, py)
             if ok and type(q) == "table" then
                 quests[e.questID] = q
                 count = count + 1
@@ -685,12 +685,12 @@ function ns.BuildQuestieExport()
         areaId = Num(ns.SafeCall(zone.GetAreaIdByUiMapId, zone, mapID))
     end
     if zone and mapID and areaId then
-        local ok, list = pcall(zoneQuestList, db, zone, mapID, areaId, level, inLog)
+        local ok, list = ns.Pcall(zoneQuestList, db, zone, mapID, areaId, level, inLog)
         if ok and type(list) == "table" then
             out.zoneQuests = { mapID = mapID, list = list }
         end
         local faction = Str(Call("UnitFactionGroup", "player"))
-        local okN, npcs = pcall(zoneNpcs, db, zone, areaId, faction, mapID, px, py)
+        local okN, npcs = ns.Pcall(zoneNpcs, db, zone, areaId, faction, mapID, px, py)
         if okN and type(npcs) == "table" then out.npcs = npcs end
     end
     return out

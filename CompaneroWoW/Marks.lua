@@ -64,7 +64,7 @@ local function headTokens(s, n)
     return heads, trim(string.sub(s, pos))
 end
 
-local USAGE = "Uso: /compa marca [<mapID>] <x> <y> [texto] | /compa marca | /compa marca borrar"
+local USAGE = "Uso: /compa marca [<mapID>] <x> <y> [texto] | /compa marca | /compa marca guia | /compa marca borrar"
 
 -- raw: texto tras "marca". isMap(id) -> bool (opcional) confirma un mapID de 1..100.
 -- Devuelve { kind = "auto" | "clear" | "coords" | "error", mapID?, x?, y? (0..1), text?, message? }.
@@ -72,6 +72,8 @@ function M.ParseArgs(raw, isMap)
     local s = trim(raw)
     if s == "" then return { kind = "auto" } end
     if string.lower(s) == "borrar" then return { kind = "clear" } end
+    local lower = string.lower(s)
+    if lower == "guia" or lower == "guía" then return { kind = "guide" } end
 
     local h3 = headTokens(s, 3)
     local mapN = h3[1] and string.match(h3[1], "^%d+$") and tonumber(h3[1]) or nil
@@ -120,11 +122,11 @@ local function ensureProvider()
     if not wm or type(wm.AddDataProvider) ~= "function" or type(_G.CreateFromMixins) ~= "function" or not mixin then
         return false
     end
-    local ok, p = pcall(_G.CreateFromMixins, mixin)
+    local ok, p = ns.Pcall(_G.CreateFromMixins, mixin)
     if not ok or type(p) ~= "table" then return false end
     p.RefreshAllData = function() M.RefreshCanvas() end
     p.RemoveAllData = function() if pinFrame then ns.Method(pinFrame, "Hide") end end
-    if not pcall(wm.AddDataProvider, wm, p) then return false end
+    if not ns.Pcall(wm.AddDataProvider, wm, p) then return false end
     provider = p
     return true
 end
@@ -186,16 +188,16 @@ function M.Set(mapID, x, y, text)
 
     local blizzard = false
     if canSet and Get("C_Map.SetUserWaypoint") and Get("UiMapPoint.CreateFromCoordinates") then
-        local okPoint, point = pcall(_G.UiMapPoint.CreateFromCoordinates, mapID, x, y)
+        local okPoint, point = ns.Pcall(_G.UiMapPoint.CreateFromCoordinates, mapID, x, y)
         if okPoint and point then
-            blizzard = pcall(_G.C_Map.SetUserWaypoint, point) == true
+            blizzard = ns.Pcall(_G.C_Map.SetUserWaypoint, point) == true
         end
     end
     if blizzard and Get("C_SuperTrack.SetSuperTrackedUserWaypoint") then
-        pcall(_G.C_SuperTrack.SetSuperTrackedUserWaypoint, true)
+        ns.Pcall(_G.C_SuperTrack.SetSuperTrackedUserWaypoint, true)
     elseif not blizzard and M.mark and M.mark.blizzard and Get("C_Map.ClearUserWaypoint") then
         -- La marca anterior estaba en Blizzard y la nueva no: no dejamos una flecha vieja.
-        pcall(_G.C_Map.ClearUserWaypoint)
+        ns.Pcall(_G.C_Map.ClearUserWaypoint)
     end
 
     M.mark = { mapID = mapID, x = x, y = y, text = text, blizzard = blizzard }
@@ -220,9 +222,9 @@ function M.Clear()
         return false
     end
     -- Siempre: una marca anterior en Blizzard pudo quedar aunque la ultima no llegara a ponerse.
-    if Get("C_Map.ClearUserWaypoint") then pcall(_G.C_Map.ClearUserWaypoint) end
+    if Get("C_Map.ClearUserWaypoint") then ns.Pcall(_G.C_Map.ClearUserWaypoint) end
     if Get("C_SuperTrack.SetSuperTrackedUserWaypoint") then
-        pcall(_G.C_SuperTrack.SetSuperTrackedUserWaypoint, false)
+        ns.Pcall(_G.C_SuperTrack.SetSuperTrackedUserWaypoint, false)
     end
     M.mark = nil
     persist(nil)
@@ -312,10 +314,24 @@ function M.MarkAuto()
     return true
 end
 
+-- /compa marca guia: marca el paso actual de RXPGuides, si Integrations puede leer sus coordenadas.
+function M.MarkGuide()
+    local step, reason = nil, nil
+    if ns.Integrations and type(ns.Integrations.GuideStep) == "function" then
+        step, reason = ns.Integrations.GuideStep()
+    end
+    if type(step) ~= "table" or type(step.mapID) ~= "number" or type(step.x) ~= "number" or type(step.y) ~= "number" then
+        say("No hay coordenadas del paso de RXP" .. (reason and (": " .. reason) or "") .. ". Usa /compa marca <x> <y> [texto].")
+        return false
+    end
+    return M.Set(step.mapID, step.x, step.y, step.text or "")
+end
+
 -- Despacho de "/compa marca ...". rest = texto original (con mayusculas) tras "marca".
 function M.Command(rest)
     local p = M.ParseArgs(rest, validMap)
     if p.kind == "clear" then return M.Clear() end
+    if p.kind == "guide" then return M.MarkGuide() end
     if p.kind == "error" then
         say(p.message)
         return false

@@ -320,7 +320,7 @@ func gridError(blocks [NumBlocks][3]byte, cal [3]levelMap) float64 {
 	return sum
 }
 
-// EncodeForTest builds the v2 strip for s, in the same 28-block layout as the
+// EncodeForTest builds the v2 strip for s, in the same 29-block layout as the
 // addon's ns.EncodeBlocks. It is the inverse of DecodeBlocks, used by tests and
 // by the UI's diagnostic. s.Seq is ignored; seq is written.
 func EncodeForTest(s LiveState, seq uint8) [NumBlocks][3]byte {

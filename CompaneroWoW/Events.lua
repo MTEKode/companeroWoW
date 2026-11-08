@@ -58,6 +58,34 @@ local function scanQuestCompletions()
     E.questBaselined = true
 end
 
+-- QUEST_LOG_UPDATE llega en rafagas: se coalesce a como mucho 2 barridos por segundo.
+-- Si cae dentro de la ventana, se deja un barrido diferido (uno solo).
+local SCAN_MIN_INTERVAL = 0.5 -- segundos entre barridos
+local lastScanAt = nil
+local scanPending = false
+
+local function nowSec()
+    local t = Num(Call("GetTime"))
+    if t then return t end
+    return ns.Now()
+end
+
+local function requestQuestScan()
+    local t = nowSec()
+    if lastScanAt == nil or t - lastScanAt >= SCAN_MIN_INTERVAL then
+        lastScanAt = t
+        scanQuestCompletions()
+        return
+    end
+    if not scanPending and ns.Get("C_Timer.After") then
+        scanPending = true
+        ns.Call("C_Timer.After", SCAN_MIN_INTERVAL - (t - lastScanAt), function()
+            scanPending = false
+            ns.SafeCall(requestQuestScan)
+        end)
+    end
+end
+
 -- QUEST_WATCH_UPDATE(questID): una mision seguida que pasa a completa.
 local function onQuestWatch(qid)
     qid = Num(qid)
@@ -120,7 +148,7 @@ local handlers = {
         end)
     end,
     PLAYER_LEVEL_UP = onLevelUp,
-    QUEST_LOG_UPDATE = scanQuestCompletions,
+    QUEST_LOG_UPDATE = requestQuestScan,
     QUEST_WATCH_UPDATE = onQuestWatch,
     QUEST_TURNED_IN = onTurnedIn,
     QUEST_ACCEPTED = onQuestAccepted,
@@ -130,13 +158,20 @@ local handlers = {
     PLAYER_DEAD = function() ns.RecordEvent(CODE.PLAYER_DIED, 0) end,
 }
 
+-- Despacho de eventos (tambien usado por tools/lua/test_integrations.lua).
+ns.Events = {
+    OnEvent = function(event, ...)
+        local h = handlers[event]
+        if h then h(...) end
+    end,
+}
+
 local frame = ns.NewFrame("Frame")
 if frame then
     for event in pairs(handlers) do
         ns.Method(frame, "RegisterEvent", event)
     end
     ns.Method(frame, "SetScript", "OnEvent", function(_, event, ...)
-        local h = handlers[event]
-        if h then ns.SafeCall(h, ...) end
+        ns.SafeCall(ns.Events.OnEvent, event, ...)
     end)
 end

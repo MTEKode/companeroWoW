@@ -4,20 +4,50 @@
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
-local type, pcall, tonumber = type, pcall, tonumber
+local type, pcall, tonumber, tostring = type, pcall, tonumber, tostring
 local floor = math.floor
 local bit = bit -- disponible en WoW y en LuaJIT (require "bit")
 
--- Devuelve los resultados de fn si pcall tuvo exito; nada si hubo error.
+-- Diagnostico: errores que pcall ha silenciado (se exportan como health en CompaneroWoWDB).
+ns.errorCount = ns.errorCount or 0
+ns.lastError = ns.lastError or nil
+local MAX_ERROR_TEXT = 200
+
+-- Cuenta un error silenciado y guarda su texto (recortado).
+local function recordError(err)
+    ns.errorCount = (ns.errorCount or 0) + 1
+    local text = tostring(err)
+    if #text > MAX_ERROR_TEXT then text = string.sub(text, 1, MAX_ERROR_TEXT) end
+    ns.lastError = text
+end
+
+-- Devuelve los resultados de fn si pcall tuvo exito; nada si hubo error (contado).
 local function passResults(ok, ...)
     if ok then return ... end
+    recordError((...))
     return nil
+end
+
+-- pcall que cuenta los errores silenciados. Mismo contrato: true + resultados, o false + error.
+local function pcallCounted(ok, ...)
+    if ok then return true, ... end
+    recordError((...))
+    return false, (...)
+end
+function ns.Pcall(fn, ...)
+    return pcallCounted(pcall(fn, ...))
 end
 
 -- Llamada protegida. Devuelve nil ante cualquier error.
 function ns.SafeCall(fn, ...)
     if type(fn) ~= "function" then return nil end
     return passResults(pcall(fn, ...))
+end
+
+-- Linea para /compa estado con los errores silenciados.
+function ns.HealthStatusLine()
+    local last = ns.lastError and (" (último: " .. ns.lastError .. ")") or ""
+    return string.format("Errores capturados: %d%s", ns.errorCount or 0, last)
 end
 
 -- true si el global issecretvalue existe y devuelve true para v.

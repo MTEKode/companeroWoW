@@ -80,6 +80,12 @@ var (
 	procShellExecuteW = modShell32.NewProc("ShellExecuteW")
 )
 
+// procSetWindowDisplayAffinity hides the panel from screen captures.
+var procSetWindowDisplayAffinity = modUser32.NewProc("SetWindowDisplayAffinity")
+
+// wdaExcludeFromCapture keeps the window out of screen captures (Windows 10 2004 and later).
+const wdaExcludeFromCapture = 0x00000011
+
 // Window messages.
 const (
 	wmNull          = 0x0000

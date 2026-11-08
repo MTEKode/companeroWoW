@@ -33,6 +33,48 @@ local function questRec(qid)
     return q
 end
 
+-- Limites de knowledge.npcs: total y por mapa. Al llenarse se expulsa el PNJ menos visto recientemente.
+local MAX_NPCS_TOTAL = 2000
+local MAX_NPCS_PER_MAP = 150
+
+local function seenAt(rec)
+    return rec.lastSeen or rec.firstSeen or 0
+end
+
+-- Expulsa el registro menos visto que cumpla match(rec). Devuelve true si expulso alguno.
+local function evictOldest(npcs, match)
+    local oldestID, oldestAt = nil, nil
+    for id, rec in pairs(npcs) do
+        if type(rec) == "table" and match(rec) then
+            local at = seenAt(rec)
+            if oldestAt == nil or at < oldestAt then oldestID, oldestAt = id, at end
+        end
+    end
+    if oldestID == nil then return false end
+    npcs[oldestID] = nil
+    return true
+end
+
+-- Hace sitio para un PNJ nuevo en mapID: antes de insertarlo, respeta el tope por mapa y el total.
+local function makeRoomFor(npcs, mapID)
+    if mapID ~= nil then
+        local onMap = 0
+        for _, rec in pairs(npcs) do
+            if type(rec) == "table" and rec.mapID == mapID then onMap = onMap + 1 end
+        end
+        while onMap >= MAX_NPCS_PER_MAP do
+            if not evictOldest(npcs, function(rec) return rec.mapID == mapID end) then break end
+            onMap = onMap - 1
+        end
+    end
+    local total = 0
+    for _ in pairs(npcs) do total = total + 1 end
+    while total >= MAX_NPCS_TOTAL do
+        if not evictOldest(npcs, function() return true end) then break end
+        total = total - 1
+    end
+end
+
 -- Inserta o actualiza un PNJ. info.isQuestGiver/isVendor/isTrainer solo se activan a true.
 local function upsertNPC(npcID, info)
     local k = kb()
@@ -40,6 +82,7 @@ local function upsertNPC(npcID, info)
     local rec = k.npcs[npcID]
     local now = ns.Now()
     if type(rec) ~= "table" then
+        makeRoomFor(k.npcs, info.mapID)
         rec = { npcID = npcID, firstSeen = now }
         k.npcs[npcID] = rec
     end

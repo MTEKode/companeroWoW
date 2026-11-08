@@ -15,6 +15,9 @@ import (
 // layers, even when another window covers it.
 const pwRenderFullContent = 0x00000002
 
+// srcCopy is the BitBlt raster operation that copies the source.
+const srcCopy = 0x00CC0020
+
 var (
 	modUser32   = windows.NewLazySystemDLL("user32.dll")
 	modGDI32    = windows.NewLazySystemDLL("gdi32.dll")
@@ -27,6 +30,7 @@ var (
 	procDelObj  = modGDI32.NewProc("DeleteObject")
 	procDelDC   = modGDI32.NewProc("DeleteDC")
 	procGetBits = modGDI32.NewProc("GetDIBits")
+	procBitBlt  = modGDI32.NewProc("BitBlt")
 )
 
 type bitmapInfoHeader struct {
@@ -43,59 +47,65 @@ type bitmapInfoHeader struct {
 	ClrImportant  uint32
 }
 
-// grabWindowStrip returns the pixel strip (StripWidth x StripHeight, at the top-left of
-// the client area rect) as WoW itself renders it. Unlike a screen copy it works while
-// other windows cover WoW, because PrintWindow asks the window for its own content.
-func grabWindowStrip(hwnd uintptr, rect image.Rectangle) (*image.RGBA, error) {
+// windowGrabber holds the GDI objects of the PrintWindow fallback between calls. The
+// full-window bitmap is kept while the client size is unchanged, and the strip is
+// cropped into a small bitmap that is read back, so each call copies only
+// StripWidth x StripHeight pixels to Go memory. The zero value is ready to use.
+type windowGrabber struct {
+	w, h    int     // size of the full-window bitmap
+	memFull uintptr // DC holding the full-window bitmap
+	bmpFull uintptr
+	memCrop uintptr // DC holding the strip-sized bitmap
+	bmpCrop uintptr
+	oldCrop uintptr // the object memCrop held before bmpCrop was selected in
+	buf     []byte
+	img     *image.RGBA
+}
+
+// grab returns the pixel strip (StripWidth x StripHeight, at the top-left of the client
+// area rect) as WoW itself renders it. Unlike a screen copy it works while other windows
+// cover WoW, because PrintWindow asks the window for its own content. The returned image
+// is reused by the next call.
+func (g *windowGrabber) grab(hwnd uintptr, rect image.Rectangle) (*image.RGBA, error) {
 	w, h := rect.Dx(), rect.Dy()
 	if hwnd == 0 || w < StripWidth || h < StripHeight {
 		return nil, fmt.Errorf("bridge: window %#x client %dx%d too small for the strip", hwnd, w, h)
 	}
-	screen, _, _ := procGetDC.Call(0)
-	if screen == 0 {
-		return nil, errors.New("bridge: GetDC failed")
+	if err := g.ensure(w, h); err != nil {
+		return nil, err
 	}
-	defer procRelDC.Call(0, screen)
-
-	mem, _, _ := procMemDC.Call(screen)
-	if mem == 0 {
-		return nil, errors.New("bridge: CreateCompatibleDC failed")
-	}
-	defer procDelDC.Call(mem)
-
-	bmp, _, _ := procMemBmp.Call(screen, uintptr(w), uintptr(h))
-	if bmp == 0 {
-		return nil, errors.New("bridge: CreateCompatibleBitmap failed")
-	}
-	defer procDelObj.Call(bmp)
-
-	old, _, _ := procSelObj.Call(mem, bmp)
-	if old == 0 {
-		return nil, errors.New("bridge: SelectObject failed")
-	}
-	ok, _, _ := procPrintWd.Call(hwnd, mem, pwRenderFullContent)
-	procSelObj.Call(mem, old)
+	ok, _, _ := procPrintWd.Call(hwnd, g.memFull, pwRenderFullContent)
 	if ok == 0 {
 		return nil, errors.New("bridge: PrintWindow failed")
 	}
 
+	// Crop: select the strip-sized bitmap, copy the top-left region into it, deselect it
+	// (GetDIBits needs the bitmap unselected).
+	if old, _, _ := procSelObj.Call(g.memCrop, g.bmpCrop); old == 0 {
+		return nil, errors.New("bridge: SelectObject failed")
+	}
+	okBlt, _, _ := procBitBlt.Call(g.memCrop, 0, 0, uintptr(StripWidth), uintptr(StripHeight), g.memFull, 0, 0, srcCopy)
+	procSelObj.Call(g.memCrop, g.oldCrop)
+	if okBlt == 0 {
+		return nil, errors.New("bridge: BitBlt failed")
+	}
+
 	bi := bitmapInfoHeader{
 		Size:     uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-		Width:    int32(w),
-		Height:   -int32(h), // top-down rows
+		Width:    int32(StripWidth),
+		Height:   -int32(StripHeight), // top-down rows
 		Planes:   1,
 		BitCount: 32,
 	}
-	buf := make([]byte, w*h*4)
-	lines, _, _ := procGetBits.Call(mem, bmp, 0, uintptr(h), uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bi)), 0)
+	lines, _, _ := procGetBits.Call(g.memCrop, g.bmpCrop, 0, uintptr(StripHeight), uintptr(unsafe.Pointer(&g.buf[0])), uintptr(unsafe.Pointer(&bi)), 0)
 	if lines == 0 {
 		return nil, errors.New("bridge: GetDIBits failed")
 	}
 
-	// Only the top-left strip is needed; convert that part from BGRX to RGBA.
-	img := image.NewRGBA(image.Rect(0, 0, StripWidth, StripHeight))
+	// BGRX to RGBA.
+	img := g.img
 	for y := 0; y < StripHeight; y++ {
-		src := buf[y*w*4 : y*w*4+StripWidth*4]
+		src := g.buf[y*StripWidth*4 : (y+1)*StripWidth*4]
 		dst := img.Pix[y*img.Stride : y*img.Stride+StripWidth*4]
 		for x := 0; x < StripWidth; x++ {
 			dst[4*x+0] = src[4*x+2]
@@ -105,4 +115,86 @@ func grabWindowStrip(hwnd uintptr, rect image.Rectangle) (*image.RGBA, error) {
 		}
 	}
 	return img, nil
+}
+
+// ensure makes sure the full-window bitmap is w x h and the strip objects exist.
+func (g *windowGrabber) ensure(w, h int) error {
+	if g.memFull != 0 && g.w == w && g.h == h && g.memCrop != 0 {
+		return nil
+	}
+	g.releaseFull()
+	if g.memCrop == 0 {
+		if err := g.createCrop(); err != nil {
+			return err
+		}
+	}
+	screen, _, _ := procGetDC.Call(0)
+	if screen == 0 {
+		return errors.New("bridge: GetDC failed")
+	}
+	defer procRelDC.Call(0, screen)
+
+	mem, _, _ := procMemDC.Call(screen)
+	if mem == 0 {
+		return errors.New("bridge: CreateCompatibleDC failed")
+	}
+	bmp, _, _ := procMemBmp.Call(screen, uintptr(w), uintptr(h))
+	if bmp == 0 {
+		procDelDC.Call(mem)
+		return errors.New("bridge: CreateCompatibleBitmap failed")
+	}
+	if old, _, _ := procSelObj.Call(mem, bmp); old == 0 {
+		procDelObj.Call(bmp)
+		procDelDC.Call(mem)
+		return errors.New("bridge: SelectObject failed")
+	}
+	g.memFull, g.bmpFull, g.w, g.h = mem, bmp, w, h
+	return nil
+}
+
+// createCrop creates the strip-sized DC and bitmap, once.
+func (g *windowGrabber) createCrop() error {
+	screen, _, _ := procGetDC.Call(0)
+	if screen == 0 {
+		return errors.New("bridge: GetDC failed")
+	}
+	defer procRelDC.Call(0, screen)
+	mem, _, _ := procMemDC.Call(screen)
+	if mem == 0 {
+		return errors.New("bridge: CreateCompatibleDC failed")
+	}
+	bmp, _, _ := procMemBmp.Call(screen, uintptr(StripWidth), uintptr(StripHeight))
+	if bmp == 0 {
+		procDelDC.Call(mem)
+		return errors.New("bridge: CreateCompatibleBitmap failed")
+	}
+	old, _, _ := procSelObj.Call(mem, bmp)
+	if old == 0 {
+		procDelObj.Call(bmp)
+		procDelDC.Call(mem)
+		return errors.New("bridge: SelectObject failed")
+	}
+	procSelObj.Call(mem, old) // leave it unselected; grab selects it when needed
+	g.memCrop, g.bmpCrop, g.oldCrop = mem, bmp, old
+	g.buf = make([]byte, StripWidth*StripHeight*4)
+	g.img = image.NewRGBA(image.Rect(0, 0, StripWidth, StripHeight))
+	return nil
+}
+
+func (g *windowGrabber) releaseFull() {
+	if g.memFull != 0 {
+		procDelObj.Call(g.bmpFull)
+		procDelDC.Call(g.memFull)
+	}
+	g.memFull, g.bmpFull, g.w, g.h = 0, 0, 0, 0
+}
+
+// close frees the GDI objects. The grabber can be used again afterwards.
+func (g *windowGrabber) close() {
+	g.releaseFull()
+	if g.memCrop != 0 {
+		procDelObj.Call(g.bmpCrop)
+		procDelDC.Call(g.memCrop)
+	}
+	g.memCrop, g.bmpCrop, g.oldCrop = 0, 0, 0
 }

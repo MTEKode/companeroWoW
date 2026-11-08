@@ -80,6 +80,8 @@ function ns.SnapshotAll()
     end
     -- Exportacion de Questie: fuera de combate, con su propio throttle de 10 s (Questie.lua).
     ns.SafeCall(ns.RequestQuestieExport)
+    -- Exportacion de WhatsTraining / RXPGuides / SkillUpForever: mismo criterio (Integrations.lua).
+    ns.SafeCall(ns.RequestIntegrationsExport)
     lastSnapshot = nowSec()
     return true
 end
@@ -155,12 +157,13 @@ end
 
 local function showHelp()
     say("Comandos:")
-    say("  /compa sync - guarda los datos (incluido Questie) y recarga la interfaz (escribe SavedVariables)")
+    say("  /compa sync - guarda los datos (Questie, WhatsTraining, RXP, SkillUpForever) y recarga la interfaz (escribe SavedVariables)")
     say("  /compa strip on|off - activa o desactiva la franja de píxeles")
     say("  /compa estado - muestra el estado actual")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
     say("  /compa marca - marca el siguiente paso de tu misión (con Questie)")
+    say("  /compa marca guia - marca el paso actual de la guía de RXP (si lo expone)")
     say("  /compa marca borrar - quita la marca de Compañero")
 end
 
@@ -183,6 +186,10 @@ local function showStatus()
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     say("Franja de píxeles: " .. (ns.IsStripOn() and "activa" or "inactiva"))
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
+    if ns.IntegrationsStatusLines then
+        for _, line in ipairs(ns.IntegrationsStatusLines()) do say(line) end
+    end
+    if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
     end
@@ -200,6 +207,7 @@ local function handleSlash(msg)
             return
         end
         if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita, antes de recargar
+        if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         ns.SnapshotAll()
         say("Datos guardados. Recargando la interfaz...")
         ns.Call("ReloadUI")

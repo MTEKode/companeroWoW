@@ -54,15 +54,28 @@ func loadStrip(img image.Image) *strip {
 //
 // Pixels outside the strip are ignored.
 func DecodeImage(img image.Image) (LiveState, error) {
+	st, _, err := decodeStrip(img, 0)
+	return st, err
+}
+
+// decodeStrip is DecodeImage with a pitch hint. When hint is a pitch that decoded last
+// time, it is tried first (if it still fits and decodes); only on failure does the full
+// search run. It returns the pitch that decoded, so the caller can pass it back next time.
+func decodeStrip(img image.Image, hint float64) (LiveState, float64, error) {
 	if img == nil {
-		return LiveState{}, fmt.Errorf("%w: nil image", ErrBadImage)
+		return LiveState{}, 0, fmt.Errorf("%w: nil image", ErrBadImage)
 	}
 	b := img.Bounds()
 	if b.Dx() < StripWidth || b.Dy() < StripHeight {
-		return LiveState{}, fmt.Errorf("%w: %dx%d is smaller than %dx%d", ErrBadImage, b.Dx(), b.Dy(), StripWidth, StripHeight)
+		return LiveState{}, 0, fmt.Errorf("%w: %dx%d is smaller than %dx%d", ErrBadImage, b.Dx(), b.Dy(), StripWidth, StripHeight)
 	}
 
 	s := loadStrip(img)
+	if hint > 0 && s.fitCost(hint) <= maxFitCost {
+		if st, err := s.decodeAtPitch(hint); err == nil {
+			return st, hint, nil
+		}
+	}
 	steps := int(math.Round((maxBlockPx - minBlockPx) / pitchStep))
 	type candidate struct {
 		k    int
@@ -75,24 +88,25 @@ func DecodeImage(img image.Image) (LiveState, error) {
 		}
 	}
 	if len(cands) == 0 {
-		return LiveState{}, fmt.Errorf("%w: no pitch in [%.1f, %d] gives uniform blocks", ErrNoMagic, minBlockPx, maxBlockPx)
+		return LiveState{}, 0, fmt.Errorf("%w: no pitch in [%.1f, %d] gives uniform blocks", ErrNoMagic, minBlockPx, maxBlockPx)
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].cost < cands[j].cost })
 
 	var firstErr error
 	for _, c := range cands {
-		st, err := s.decodeAtPitch(minBlockPx + float64(c.k)*pitchStep)
+		p := minBlockPx + float64(c.k)*pitchStep
+		st, err := s.decodeAtPitch(p)
 		if err == nil {
-			return st, nil
+			return st, p, nil
 		}
 		if firstErr == nil && !errors.Is(err, ErrNoMagic) {
 			firstErr = err
 		}
 	}
 	if firstErr != nil {
-		return LiveState{}, firstErr
+		return LiveState{}, 0, firstErr
 	}
-	return LiveState{}, fmt.Errorf("%w: blocks 0-1 are not the magic colours at any pitch in [%.1f, %d]",
+	return LiveState{}, 0, fmt.Errorf("%w: blocks 0-1 are not the magic colours at any pitch in [%.1f, %d]",
 		ErrNoMagic, minBlockPx, maxBlockPx)
 }
 
