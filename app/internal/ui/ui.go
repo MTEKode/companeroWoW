@@ -1,14 +1,14 @@
-// Package ui is the overlay window: a WebView2 page (embedded HTML, CSS and JS, no
-// network) shown on top of WoW, toggled by a global hotkey. Only the window itself is
-// Windows-specific; the types, the window state file and the page assembly are not.
+// Package ui is the overlay panel: a native Win32 window (no browser engine) shown on top
+// of WoW and toggled by a global hotkey. The types, the window state file, the Markdown
+// conversion and the layout arithmetic are platform-neutral and tested everywhere; only
+// the window itself is Windows-specific.
 package ui
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,18 +18,8 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 )
 
-// WindowTitle is the caption of the overlay window.
+// WindowTitle is the caption of the overlay window (also used to find a running copy).
 const WindowTitle = "Compañero WoW"
-
-// WebView2DownloadURL is where the user can get the WebView2 runtime.
-const WebView2DownloadURL = "https://developer.microsoft.com/microsoft-edge/webview2/"
-
-// ErrRuntimeMissing means the WebView2 runtime is not installed. The window shows a
-// message box with the download link before this error is returned.
-var ErrRuntimeMissing = errors.New("el runtime de WebView2 no está instalado")
-
-//go:embed web
-var webFS embed.FS
 
 // Backend is what the window asks of the assistant.
 type Backend interface {
@@ -38,7 +28,7 @@ type Backend interface {
 	ClearHistory() error
 }
 
-// Status is the state line shown at the bottom of the window. It is pushed every 2 s
+// Status is the state line shown at the bottom of the window. It is refreshed every 2 s
 // while the window is visible.
 type Status struct {
 	// Bridge is "connected" (pixel strip read), "no_wow" (client not found) or
@@ -59,16 +49,19 @@ type Options struct {
 	Hotkey string
 	// StatePath is the window.json file that remembers position and size.
 	StatePath string
-	// DataPath is the WebView2 user data folder.
-	DataPath string
-	Backend  Backend
-	// Status is called on the push timer and when the window is shown.
+	Backend   Backend
+	// Status is called on a timer while the window is visible, and when it is shown.
 	Status func() Status
-	// Tips delivers proactive tips; Run shows each one as a card.
+	// Tips delivers proactive tips; Run shows each one in the conversation without
+	// taking the focus.
 	Tips <-chan assistant.Tip
+	// Avoid returns the screen rectangle the panel must never cover: the WoW pixel strip
+	// at the top-left of the client area. ok is false when WoW is not found. It may be
+	// called from any goroutine.
+	Avoid func() (r Rect, ok bool)
 }
 
-// windowState is the saved geometry of the window.
+// windowState is the saved geometry of the window, in physical pixels.
 type windowState struct {
 	X int `json:"x"`
 	Y int `json:"y"`
@@ -76,34 +69,34 @@ type windowState struct {
 	H int `json:"h"`
 }
 
+// Logical sizes (at 96 DPI). The window is scaled by the monitor DPI.
 const (
 	defaultWidth  = 420
-	defaultHeight = 620
-	minWidth      = 320
-	minHeight     = 420
+	defaultHeight = 560
+	minWidth      = 300
+	minHeight     = 300
 )
 
 // defaultState is used when window.json is missing or unusable.
-func defaultState() windowState {
-	return windowState{W: defaultWidth, H: defaultHeight}
+func defaultState(scale float64) windowState {
+	return windowState{W: scaled(defaultWidth, scale), H: scaled(defaultHeight, scale)}
 }
 
-// loadWindowState reads the saved geometry. Anything unusable falls back to the default.
-func loadWindowState(path string) windowState {
-	s := defaultState()
+// loadWindowState reads the saved geometry. found is false when there is nothing
+// usable, in which case the caller places the window at its default spot.
+func loadWindowState(path string) (s windowState, found bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return s
+		return windowState{}, false
 	}
 	var saved windowState
 	if err := json.Unmarshal(data, &saved); err != nil {
-		return s
+		return windowState{}, false
 	}
-	if saved.W >= minWidth && saved.H >= minHeight {
-		s.W, s.H = saved.W, saved.H
+	if saved.W < minWidth || saved.H < minHeight {
+		return windowState{}, false
 	}
-	s.X, s.Y = saved.X, saved.Y
-	return s
+	return saved, true
 }
 
 // saveWindowState writes the geometry atomically. Errors are returned but not fatal.
@@ -129,32 +122,15 @@ func saveWindowState(path string, s windowState) error {
 	return nil
 }
 
-// pageHTML assembles the embedded page: the stylesheet and script are inlined so the
-// page needs nothing from the network.
-func pageHTML() (string, error) {
-	page, err := webFS.ReadFile("web/index.html")
-	if err != nil {
-		return "", fmt.Errorf("read embedded page: %w", err)
-	}
-	css, err := webFS.ReadFile("web/app.css")
-	if err != nil {
-		return "", fmt.Errorf("read embedded stylesheet: %w", err)
-	}
-	js, err := webFS.ReadFile("web/app.js")
-	if err != nil {
-		return "", fmt.Errorf("read embedded script: %w", err)
-	}
-	html := string(page)
-	html = strings.Replace(html, "/*CSS*/", string(css), 1)
-	html = strings.Replace(html, "/*JS*/", string(js), 1)
-	return html, nil
+// scaled converts a logical size to pixels at the given scale (1.0 = 96 DPI).
+func scaled(v int, scale float64) int {
+	return int(math.Round(float64(v) * scale))
 }
 
 // safeURL allows only http and https links to be opened.
 func safeURL(raw string) (string, error) {
 	u := strings.TrimSpace(raw)
-	lower := strings.ToLower(u)
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+	if !isHTTPURL(u) {
 		return "", fmt.Errorf("enlace no permitido: solo http y https")
 	}
 	if strings.ContainsAny(u, " \t\r\n\"<>") {
@@ -163,12 +139,12 @@ func safeURL(raw string) (string, error) {
 	return u, nil
 }
 
-// answerMsg is one history entry as the page reads it.
+// answerMsg is one history entry as the window reads it.
 type answerMsg struct {
-	Role     string `json:"role"`
-	Content  string `json:"content"`
-	Provider string `json:"provider"`
-	At       string `json:"at"`
+	Role     string
+	Content  string
+	Provider string
+	At       string
 }
 
 func toAnswerMsgs(in []store.ChatMsg) []answerMsg {
@@ -182,12 +158,6 @@ func toAnswerMsgs(in []store.ChatMsg) []answerMsg {
 		})
 	}
 	return out
-}
-
-// answerPayload is the value resolved for a question.
-type answerPayload struct {
-	Text     string `json:"text"`
-	Provider string `json:"provider"`
 }
 
 // askError turns an assistant error into the text shown to the user.

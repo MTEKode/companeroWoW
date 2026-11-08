@@ -11,7 +11,6 @@ Tiene dos piezas:
 
 - Windows 11.
 - World of Warcraft: Forever en **modo ventana o sin bordes** (la franja de píxeles no se lee en pantalla completa exclusiva).
-- **Microsoft Edge WebView2 Runtime** (en Windows 11 viene instalado; si no, la app te mostrará el enlace de descarga).
 - Al menos un proveedor de IA. Elige uno o varios; se prueban en el orden de `providerOrder`:
   - **Antigravity CLI** (`agy`): instálalo con `irm https://antigravity.google/cli/install.ps1 | iex`, ejecuta `agy` una vez y elige tu cuenta personal de Google (Free, Pro o Ultra). Ver [Antigravity CLI](#antigravity-cli).
   - **Codex CLI**: `npm i -g @openai/codex` y luego inicia sesión con `codex login`.
@@ -49,7 +48,7 @@ powershell -File app\build.ps1
 
 El diagnóstico indica si WoW está detectado, si existe SavedVariables, qué proveedores de IA están disponibles y el puerto del servidor de herramientas.
 
-Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ventana con la X solo la oculta; para salir de verdad usa el botón **Salir**. Si intentas abrir una segunda copia, se trae a primer plano la que ya está en marcha.
+Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ventana con la × solo la oculta; para salir de verdad usa **Salir** en el menú contextual de la cabecera (clic derecho). Si intentas abrir una segunda copia, se trae a primer plano la que ya está en marcha.
 
 ## Atajo de teclado
 
@@ -57,12 +56,18 @@ Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco 
 
 ## Ventana
 
-- Escribe tu pregunta y pulsa **Enter** (**Shift+Enter** para un salto de línea).
+El panel es una ventana nativa de Windows (sin navegador integrado): sin barra de título, con borde dorado y fondo oscuro semitransparente, para que parezca parte de la interfaz del juego. Siempre está encima de las demás ventanas y no aparece en la barra de tareas.
+
+- **Cabecera**: arrástrala para mover el panel. Tiene tres botones: **Limpiar** (borra el historial), **–** (oculta el panel) y **×** (también lo oculta). Cerrar con Alt+F4 también solo lo oculta.
+- **Menú contextual**: clic derecho en la cabecera para **Limpiar historial** o **Salir**. **Salir** cierra la aplicación de verdad.
+- **Tamaño**: arrastra los bordes o la esquina para cambiarlo; la posición y el tamaño se recuerdan en `window.json`.
+- Escribe tu pregunta y pulsa **Enter** (**Shift+Enter** para un salto de línea). **Escape** oculta el panel.
 - **Incluir captura**: envía una captura de la ventana de WoW para preguntas sobre lo que ves en pantalla.
-- **Limpiar historial** borra los mensajes guardados. **Salir** cierra la aplicación.
-- La barra inferior muestra el estado: WoW conectado, franja de píxeles no encontrada, o la antigüedad de los datos de SavedVariables.
-- Los consejos proactivos (al subir de nivel, completar objetivos, entregar una misión, cambiar de zona, cambiar una profesión o aceptar una misión) aparecen como tarjetas destacadas. Como mucho uno por minuto y nunca en combate.
-- Los enlaces se abren en tu navegador.
+- **Enviar** hace lo mismo que Enter. Mientras la IA responde, la barra inferior muestra «Pensando…».
+- La barra inferior muestra el estado: WoW conectado (con nivel y zona), franja de píxeles no encontrada, o la antigüedad de los datos de SavedVariables.
+- Los consejos proactivos (al subir de nivel, completar objetivos, entregar una misión, cambiar de zona, cambiar una profesión o aceptar una misión) aparecen en la conversación como tarjetas destacadas con «💡 Consejo». Como mucho uno por minuto y nunca en combate. Si el panel está oculto, aparece sin robar el foco del juego.
+- Los enlaces se abren en tu navegador (solo http y https).
+- El DPI se respeta: el panel se escala en pantallas con 125 %, 150 % y otros valores.
 
 ## Configuración (`config.json`)
 
