@@ -282,6 +282,16 @@ local function samePayload(a, b)
     return true
 end
 
+-- Igual que EncodeBlocks: los bloques ya pintados (nil = nada pintado todavia).
+local function sameBlocks(a, b)
+    if not a or not b then return false end
+    for i = 1, BLOCK_COUNT do
+        local x, y = a[i], b[i]
+        if not x or not y or x[1] ~= y[1] or x[2] ~= y[2] or x[3] ~= y[3] then return false end
+    end
+    return true
+end
+
 local function paint(blocks)
     for i = 1, BLOCK_COUNT do
         local c, t = blocks[i], B.tex[i]
@@ -291,7 +301,7 @@ local function paint(blocks)
     end
 end
 
--- Un refresco: recalcula payload, sube seq solo si cambia, y pinta.
+-- Un refresco: recalcula payload, sube seq solo si cambia, y repinta solo si cambian los bytes.
 function ns.BridgeRefresh()
     if not B.frame or not ns.IsStripOn() then return end
     local payload = ns.BuildPayload(ns.ReadLiveState())
@@ -299,7 +309,10 @@ function ns.BridgeRefresh()
         B.seq = (B.seq + 1) % 256
         B.payload = payload
     end
-    paint(ns.EncodeBlocks(B.payload, B.seq))
+    local blocks = ns.EncodeBlocks(B.payload, B.seq)
+    if sameBlocks(blocks, B.painted) then return end
+    paint(blocks)
+    B.painted = blocks
 end
 
 -- Activa o desactiva la franja y guarda la preferencia (settings.strip).
@@ -328,6 +341,7 @@ function ns.InitBridge()
     end
     if not f then return nil end
     B.frame = f
+    B.painted = nil -- texturas nuevas: el siguiente refresco debe pintar
     ns.Method(f, "SetFrameStrata", "TOOLTIP")
     ns.Method(f, "SetFrameLevel", 1000)
     ns.Method(f, "SetIgnoreParentScale", true)
