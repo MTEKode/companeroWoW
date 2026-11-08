@@ -35,9 +35,18 @@ const (
 	minBlockPx     = 1.5
 	nibbleStep     = 17
 	magicTolerance = 40 // per channel, used to locate the magic runs
-	uniformTol     = 12 // max-min per channel inside a block (noise is about +-3)
 	pitchSearch    = 1.0
 	pitchStep      = 0.004
+
+	// Pitch fit (see fitCost): noiseSlack is the spread the +-3 noise can add to one
+	// block channel and is not counted as misalignment. maxFitCost bounds the total
+	// misalignment cost of a usable strip; costTolerance is how far above the lowest
+	// cost a pitch may be and still count as a good fit; maxCandidates caps the
+	// pitches tried per image.
+	noiseSlack    = 6
+	maxFitCost    = NumBlocks * 3 * 12
+	costTolerance = NumBlocks
+	maxCandidates = 64
 
 	streamLen     = 3 + PayloadLen // version, seq, length, payload
 	crcPayloadLen = 31             // bytes 0..30 are covered by the CRC at byte 31
@@ -211,10 +220,11 @@ func DecodeBlocks(blocks [NumBlocks][3]byte) (LiveState, error) {
 // DecodeImage reads the strip from the top-left corner of img (region StripWidth x StripHeight).
 //
 //  1. The magic runs in the middle of row 0 give a pitch estimate p0.
-//  2. The pitch is refined by searching the pitch range near p0 for the value at
-//     which every block's interior pixels are uniform.
-//  3. Each block is sampled at its centre (averaged with the interior neighbours
-//     when the pitch is at least 3 px), and the colours are decoded by DecodeBlocks.
+//  2. The pitches near p0 are scored by how uniform the blocks' interior pixels are
+//     (pitchCandidates). The best-scoring pitches are tried in turn.
+//  3. Each candidate samples the blocks (decodeAtPitch) and decodes them with
+//     DecodeBlocks. The first candidate whose magic, version, length and CRC all
+//     check out gives the result; the CRC makes a false match very unlikely.
 //
 // Pixels outside the strip are ignored.
 func DecodeImage(img image.Image) (LiveState, error) {
@@ -230,17 +240,21 @@ func DecodeImage(img image.Image) (LiveState, error) {
 	if err != nil {
 		return LiveState{}, err
 	}
-	p := refinePitch(img, p0)
-	y0 := int(math.Floor(p / 2))
-
-	var blocks [NumBlocks][3]byte
-	for i := 0; i < NumBlocks; i++ {
-		blocks[i] = sampleBlock(img, i, p, y0)
+	cands, err := pitchCandidates(img, p0)
+	if err != nil {
+		return LiveState{}, err
 	}
-	if !withinTolerance(blocks[0], magic0, magicTolerance) || !withinTolerance(blocks[1], magic1, magicTolerance) {
-		return LiveState{}, fmt.Errorf("%w: blocks 0-1 are %v %v", ErrNoMagic, blocks[0], blocks[1])
+	var firstErr error
+	for _, p := range cands {
+		st, err := decodeAtPitch(img, p)
+		if err == nil {
+			return st, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
-	return DecodeBlocks(blocks)
+	return LiveState{}, firstErr
 }
 
 // estimatePitch measures the pitch from the magic runs in row 0. Block 0 starts at
@@ -298,81 +312,106 @@ func estimatePitch(img image.Image) (float64, error) {
 	return p, nil
 }
 
-// blockUniform reports whether the pixels strictly inside block i at pitch p are
-// uniform on row y. Blocks with no interior pixel count as uniform.
-func blockUniform(img image.Image, i int, p float64, y int) bool {
+// fitCost measures how well block pitch p fits the strip on the middle row. For
+// every block it takes the pixels that lie fully inside the block and sums, per
+// channel, how far their spread (max-min) exceeds noiseSlack, the spread the +-3
+// noise of a scaled client can produce. A pixel straddling an edge mixes two blocks
+// and adds a large spread, so a wrong pitch, whose interiors reach across an edge,
+// costs a lot; the correct pitch excludes the soft edge pixels and costs almost
+// nothing. It also returns the number of interior pixels, which peaks at the true pitch.
+func fitCost(img image.Image, p float64) (cost, pixels int) {
 	b := img.Bounds()
-	lo, hi := interiorRange(i, p)
-	if hi < lo {
-		return true
-	}
-	var mn, mx [3]int
-	for k, x := lo, 0; k <= hi; k, x = k+1, x+1 {
-		c := pixelRGB(img, b.Min.X+k, b.Min.Y+y)
-		for ch := 0; ch < 3; ch++ {
-			v := int(c[ch])
-			if x == 0 || v < mn[ch] {
-				mn[ch] = v
-			}
-			if x == 0 || v > mx[ch] {
-				mx[ch] = v
-			}
-		}
-	}
-	for ch := 0; ch < 3; ch++ {
-		if mx[ch]-mn[ch] > uniformTol {
-			return false
-		}
-	}
-	return true
-}
-
-// refinePitch searches [p0-pitchSearch, p0+pitchSearch] for the pitch that fits
-// the strip best and returns it. A pitch fits when every block's interior pixels
-// are uniform. Among the fitting pitches, the score is the number of interior
-// pixels in total: a pitch that is too small shrinks the interiors, one that is
-// too large pulls neighbouring pixels in. The midpoint of the best-scoring pitches
-// is returned. The magic-run estimate is only accurate to about half a pixel,
-// which is not enough to place the centre of block 27. If no pitch fits, p0 is returned.
-func refinePitch(img image.Image, p0 float64) float64 {
-	lo := math.Max(minBlockPx, p0-pitchSearch)
-	hi := math.Min(maxBlockPx, p0+pitchSearch)
-
-	bestScore, bestFirst, bestLast := -1, -1, -1
-	n := int(math.Round((hi - lo) / pitchStep))
-	for k := 0; k <= n; k++ {
-		score, ok := pitchFit(img, lo+float64(k)*pitchStep)
-		if !ok {
-			continue
-		}
-		switch {
-		case score > bestScore:
-			bestScore, bestFirst, bestLast = score, k, k
-		case score == bestScore:
-			bestLast = k
-		}
-	}
-	if bestScore < 0 {
-		return p0
-	}
-	return lo + float64(bestFirst+bestLast)/2*pitchStep
-}
-
-// pitchFit reports whether pitch p fits the strip (every block uniform on the
-// middle row) and the total number of interior pixels of all blocks.
-func pitchFit(img image.Image, p float64) (score int, ok bool) {
-	y := int(math.Floor(p / 2))
+	y := b.Min.Y + int(math.Floor(p/2))
 	for i := 0; i < NumBlocks; i++ {
 		lo, hi := interiorRange(i, p)
 		if hi < lo {
 			continue
 		}
-		score += hi - lo + 1
-		if !blockUniform(img, i, p, y) {
-			return 0, false
+		var mn, mx [3]int
+		for x := lo; x <= hi; x++ {
+			c := pixelRGB(img, b.Min.X+x, y)
+			for ch := 0; ch < 3; ch++ {
+				v := int(c[ch])
+				if x == lo || v < mn[ch] {
+					mn[ch] = v
+				}
+				if x == lo || v > mx[ch] {
+					mx[ch] = v
+				}
+			}
+		}
+		for ch := 0; ch < 3; ch++ {
+			if e := mx[ch] - mn[ch] - noiseSlack; e > 0 {
+				cost += e
+			}
+		}
+		pixels += hi - lo + 1
+	}
+	return cost, pixels
+}
+
+// pitchCandidates returns the block pitches to try, best first. It searches
+// [p0-pitchSearch, p0+pitchSearch] in pitchStep steps and keeps the pitches whose
+// fitCost is within costTolerance of the lowest. Those are ordered by the number of
+// interior pixels (a wrong pitch always loses pixels from some blocks), then by cost.
+// If the lowest cost is above maxFitCost the blocks are not there and ErrNoMagic is
+// returned.
+func pitchCandidates(img image.Image, p0 float64) ([]float64, error) {
+	lo := math.Max(minBlockPx, p0-pitchSearch)
+	hi := math.Min(maxBlockPx, p0+pitchSearch)
+	n := int(math.Round((hi - lo) / pitchStep))
+
+	type candidate struct {
+		p            float64
+		cost, pixels int
+	}
+	all := make([]candidate, 0, n+1)
+	bestCost := math.MaxInt
+	for k := 0; k <= n; k++ {
+		c := candidate{p: lo + float64(k)*pitchStep}
+		c.cost, c.pixels = fitCost(img, c.p)
+		all = append(all, c)
+		if c.cost < bestCost {
+			bestCost = c.cost
 		}
 	}
-	return score, true
+	if bestCost > maxFitCost {
+		return nil, fmt.Errorf("%w: no uniform blocks at pitch near %.2f (fit cost %d)", ErrNoMagic, p0, bestCost)
+	}
+	var near []candidate
+	for _, c := range all {
+		if c.cost <= bestCost+costTolerance {
+			near = append(near, c)
+		}
+	}
+	sort.SliceStable(near, func(i, j int) bool {
+		if near[i].pixels != near[j].pixels {
+			return near[i].pixels > near[j].pixels
+		}
+		return near[i].cost < near[j].cost
+	})
+	if len(near) > maxCandidates {
+		near = near[:maxCandidates]
+	}
+	out := make([]float64, len(near))
+	for i, c := range near {
+		out[i] = c.p
+	}
+	return out, nil
+}
+
+// decodeAtPitch samples the blocks at pitch p and decodes them. The magic blocks must
+// show the expected colours, and the CRC must match.
+func decodeAtPitch(img image.Image, p float64) (LiveState, error) {
+	y0 := int(math.Floor(p / 2))
+	var blocks [NumBlocks][3]byte
+	for i := 0; i < NumBlocks; i++ {
+		blocks[i] = sampleBlock(img, i, p, y0)
+	}
+	if !withinTolerance(blocks[0], magic0, magicTolerance) || !withinTolerance(blocks[1], magic1, magicTolerance) {
+		return LiveState{}, fmt.Errorf("%w: blocks 0-1 are %v %v", ErrNoMagic, blocks[0], blocks[1])
+	}
+	return DecodeBlocks(blocks)
 }
 
 // interiorRange returns the first and last pixel column that lie fully inside
