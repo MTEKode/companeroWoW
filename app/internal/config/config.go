@@ -9,47 +9,60 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 )
 
-// APIProvider is an OpenAI-compatible endpoint (NVIDIA, Z.ai, Alibaba...).
+// APIProvider is an OpenAI-compatible endpoint (NVIDIA, Z.ai...).
+// The key comes from APIKey (literal), else from the environment variable APIKeyEnv,
+// else from the first .env file that defines it (see ResolveKey).
 type APIProvider struct {
-	Name    string `json:"name"`
-	BaseURL string `json:"baseUrl"`
-	APIKey  string `json:"apiKey"`
-	Model   string `json:"model"`
+	Name      string `json:"name"`
+	BaseURL   string `json:"baseUrl"`
+	APIKey    string `json:"apiKey"`
+	APIKeyEnv string `json:"apiKeyEnv"`
+	Model     string `json:"model"`
+}
+
+// defaultNVIDIAProvider is the API provider used when the config lists none.
+var defaultNVIDIAProvider = APIProvider{
+	Name:      "nvidia",
+	BaseURL:   "https://integrate.api.nvidia.com/v1",
+	APIKeyEnv: "NVIDIA_KEY",
+	Model:     "meta/llama-4-maverick-17b-128e-instruct",
 }
 
 // Config is the persisted application configuration.
 type Config struct {
-	WoWPath       string        `json:"wowPath"`
-	Account       string        `json:"account"`
-	Hotkey        string        `json:"hotkey"`
-	Language      string        `json:"language"`
-	ProviderOrder []string      `json:"providerOrder"`
-	GeminiCommand string        `json:"geminiCommand"`
-	CodexCommand  string        `json:"codexCommand"`
-	APIProviders  []APIProvider `json:"apiProviders"`
-	MCPPort       int           `json:"mcpPort"`
-	Proactive     bool          `json:"proactive"`
-	WebSources    []string      `json:"webSources"`
-	PixelPollMs   int           `json:"pixelPollMs"`
-	AITimeoutSec  int           `json:"aiTimeoutSec"`
+	WoWPath            string        `json:"wowPath"`
+	Account            string        `json:"account"`
+	Hotkey             string        `json:"hotkey"`
+	Language           string        `json:"language"`
+	ProviderOrder      []string      `json:"providerOrder"`
+	AntigravityCommand string        `json:"antigravityCommand"`
+	CodexCommand       string        `json:"codexCommand"`
+	APIProviders       []APIProvider `json:"apiProviders"`
+	MCPPort            int           `json:"mcpPort"`
+	Proactive          bool          `json:"proactive"`
+	WebSources         []string      `json:"webSources"`
+	PixelPollMs        int           `json:"pixelPollMs"`
+	AITimeoutSec       int           `json:"aiTimeoutSec"`
 }
 
 // Defaults returns a Config populated with the default values.
 func Defaults() Config {
 	return Config{
-		WoWPath:       `C:\Program Files (x86)\World of Warcraft\_forever_`,
-		Account:       "",
-		Hotkey:        "Ctrl+Shift+Space",
-		Language:      "es",
-		ProviderOrder: []string{"gemini", "codex", "api"},
-		GeminiCommand: "gemini",
-		CodexCommand:  "codex",
-		APIProviders:  []APIProvider{},
-		MCPPort:       47321,
-		Proactive:     true,
+		WoWPath:            `C:\Program Files (x86)\World of Warcraft\_forever_`,
+		Account:            "",
+		Hotkey:             "Ctrl+Shift+Space",
+		Language:           "es",
+		ProviderOrder:      []string{"antigravity", "codex", "api"},
+		AntigravityCommand: "agy",
+		CodexCommand:       "codex",
+		APIProviders:       []APIProvider{defaultNVIDIAProvider},
+		MCPPort:            47321,
+		Proactive:          true,
 		WebSources: []string{
 			"warcraft.wiki.gg",
 			"www.warcrafttavern.com",
@@ -101,7 +114,40 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	if c.migrate() {
+		if err := c.Save(path); err != nil {
+			return nil, fmt.Errorf("save migrated config %s: %w", path, err)
+		}
+	}
 	return &c, nil
+}
+
+// migrate upgrades a config written by an earlier version and reports whether it changed
+// anything. Gemini CLI is gone (Google ended its personal-account login), so "gemini" in
+// ProviderOrder becomes "antigravity" (only once). An empty apiProviders list gets the
+// NVIDIA default.
+func (c *Config) migrate() bool {
+	changed := false
+	var order []string
+	for _, name := range c.ProviderOrder {
+		if strings.EqualFold(strings.TrimSpace(name), "gemini") {
+			name = "antigravity"
+			changed = true
+		}
+		if name == "antigravity" && slices.Contains(order, "antigravity") {
+			changed = true
+			continue
+		}
+		order = append(order, name)
+	}
+	if changed {
+		c.ProviderOrder = order
+	}
+	if len(c.APIProviders) == 0 {
+		c.APIProviders = []APIProvider{defaultNVIDIAProvider}
+		changed = true
+	}
+	return changed
 }
 
 // Save writes the config as pretty JSON (2-space indent). The write is atomic:
