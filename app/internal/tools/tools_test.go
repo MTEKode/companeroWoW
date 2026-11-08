@@ -19,6 +19,9 @@ import (
 const fixture = "../../testdata/CompaneroWoW.lua"
 
 var wantNames = []string{
+	"contexto_jugador",
+	"guia_mision",
+	"plan_profesiones",
 	"capturar_pantalla",
 	"estado_conexion",
 	"obtener_ubicacion",

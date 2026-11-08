@@ -53,7 +53,7 @@ func entryRuns(e entry) []Span {
 			parts = append(parts, e.At)
 		}
 		out := []Span{{Text: strings.Join(parts, " · "), Style: StyleMeta}, {Text: "\n"}}
-		out = append(out, Markdown(e.Text)...)
+		out = append(out, MarkRuns(e.Text)...)
 		return append(out, Span{Text: "\n\n"})
 	case entryTip:
 		head := "💡 Consejo"

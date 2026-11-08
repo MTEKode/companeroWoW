@@ -1,30 +1,24 @@
 package assistant
 
-// SystemPrompt is the instruction set sent with every question. It is in Spanish
-// because the companion always answers in castellano.
-const SystemPrompt = `Eres "Compañero", un experto acompañante de World of Warcraft: Forever (la versión oficial de Blizzard, cliente moderno, Interface 16001).
+import "github.com/MTEKode/companeroWoW/app/internal/skill"
 
-Reglas:
-- Responde SIEMPRE en castellano, de forma concisa y accionable: pasos numerados cuando sea una guía.
-- Las coordenadas se escriben como "(x, y)" con 1 decimal, y los nombres de zona tal cual aparecen en el juego.
-- Antes de responder preguntas de situación (dónde estoy, qué misión llevo, qué entreno, qué me conviene), consulta SIEMPRE las herramientas del juego: obtener_ubicacion, obtener_misiones, obtener_personaje, obtener_profesiones, obtener_hechizos, obtener_talentos, obtener_inventario, obtener_objetivo y las demás que sean relevantes.
-- Para datos del juego usa SOLO información de WoW: Forever. Primero busca con buscar_conocimiento (base de datos aprendida del propio juego). Si no basta, usa buscar_web y leer_pagina sobre las fuentes de Forever. Nunca asumas que los datos de Retail o Classic valen en Forever; si no estás seguro, dilo claramente.
-- Cita la fuente web (nombre del sitio y enlace) cuando uses información de internet.
-- Usa capturar_pantalla cuando la pregunta dependa de lo que se ve en pantalla.
-- Nunca sugieras automatización, bots, macros que sustituyan al jugador ni acciones que incumplan los términos de servicio.
-- Si no tienes datos suficientes, di qué falta y cómo obtenerlo (por ejemplo, escribir /compa sync en el juego).`
+// SystemPrompt is the companion's instruction set. It is derived from the companero skill
+// (internal/skill/SKILL.md), the single source of truth: the API providers send it as the
+// system prompt and the CLI providers read the same text from their own files.
+var SystemPrompt = skill.SystemPrompt()
 
-// proactiveInstruction is appended to the prompt of each proactive tip.
-const proactiveInstruction = "Responde en castellano con como máximo 3 frases cortas, concretas y accionables. Usa las herramientas del juego si necesitas datos."
+// proactiveInstruction is appended to the prompt of each proactive tip. Tips use the
+// skill's answer format, shortened.
+const proactiveInstruction = "Responde en castellano en como máximo 2 líneas cortas y, si importa un lugar, añade una línea «📍 /compa marca <x> <y> <texto>». Empieza por contexto_jugador; si no hay datos, dilo en una línea."
 
 // tipPrompts maps a LiveState event code to the question asked for a proactive tip.
 var tipPrompts = map[uint8]string{
-	1: "Acabo de subir de nivel. ¿Qué hechizos o talentos debo entrenar y a qué zona o misiones debo ir a continuación?",
-	2: "Acabo de completar los objetivos de una misión. ¿Dónde debo entregarla y qué hago después?",
+	1: "Acabo de subir de nivel. ¿Qué misión y en qué zona hago ahora para seguir subiendo?",
+	2: "Acabo de completar los objetivos de una misión. ¿Dónde la entrego y cuál es el siguiente paso?",
 	3: "Acabo de entregar una misión. ¿Qué misión me conviene hacer ahora según mi nivel y zona?",
-	4: "Acabo de cambiar de zona. ¿Cuáles son las mejores misiones aquí para mi nivel?",
-	5: "Mi habilidad en una profesión acaba de cambiar. ¿Me conviene entrenar ahora la profesión o esperar?",
-	6: "Acabo de aceptar una misión. ¿Dónde está su objetivo y qué debo preparar?",
+	4: "Acabo de cambiar de zona. ¿Qué misiones me convienen aquí para mi nivel?",
+	5: "Mi habilidad en una profesión acaba de cambiar. ¿Conviene entrenar ahora o esperar?",
+	6: "Acabo de aceptar una misión. ¿Dónde está su primer objetivo?",
 }
 
 // tipTitles is the card title shown for each event code.

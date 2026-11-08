@@ -3,11 +3,13 @@ package ai
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/skill"
 )
 
 type codex struct {
@@ -55,6 +57,13 @@ func (c *codex) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 	if err := os.MkdirAll(c.workDir, 0o755); err != nil {
 		return Response{}, fmt.Errorf("crear carpeta de trabajo: %w", err)
+	}
+	// Codex reads AGENTS.md from its working directory, so the skill is not repeated in
+	// the prompt when the file is in place. Otherwise it travels inline.
+	if _, err := skill.DeployCodex(c.workDir); err != nil {
+		log.Printf("codex: skill inline (no pude escribir AGENTS.md): %v", err)
+	} else {
+		req.Skill = ""
 	}
 
 	// The final message is captured through --output-last-message into a file in workDir.

@@ -115,7 +115,7 @@ func TestAskPersistsTurnsAndSendsHistoryInOrder(t *testing.T) {
 	}
 }
 
-func TestAskLimitsHistoryToTwentyMessages(t *testing.T) {
+func TestAskLimitsHistoryToTenMessages(t *testing.T) {
 	st := openStore(t)
 	for i := 0; i < 25; i++ {
 		if _, err := st.AddMessage(store.ChatMsg{Role: "user", Content: string(rune('a' + i%26))}); err != nil {
@@ -226,12 +226,13 @@ func TestDisplayCoordAndLimitSentences(t *testing.T) {
 	if got := displayCoord(32.5); got != 32.5 {
 		t.Errorf("displayCoord(32.5) = %v", got)
 	}
-	in := "Primera frase. Segunda frase! Tercera? Cuarta frase.\nQuinta"
-	if got := limitSentences(in, 3); got != "Primera frase. Segunda frase! Tercera?" {
-		t.Errorf("limitSentences = %q", got)
+	in := "Primera frase.\n\nSegunda frase!\nTercera?\nCuarta frase."
+	if got := limitLines(in, 3); got != "Primera frase.\nSegunda frase!\nTercera?" {
+		t.Errorf("limitLines = %q", got)
 	}
-	if got := limitSentences("Vale 1.5 de oro. Fin", 3); got != "Vale 1.5 de oro. Fin" {
-		t.Errorf("decimal split: %q", got)
+	marca := "Vale 1.5 de oro.\n📍 /compa marca 45.2 67.1 Entregar"
+	if got := limitLines(marca, 3); got != marca {
+		t.Errorf("command line must stay intact: %q", got)
 	}
 }
 

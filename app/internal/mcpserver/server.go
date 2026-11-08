@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/MTEKode/companeroWoW/app/internal/skill"
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -32,7 +33,7 @@ type Server struct {
 // New builds an MCP server with every tool of reg. version is reported to clients.
 func New(reg *tools.Registry, version string) *Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: version}, &mcp.ServerOptions{
-		Instructions: "Herramientas de WoW Forever: estado del juego, misiones, NPCs, captura de pantalla y búsqueda en fuentes de la versión Forever. Todo el texto está en español.",
+		Instructions: skill.MCPInstructions(),
 	})
 	s := &Server{reg: reg, mcp: srv}
 	for _, d := range reg.Defs() {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Content is one piece of a tool result. Type is "text" or "image".
@@ -31,11 +32,22 @@ type Def struct {
 	Handler     func(ctx context.Context, args json.RawMessage) (Result, error)
 }
 
+// CallRecord describes one finished call, for observers such as the evaluation harness.
+type CallRecord struct {
+	Name     string
+	Args     string
+	Text     string
+	IsError  bool
+	Err      string
+	Duration time.Duration
+}
+
 // Registry holds tools in registration order. It is not safe for concurrent Add;
 // build it once and then call it from any goroutine.
 type Registry struct {
-	defs  []Def
-	index map[string]int
+	defs     []Def
+	index    map[string]int
+	observer func(CallRecord)
 }
 
 // NewRegistry returns an empty registry.
@@ -60,9 +72,34 @@ func (r *Registry) Defs() []Def {
 	return out
 }
 
+// SetObserver makes f receive a CallRecord after every call, from any transport. Nil
+// removes the observer. Set it before the registry serves calls; f must be safe for
+// concurrent use because MCP and API calls may overlap.
+func (r *Registry) SetObserver(f func(CallRecord)) {
+	r.observer = f
+}
+
 // Call runs the named tool. An unknown name is an error. Errors and panics raised by
 // the handler are returned as a Result with IsError set and a Spanish message.
-func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) (res Result, err error) {
+func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) (Result, error) {
+	start := time.Now()
+	res, err := r.call(ctx, name, args)
+	if r.observer != nil {
+		rec := CallRecord{Name: name, Args: string(args), IsError: res.IsError, Duration: time.Since(start)}
+		for _, c := range res.Content {
+			if c.Type == "text" {
+				rec.Text += c.Text
+			}
+		}
+		if err != nil {
+			rec.Err = err.Error()
+		}
+		r.observer(rec)
+	}
+	return res, err
+}
+
+func (r *Registry) call(ctx context.Context, name string, args json.RawMessage) (res Result, err error) {
 	i, ok := r.index[name]
 	if !ok {
 		return Result{}, fmt.Errorf("herramienta desconocida: %s", name)

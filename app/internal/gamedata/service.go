@@ -190,6 +190,8 @@ func (g *Service) Quests() (any, error) {
 	}
 	var trackedFromSV int64
 	list := make([]map[string]any, 0)
+	qx := readQuestie(ch.data)
+	pos := g.playerPosition()
 	for _, e := range entriesOf(ch.data["quests"]) {
 		qm, ok := e.value.(map[string]any)
 		if !ok {
@@ -205,6 +207,13 @@ func (g *Service) Quests() (any, error) {
 		}
 		if err := g.enrichQuest(q, id); err != nil {
 			return nil, err
+		}
+		if qq, ok := qx.quest(id); ok {
+			q["questie"] = map[string]any{
+				"starters":   sourcesView(qq.Starters, pos),
+				"finishers":  sourcesView(qq.Finishers, pos),
+				"objectives": objectivesView(qq.Objectives, pos),
+			}
 		}
 		list = append(list, q)
 	}

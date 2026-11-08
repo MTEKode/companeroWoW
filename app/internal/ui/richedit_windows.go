@@ -60,6 +60,10 @@ func (w *window) charFormat(s SpanStyle) charFormat2 {
 	if s&StyleTip != 0 {
 		back = colTipBG
 	}
+	if s&StyleMark != 0 {
+		back = colTipBG
+		color = colHeading
+	}
 	cf := charFormat2{
 		CbSize:      uint32(unsafe.Sizeof(charFormat2{})),
 		DwMask:      cfmSize | cfmColor | cfmFace | cfmBackColor | cfmBold | cfmUnderline | cfmLink,

@@ -23,6 +23,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
+	"github.com/MTEKode/companeroWoW/app/internal/skill"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
 	"github.com/MTEKode/companeroWoW/app/internal/ui"
@@ -53,14 +54,27 @@ func init() {
 	runtime.LockOSThread()
 }
 
-func main() {
-	diag := flag.Bool("diag", false, "imprime el estado (WoW, SavedVariables, proveedores de IA) y sale, sin abrir la ventana")
-	diagOut := flag.String("diag-out", "", "con --diag, escribe el JSON en este archivo")
-	flag.Parse()
-	os.Exit(run(*diag, *diagOut))
+// options are the command-line switches.
+type options struct {
+	diag         bool
+	diagOut      string
+	eval         bool
+	evalOut      string
+	evalProvider string
 }
 
-func run(diag bool, diagOut string) int {
+func main() {
+	var o options
+	flag.BoolVar(&o.diag, "diag", false, "imprime el estado (WoW, SavedVariables, proveedores de IA) y sale, sin abrir la ventana")
+	flag.StringVar(&o.diagOut, "diag-out", "", "con --diag, escribe el JSON en este archivo")
+	flag.BoolVar(&o.eval, "eval", false, "responde las preguntas de evaluación con la cadena real, escribe el informe y sale")
+	flag.StringVar(&o.evalOut, "eval-out", "", "con --eval, ruta del informe .md (el .json va al lado); por defecto en la carpeta de datos de la app")
+	flag.StringVar(&o.evalProvider, "eval-provider", "", "con --eval, usa solo este proveedor: antigravity, codex o api")
+	flag.Parse()
+	os.Exit(run(o))
+}
+
+func run(o options) int {
 	dir, err := config.DefaultDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -82,8 +96,11 @@ func run(diag bool, diagOut string) int {
 		return 1
 	}
 
-	if diag {
-		return runDiag(cfg, dir, diagOut)
+	if o.diag {
+		return runDiag(cfg, dir, o.diagOut)
+	}
+	if o.eval {
+		return runEval(cfg, dir, o.evalOut, o.evalProvider)
 	}
 
 	release, first := acquireSingleInstance()
@@ -101,6 +118,12 @@ func run(diag bool, diagOut string) int {
 func runApp(cfg *config.Config, dir string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// The companion's skill is written where each provider reads it, and again before each
+	// question if a file goes missing or changes.
+	if err := skill.DeployAll(dir); err != nil {
+		log.Printf("skill: %v", err)
+	}
 
 	st, err := store.Open(filepath.Join(dir, "companero.db"))
 	if err != nil {
@@ -309,6 +332,8 @@ type diagReport struct {
 	MCPPort             int            `json:"mcpPort"`
 	Hotkey              string         `json:"hotkey"`
 	Proactive           bool           `json:"proactive"`
+	SkillVersion        string         `json:"skillVersion"`
+	SkillInstalled      bool           `json:"skillInstalled"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -325,6 +350,8 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		Hotkey:            cfg.Hotkey,
 		Proactive:         cfg.Proactive,
 		SavedVariablesAge: -1,
+		SkillVersion:      skill.Version(),
+		SkillInstalled:    skill.Installed(dir),
 	}
 	if _, _, err := bridge.FindWoWWindow(); err == nil {
 		rep.WoWDetected = true

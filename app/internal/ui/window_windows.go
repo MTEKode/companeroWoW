@@ -488,7 +488,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		nh := (*nmhdr)(fromUintptr(lp))
 		if nh.HWndFrom == w.conv && nh.Code == enLink {
 			if lk := (*enLinkMsg)(fromUintptr(lp)); lk.Msg == wmLButtonUp {
-				w.openLink(w.linkText(lk.Range))
+				w.linkClicked(w.linkText(lk.Range))
 			}
 		}
 		return 0
@@ -850,6 +850,20 @@ func (w *window) drainTips() {
 			return
 		}
 	}
+}
+
+// linkClicked copies a clicked map mark to the clipboard, or opens any other link.
+func (w *window) linkClicked(text string) {
+	if cmd, ok := CommandFromLink(text); ok {
+		if err := CopyText(cmd); err != nil {
+			w.notice = "No pude copiar la marca: " + err.Error()
+		} else {
+			w.notice = CopiedNotice
+		}
+		w.refreshStatus()
+		return
+	}
+	w.openLink(text)
 }
 
 // openLink opens an http or https link in the default browser.
