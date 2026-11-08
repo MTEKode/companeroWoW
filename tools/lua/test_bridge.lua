@@ -211,20 +211,83 @@ ns.AppendU32(out, 0x01020304)
 eq("AppendU32 big-endian", table.concat(out, ","), "1,2,3,4")
 
 -- ---------------------------------------------------------------------------
-print("(f) ComputePixelSize: 1 pixel fisico = 1 / escala del marco")
--- Caso real: Windows 133 %. GetPhysicalScreenSize devuelve 1080 (escalado) pero la pantalla
--- tiene 1440 px fisicos: UIParent mide 768 unidades con escala efectiva 1.875 -> 768 * 1.875 = 1440.
-near("physH 1080 (DPI), UIParent 768 x 1.875, marco 1.875 -> 1/1.875", ns.ComputePixelSize(1080, 768, 1.875, 1.875), 1 / 1.875, 1e-9)
-near("bloque de 4 px fisicos mide 4 / 1.875 unidades", 4 * ns.ComputePixelSize(1080, 768, 1.875, 1.875), 4 / 1.875, 1e-9)
--- Comprobacion fisica: bloque * escala del marco = 4 pixeles fisicos.
-near("bloque 4 px * escala marco = 4 px fisicos", 4 * ns.ComputePixelSize(1080, 768, 1.875, 1.875) * 1.875, 4, 1e-9)
-near("con physH 1440 o 1080 el resultado es el mismo", ns.ComputePixelSize(1440, 768, 1.875, 1.875), ns.ComputePixelSize(1080, 768, 1.875, 1.875), 1e-9)
-near("UIParent 768 eff 1, marco 1 -> 1", ns.ComputePixelSize(1440, 768, 1, 1), 1, 1e-9)
-near("marco eff 0.5 -> 2 unidades por pixel", ns.ComputePixelSize(1440, 768, 1, 0.5), 2, 1e-9)
-near("sin marco eff -> usa 1", ns.ComputePixelSize(1440, 768, 1, nil), 1, 1e-9)
-eq("sin UIParent -> fallback 768/physH", ns.ComputePixelSize(1080, nil, nil, nil), 768 / 1080)
-eq("sin UIParent (escala nil) -> fallback 768/physH", ns.ComputePixelSize(1440, 768, nil, 1), 768 / 1440)
-eq("physH invalida y sin UIParent -> nil", ns.ComputePixelSize(0, nil, nil, 1), nil)
+print("(f) ComputePixelSize: unidades de marco por pixel fisico")
+-- Caso real: Windows 133 %, ventana de 1440 px fisicos, UIParent de 768 unidades.
+-- 1 unidad = 1440 / 768 = 1.875 px, asi que un bloque de 4 px mide 4 * 768 / 1440 unidades.
+near("1440 px fisicos, UIParent 768 -> 768/1440 unidades por pixel", ns.ComputePixelSize(1440, 768), 768 / 1440, 1e-9)
+near("bloque 4 px = 4 * 768/1440 unidades", 4 * ns.ComputePixelSize(1440, 768), 4 * 768 / 1440, 1e-9)
+-- Comprobacion fisica: bloque (unidades) * unidades por pixel fisico = 4 pixeles fisicos.
+near("bloque 4 px * (1440/768) = 4 px fisicos", 4 * ns.ComputePixelSize(1440, 768) * (1440 / 768), 4, 1e-9)
+near("1080 px fisicos, UIParent 768 -> 768/1080", ns.ComputePixelSize(1080, 768), 768 / 1080, 1e-9)
+near("sin UIParent (nil) -> referencia 768", ns.ComputePixelSize(1440, nil), 768 / 1440, 1e-9)
+near("UIParent 900 -> 900/1440", ns.ComputePixelSize(1440, 900), 900 / 1440, 1e-9)
+eq("altura fisica 0 -> nil", ns.ComputePixelSize(0, 768), nil)
+eq("altura fisica nil -> nil", ns.ComputePixelSize(nil, 768), nil)
+
+-- ---------------------------------------------------------------------------
+print("(g) GameWindowHeight: fuentes de la altura fisica y escala del bloque")
+local function setPhysical(fn) _G.GetPhysicalScreenSize = fn end
+local function setCVars(t)
+    _G.GetCVar = function(name) return t[name] end
+end
+local function clearSources()
+    _G.C_VideoOptions = nil
+    _G.C_CVar = nil
+    _G.GetCVar = nil
+end
+
+-- 1) C_VideoOptions.GetCurrentGameWindowSize gana sobre todo lo demas.
+clearSources()
+_G.C_VideoOptions = { GetCurrentGameWindowSize = function() return { x = 3440, y = 1440 } end }
+setCVars({ gxWindow = "0", gxFullscreenResolution = "1920x1080" })
+setPhysical(function() return 1920, 1080 end)
+local h, src = ns.GameWindowHeight()
+eq("C_VideoOptions: altura 1440", h, 1440)
+eq("C_VideoOptions: fuente", src, "C_VideoOptions")
+
+-- 2) Sin C_VideoOptions: CVar gxFullscreenResolution en pantalla completa o sin ventana.
+clearSources()
+setCVars({ gxWindow = "0", gxFullscreenResolution = "3440x1440", gxWindowedResolution = "2560x1080" })
+h, src = ns.GameWindowHeight()
+eq("CVar pantalla completa: altura 1440", h, 1440)
+eq("CVar pantalla completa: fuente", src, "CVar gxFullscreenResolution")
+
+-- 3) Ventana (gxWindow 1): gxWindowedResolution.
+clearSources()
+setCVars({ gxWindow = "1", gxFullscreenResolution = "3440x1440", gxWindowedResolution = "2560x1080" })
+h, src = ns.GameWindowHeight()
+eq("CVar ventana: altura 1080", h, 1080)
+eq("CVar ventana: fuente", src, "CVar gxWindowedResolution")
+
+-- 4) Sin CVar: GetPhysicalScreenSize.
+clearSources()
+setPhysical(function() return 3440, 1440 end)
+h, src = ns.GameWindowHeight()
+eq("GetPhysicalScreenSize: altura 1440", h, 1440)
+eq("GetPhysicalScreenSize: fuente", src, "GetPhysicalScreenSize")
+
+-- 5) Nada disponible.
+setPhysical(function() return nil end)
+h, src = ns.GameWindowHeight()
+eq("sin fuente: altura nil", h, nil)
+eq("sin fuente: fuente ninguna", src, "ninguna")
+
+-- Escala del bloque con UIParent 768 y la altura de C_VideoOptions: 4 px fisicos.
+clearSources()
+_G.C_VideoOptions = { GetCurrentGameWindowSize = function() return { x = 3440, y = 1440 } end }
+_G.UIParent = { GetHeight = function() return 768 end }
+ns.InitBridge()
+local B = ns.bridge
+near("InitBridge: bloque 4 px fisicos (4 * (1440/768) * unidades por pixel)", 4 * B.pixel * (B.physH / B.uiH), 4, 1e-9)
+eq("InitBridge: fuente registrada", B.physSource, "C_VideoOptions")
+local lines = table.concat(ns.BridgeDebugLines(), "\n")
+check("estado: muestra altura y fuente", string.find(lines, "1440 px %(C_VideoOptions%)") ~= nil, lines)
+check("estado: muestra el pixel", string.find(lines, "Pixel fisico") ~= nil, lines)
+
+-- Limpieza de stubs para no afectar a otras pruebas.
+clearSources()
+_G.UIParent = nil
+setPhysical(function() return 1920, 1080 end)
 
 -- ---------------------------------------------------------------------------
 if failures > 0 then

@@ -1,5 +1,6 @@
 -- Bridge.lua: franja de pixeles (addon -> app), protocolo v2 (robusto a escalado y desplazamiento de color).
 -- BuildPayload, EncodeBlocks y ComputePixelSize son funciones puras (testeables offline).
+-- GameWindowHeight consulta la API (C_VideoOptions, CVar, GetPhysicalScreenSize) y se prueba con stubs.
 -- Los arrays son 1-based: byte k (0-based del contrato) = payload[k + 1].
 local ADDON_NAME, ns = ...
 ns = ns or {}
@@ -123,24 +124,61 @@ function ns.EncodeBlocks(payload, seq)
     return blocks
 end
 
--- Tamano de un pixel fisico en unidades del marco de la franja.
--- physH: GetPhysicalScreenSize. Puede venir escalado por DPI (con 133 % de Windows
---   en 1440 px fisicos devuelve 1080), por eso NO se usa cuando hay UIParent.
--- uiHeight/uiScale: GetHeight/GetEffectiveScale de UIParent. UIParent cubre toda la
---   pantalla: su altura fisica real es uiHeight * uiScale (768 * 1.875 = 1440 px).
--- frameScale: GetEffectiveScale del marco de la franja (pixeles fisicos por unidad).
--- Con UIParent: 1 pixel fisico = 1 / frameScale unidades del marco.
--- Sin UIParent (uiHeight o uiScale nil): cae a 768 / physH.
-function ns.ComputePixelSize(physH, uiHeight, uiScale, frameScale)
-    frameScale = tonumber(frameScale)
-    if not frameScale or frameScale <= 0 then frameScale = 1 end
-    uiHeight, uiScale = tonumber(uiHeight), tonumber(uiScale)
-    if uiHeight and uiHeight > 0 and uiScale and uiScale > 0 then
-        return 1 / frameScale
-    end
+-- Unidades de marco por pixel fisico. uiHeight: altura de UIParent en unidades (768 en
+-- un cliente normal). physH: altura real de la ventana de juego en pixeles fisicos.
+-- La franja usa el marco sin escala propia, cuyas unidades son las de UIParent: un
+-- bloque de BLOCK_PX pixeles fisicos mide BLOCK_PX * uiHeight / physH unidades.
+-- Con 1440 px fisicos y UIParent de 768 unidades: 1 unidad = 1.875 px, bloque = 4 px.
+function ns.ComputePixelSize(physH, uiHeight)
     physH = tonumber(physH)
     if not physH or physH <= 0 then return nil end
-    return REFERENCE_UNITS / physH
+    uiHeight = tonumber(uiHeight)
+    if not uiHeight or uiHeight <= 0 then uiHeight = REFERENCE_UNITS end
+    return uiHeight / physH
+end
+
+-- Lee un CVar como cadena limpia o nil.
+local function cvarText(name)
+    return ns.Str(ns.Call("C_CVar.GetCVar", name)) or ns.Str(ns.Call("GetCVar", name))
+end
+
+-- Altura en pixeles de una resolucion "3440x1440". nil si no tiene ese formato.
+local function resolutionHeight(text)
+    if not text then return nil end
+    local _, h = string.match(text, "^(%d+)x(%d+)$")
+    return tonumber(h)
+end
+
+-- Altura fisica real de la ventana de juego y de donde sale. Orden:
+-- 1) C_VideoOptions.GetCurrentGameWindowSize (vector x,y);
+-- 2) CVar gxFullscreenResolution o gxWindowedResolution ("3440x1440"), segun gxWindow
+--    (1 = ventana: la ventana, si no el monitor);
+-- 3) GetPhysicalScreenSize (con DPI de Windows puede venir escalado: 1080 en un 1440).
+-- Devuelve la altura (o nil) y el nombre de la fuente.
+function ns.GameWindowHeight()
+    local v = ns.Call("C_VideoOptions.GetCurrentGameWindowSize")
+    local h
+    if type(v) == "table" then
+        h = ns.Num(v.y)
+    end
+    if not h and v ~= nil then
+        local _, y = ns.Method(v, "GetXY")
+        h = ns.Num(y)
+    end
+    if h and h > 0 then return h, "C_VideoOptions" end
+
+    local windowed = cvarText("gxWindow") == "1"
+    local first, second = "gxFullscreenResolution", "gxWindowedResolution"
+    if windowed then first, second = second, first end
+    h = resolutionHeight(cvarText(first))
+    if h and h > 0 then return h, "CVar " .. first end
+    h = resolutionHeight(cvarText(second))
+    if h and h > 0 then return h, "CVar " .. second end
+
+    local _, physH = ns.Call("GetPhysicalScreenSize")
+    h = ns.Num(physH)
+    if h and h > 0 then return h, "GetPhysicalScreenSize" end
+    return nil, "ninguna"
 end
 
 -- ---------------------------------------------------------------------------
@@ -201,33 +239,28 @@ function ns.IsStripOn()
     return not (type(db) == "table" and type(db.settings) == "table" and db.settings.strip == false)
 end
 
--- Lineas de diagnostico para /compa estado: pixel calculado y ambas alturas fisicas.
+-- Lineas de diagnostico para /compa estado: altura fisica usada y su fuente, y el pixel.
 function ns.BridgeDebugLines()
-    local physW, physH = ns.Call("GetPhysicalScreenSize")
-    local effText = B.physHEff and string.format("%.0f px", B.physHEff) or "n/d"
+    local h = B.physH
+    local hText = h and string.format("%d px (%s)", h, B.physSource or "?") or "desconocida"
     return {
-        string.format("Pixel fisico: %.4f unidades de marco (bloque %dx%d px)", B.pixel or 0, BLOCK_PX, BLOCK_PX),
-        string.format("Altura fisica (GetPhysicalScreenSize): %sx%s", tostring(physW), tostring(physH)),
-        string.format("Altura fisica (UIParent x escala): %s", effText),
+        string.format("Altura fisica de la ventana: %s", hText),
+        string.format("UIParent: %s unidades de altura", B.uiH and string.format("%.0f", B.uiH) or "?"),
+        string.format("Pixel fisico: %.4f unidades de marco; bloque de %dx%d px = %.3f unidades",
+            B.pixel or 0, BLOCK_PX, BLOCK_PX, BLOCK_PX * (B.pixel or 0)),
     }
 end
 
--- Recalcula el tamano del bloque segun la altura fisica de pantalla y UIParent.
+-- Recalcula el tamano del bloque segun la altura fisica de la ventana y UIParent.
 local function recomputeScale()
-    local physW, physH = ns.Call("GetPhysicalScreenSize")
-    local uiH, uiScale
+    local h, source = ns.GameWindowHeight()
+    local uiH
     local ui = _G.UIParent
-    if ui then
-        uiH = Num(ns.Method(ui, "GetHeight"))
-        uiScale = Num(ns.Method(ui, "GetEffectiveScale"))
-    end
-    local f = B.frame
-    local frameScale = f and Num(ns.Method(f, "GetEffectiveScale")) or nil
-    local px = ns.ComputePixelSize(Num(physH), uiH, uiScale, frameScale)
+    if ui then uiH = ns.Num(ns.Method(ui, "GetHeight")) end
+    local px = ns.ComputePixelSize(h, uiH)
     if not px or px <= 0 then px = REFERENCE_UNITS / 1080 end
     B.pixel = px
-    B.physW, B.physH = Num(physW), Num(physH)
-    B.physHEff = (uiH and uiScale) and (uiH * uiScale) or nil
+    B.physH, B.physSource, B.uiH = h, source, uiH
     local block = BLOCK_PX * px
     if B.frame then
         ns.Method(B.frame, "SetSize", BLOCK_COUNT * block, block)
