@@ -124,20 +124,23 @@ function ns.EncodeBlocks(payload, seq)
 end
 
 -- Tamano de un pixel fisico en unidades del marco de la franja.
--- physH: altura fisica de pantalla (GetPhysicalScreenSize);
--- uiHeight/uiScale: GetHeight/GetEffectiveScale de UIParent;
--- frameScale: GetEffectiveScale del marco de la franja.
--- Sin UIParent (uiHeight o uiScale nil) cae a 768 / physH.
+-- physH: GetPhysicalScreenSize. Puede venir escalado por DPI (con 133 % de Windows
+--   en 1440 px fisicos devuelve 1080), por eso NO se usa cuando hay UIParent.
+-- uiHeight/uiScale: GetHeight/GetEffectiveScale de UIParent. UIParent cubre toda la
+--   pantalla: su altura fisica real es uiHeight * uiScale (768 * 1.875 = 1440 px).
+-- frameScale: GetEffectiveScale del marco de la franja (pixeles fisicos por unidad).
+-- Con UIParent: 1 pixel fisico = 1 / frameScale unidades del marco.
+-- Sin UIParent (uiHeight o uiScale nil): cae a 768 / physH.
 function ns.ComputePixelSize(physH, uiHeight, uiScale, frameScale)
-    physH = tonumber(physH)
-    if not physH or physH <= 0 then return nil end
-    uiHeight, uiScale = tonumber(uiHeight), tonumber(uiScale)
-    if not uiHeight or uiHeight <= 0 or not uiScale or uiScale <= 0 then
-        return REFERENCE_UNITS / physH
-    end
     frameScale = tonumber(frameScale)
     if not frameScale or frameScale <= 0 then frameScale = 1 end
-    return uiHeight * uiScale / physH / frameScale
+    uiHeight, uiScale = tonumber(uiHeight), tonumber(uiScale)
+    if uiHeight and uiHeight > 0 and uiScale and uiScale > 0 then
+        return 1 / frameScale
+    end
+    physH = tonumber(physH)
+    if not physH or physH <= 0 then return nil end
+    return REFERENCE_UNITS / physH
 end
 
 -- ---------------------------------------------------------------------------
@@ -198,12 +201,14 @@ function ns.IsStripOn()
     return not (type(db) == "table" and type(db.settings) == "table" and db.settings.strip == false)
 end
 
--- Lineas de diagnostico para /compa estado: pixel calculado y resolucion fisica.
+-- Lineas de diagnostico para /compa estado: pixel calculado y ambas alturas fisicas.
 function ns.BridgeDebugLines()
     local physW, physH = ns.Call("GetPhysicalScreenSize")
+    local effText = B.physHEff and string.format("%.0f px", B.physHEff) or "n/d"
     return {
         string.format("Pixel fisico: %.4f unidades de marco (bloque %dx%d px)", B.pixel or 0, BLOCK_PX, BLOCK_PX),
-        string.format("Resolucion fisica: %sx%s", tostring(physW), tostring(physH)),
+        string.format("Altura fisica (GetPhysicalScreenSize): %sx%s", tostring(physW), tostring(physH)),
+        string.format("Altura fisica (UIParent x escala): %s", effText),
     }
 end
 
@@ -222,6 +227,7 @@ local function recomputeScale()
     if not px or px <= 0 then px = REFERENCE_UNITS / 1080 end
     B.pixel = px
     B.physW, B.physH = Num(physW), Num(physH)
+    B.physHEff = (uiH and uiScale) and (uiH * uiScale) or nil
     local block = BLOCK_PX * px
     if B.frame then
         ns.Method(B.frame, "SetSize", BLOCK_COUNT * block, block)

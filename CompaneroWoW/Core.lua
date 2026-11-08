@@ -15,6 +15,7 @@ local combatPending = false  -- hay un snapshot diferido por combate
 local function say(msg)
     ns.Call("print", "|cff00ff00CompaneroWoW|r: " .. msg)
 end
+ns.Say = say -- para Marks.lua y Questie.lua
 
 -- Inicializa y migra CompaneroWoWDB sin borrar datos existentes.
 function ns.EnsureDB()
@@ -77,6 +78,8 @@ function ns.SnapshotAll()
         local value = ns.SafeCall(collect)
         if value ~= nil then c[entry[1]] = value end
     end
+    -- Exportacion de Questie: fuera de combate, con su propio throttle de 10 s (Questie.lua).
+    ns.SafeCall(ns.RequestQuestieExport)
     lastSnapshot = nowSec()
     return true
 end
@@ -118,6 +121,7 @@ local function onEvent(event, name)
     elseif event == "PLAYER_LOGIN" then
         ns.EnsureDB()
         ns.InitBridge()
+        if ns.Marks then ns.SafeCall(ns.Marks.Init) end
         ns.RequestSnapshot()
     elseif event == "PLAYER_LOGOUT" then
         ns.SnapshotAll()
@@ -151,9 +155,13 @@ end
 
 local function showHelp()
     say("Comandos:")
-    say("  /compa sync - guarda los datos y recarga la interfaz (escribe SavedVariables)")
+    say("  /compa sync - guarda los datos (incluido Questie) y recarga la interfaz (escribe SavedVariables)")
     say("  /compa strip on|off - activa o desactiva la franja de píxeles")
     say("  /compa estado - muestra el estado actual")
+    say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
+    say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
+    say("  /compa marca - marca el siguiente paso de tu misión (con Questie)")
+    say("  /compa marca borrar - quita la marca de Compañero")
 end
 
 local function showStatus()
@@ -174,6 +182,7 @@ local function showStatus()
     for _ in pairs(db.knowledge.npcs) do nNpcs = nNpcs + 1 end
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     say("Franja de píxeles: " .. (ns.IsStripOn() and "activa" or "inactiva"))
+    if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
     end
@@ -181,16 +190,21 @@ end
 
 local function handleSlash(msg)
     local cmd, rest = string.match(msg or "", "^%s*(%S*)%s*(.-)%s*$")
+    rest = rest or ""
+    local raw = rest -- con mayusculas: los textos de marca las conservan
     cmd = string.lower(cmd or "")
-    rest = string.lower(rest or "")
+    rest = string.lower(rest)
     if cmd == "sync" then
         if ns.InCombat() then
             say("No se puede sincronizar en combate. Inténtalo al salir de combate.")
             return
         end
+        if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita, antes de recargar
         ns.SnapshotAll()
         say("Datos guardados. Recargando la interfaz...")
         ns.Call("ReloadUI")
+    elseif cmd == "marca" then
+        if ns.Marks then ns.Marks.Command(raw) else say("Marcas no disponibles.") end
     elseif cmd == "strip" then
         if rest == "on" then
             ns.SetStripEnabled(true)
