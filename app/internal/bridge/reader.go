@@ -99,22 +99,41 @@ func (r *Reader) run(ctx context.Context) {
 }
 
 func (r *Reader) pollOnce() error {
-	_, rect, err := FindWoWWindow()
+	hwnd, rect, err := FindWoWWindow()
 	if err != nil {
 		return fmt.Errorf("locate WoW: %w", err)
 	}
-	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+StripWidth, rect.Min.Y+StripHeight)
-	img, err := capture.GrabScreen(strip)
-	if err != nil {
-		return fmt.Errorf("grab pixel strip: %w", err)
-	}
-	st, err := DecodeImage(img)
+	st, err := readStrip(hwnd, rect)
 	if err != nil {
 		return err
 	}
 	st.ReadAt = time.Now()
 	r.publish(st)
 	return nil
+}
+
+// readStrip decodes the strip at the top-left of WoW's client area rect. It first
+// copies the strip from the screen, which is cheap. If that does not decode, a
+// window on top of WoW (the companion app, a browser) is probably covering the
+// strip, so it asks WoW to render its own content instead.
+func readStrip(hwnd uintptr, rect image.Rectangle) (LiveState, error) {
+	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+StripWidth, rect.Min.Y+StripHeight)
+	img, err := capture.GrabScreen(strip)
+	if err != nil {
+		return LiveState{}, fmt.Errorf("grab pixel strip: %w", err)
+	}
+	st, err := DecodeImage(img)
+	if err == nil {
+		return st, nil
+	}
+	own, gerr := grabWindowStrip(hwnd, rect)
+	if gerr != nil {
+		return LiveState{}, err
+	}
+	if st2, err2 := DecodeImage(own); err2 == nil {
+		return st2, nil
+	}
+	return LiveState{}, err
 }
 
 // lost is called when WoW is not visible. The next valid read starts a new
