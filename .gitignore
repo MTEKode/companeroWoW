@@ -4,3 +4,6 @@ Thumbs.db
 .vscode/
 .idea/
 dist/
+.env
+.env.*
+!.env.example
