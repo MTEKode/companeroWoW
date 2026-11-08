@@ -127,7 +127,7 @@ func (f fakeReporter) Answer(context.Context, string, bool) (ai.Response, error)
 func (f fakeReporter) LastContext() string { return f.ctx }
 
 func TestRunAddsNoiseAndLatencyChecksAndReadsInjectedContext(t *testing.T) {
-	asker := fakeReporter{ctx: `{"puenteConectado":true}`}
+	asker := fakeReporter{ctx: `{"puenteConectado":true,"ubicacion":{"x":66.5,"y":77.5}}`}
 	rep := Run(context.Background(), asker, nil, []Question{{ID: "q", Text: "¿dónde?", Location: true}}, "", "v")
 	rec := rep.Records[0]
 	if _, ok := checkNamed(rec.Checks, "ruido"); !ok {

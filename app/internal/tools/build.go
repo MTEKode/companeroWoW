@@ -8,6 +8,7 @@ import (
 
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/glossary"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 	"github.com/MTEKode/companeroWoW/app/internal/websearch"
 )
@@ -294,9 +295,7 @@ func buscarWeb(ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude buscar en la web: %v", err)
 			}
-			if hits == nil {
-				hits = []websearch.Hit{}
-			}
+			hits = annotateHits(hits)
 			out := map[string]any{
 				"consulta":   consulta,
 				"sitio":      sitio,
@@ -309,6 +308,19 @@ func buscarWeb(ws *websearch.Client) Def {
 			return jsonResult(out)
 		},
 	}
+}
+
+// annotateHits adds the Spanish name of each English zone or city to the titles and extracts
+// of the results, so that the model answers with the in-game names. It returns a new slice
+// (never nil) and leaves the input alone.
+func annotateHits(hits []websearch.Hit) []websearch.Hit {
+	out := make([]websearch.Hit, len(hits))
+	for i, h := range hits {
+		h.Title = glossary.Annotate(h.Title)
+		h.Snippet = glossary.Annotate(h.Snippet)
+		out[i] = h
+	}
+	return out
 }
 
 func leerPagina(ws *websearch.Client) Def {

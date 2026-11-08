@@ -164,7 +164,7 @@ func TestRunRecordsAnswersToolsAndChecks(t *testing.T) {
 			"¿Qué hago ahora?": "Entrega la misión en Orgrimmar (51.2, 38.7).\n📍 /compa marca 85 51.2 38.7 Garrosh",
 		},
 		calls: map[string][]tools.CallRecord{
-			"¿Qué hago ahora?": {{Name: "contexto_jugador", Args: "{}", Text: "{\"ubicacion\": {}}", Duration: 3 * time.Millisecond}},
+			"¿Qué hago ahora?": {{Name: "contexto_jugador", Args: "{}", Text: "{\"ubicacion\": {\"x\": 51.2, \"y\": 38.7}}", Duration: 3 * time.Millisecond}},
 		},
 	}
 	qs := []Question{question("q01"), {ID: "x", Text: "¿Pregunta que falla?"}}
