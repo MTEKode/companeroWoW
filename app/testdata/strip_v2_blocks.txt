@@ -1,0 +1,33 @@
+# Protocol v2 strip: 29 RGB triples from CompaneroWoW/Bridge.lua ns.EncodeBlocks.
+# State: mapID=85 x=0.5 y=0.25 level=38 xpPct=42 money=1234567 trackedQuestID=90001
+#   targetNpcID=3296 targetLevel=40 healthPct=87 powerPct=60 hasTarget,targetHostile
+#   lastEventCode=2 eventSeq=7 eventArg=90001 freeBagSlots=9 ; seq=42
+255 0 255
+0 255 255
+85 170 0
+170 85 85
+0 255 170
+0 34 34
+170 34 0
+0 0 85
+85 136 0
+0 0 68
+0 0 0
+34 102 34
+170 0 0
+17 34 221
+102 136 119
+0 0 0
+17 85 255
+153 17 0
+0 0 0
+0 204 238
+0 34 136
+85 119 51
+204 102 0
+0 34 0
+119 0 0
+0 17 85
+255 153 17
+0 153 68
+85 0 0

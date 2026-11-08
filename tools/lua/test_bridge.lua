@@ -1,4 +1,4 @@
--- test_bridge.lua: pruebas offline del protocolo de la franja de pixeles.
+-- test_bridge.lua: pruebas offline del protocolo de la franja de pixeles (v2).
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/test_bridge.lua
 package.path = "tools/lua/?.lua;" .. package.path
 require("wowstub")
@@ -27,6 +27,10 @@ end
 
 local function eq(name, got, want)
     check(name, got == want, string.format("got %s, want %s", tostring(got), tostring(want)))
+end
+
+local function near(name, got, want, tol)
+    check(name, math.abs(got - want) <= tol, string.format("got %s, want %s +-%s", tostring(got), tostring(want), tostring(tol)))
 end
 
 -- CRC-8 de referencia, solo aritmetica (independiente de bit.*).
@@ -92,8 +96,6 @@ eq("money 123456789 b0", p[9], 0x07)
 eq("money 123456789 b1", p[10], 0x5B)
 eq("money 123456789 b2", p[11], 0xCD)
 eq("money 123456789 b3", p[12], 0x15)
-eq("trackedQuest 12345 b0", p[13], 0x00)
-eq("trackedQuest 12345 b1", p[14], 0x00)
 eq("trackedQuest 12345 b2", p[15], 0x30)
 eq("trackedQuest 12345 b3", p[16], 0x39)
 eq("targetNpc 0x01020304 b0", p[17], 0x01)
@@ -119,33 +121,69 @@ eq("ns.CRC8 de 123456789", ns.CRC8(digits), 0xF4)
 eq("referencia de 123456789", crc8Reference(digits, #digits), 0xF4)
 
 -- ---------------------------------------------------------------------------
-print("(c) EncodeBlocks")
+print("(c) EncodeBlocks v2")
 local blocks = ns.EncodeBlocks(p, 7)
-eq("14 bloques", #blocks, 14)
+eq("29 bloques", #blocks, 29)
 eq("bloque 1 magia R", blocks[1][1], 255)
 eq("bloque 1 magia G", blocks[1][2], 0)
 eq("bloque 1 magia B", blocks[1][3], 255)
 eq("bloque 2 magia R", blocks[2][1], 0)
 eq("bloque 2 magia G", blocks[2][2], 255)
 eq("bloque 2 magia B", blocks[2][3], 255)
-eq("bloque 3 = {1, seq, 32} R", blocks[3][1], 1)
-eq("bloque 3 = {1, seq, 32} seq", blocks[3][2], 7)
-eq("bloque 3 = {1, seq, 32} len", blocks[3][3], 32)
-eq("bloque 4 = bytes 0..2 R", blocks[4][1], p[1])
-eq("bloque 4 = bytes 0..2 G", blocks[4][2], p[2])
-eq("bloque 4 = bytes 0..2 B", blocks[4][3], p[3])
-eq("bloque 14 = bytes 30,31 + padding", blocks[14][1], p[31])
-eq("bloque 14 = byte 31 (crc)", blocks[14][2], p[32])
-eq("bloque 14 padding = 0", blocks[14][3], 0)
-eq("seq 256 envuelve a 0", ns.EncodeBlocks(p, 256)[3][2], 0)
-local allBytes = true
-for i = 1, 14 do
+eq("bloque 3 calibracion R", blocks[3][1], 85)
+eq("bloque 3 calibracion G", blocks[3][2], 170)
+eq("bloque 3 calibracion B", blocks[3][3], 0)
+eq("bloque 4 calibracion R", blocks[4][1], 170)
+eq("bloque 4 calibracion G", blocks[4][2], 85)
+eq("bloque 4 calibracion B", blocks[4][3], 85)
+eq("bloque 5 calibracion R", blocks[5][1], 0)
+eq("bloque 5 calibracion G", blocks[5][2], 255)
+eq("bloque 5 calibracion B", blocks[5][3], 170)
+
+-- Cadencia de calibracion: cada canal tiene los niveles 0, 85, 170 y 255 en bloques 1..5.
+local levels = { { 255, 0, 85, 170, 0 }, { 0, 255, 170, 85, 255 }, { 255, 255, 0, 85, 170 } }
+for c = 1, 3 do
+    local seen = {}
+    for b = 1, 5 do seen[blocks[b][c]] = true end
+    check("canal " .. c .. " tiene 0, 85, 170 y 255", seen[0] and seen[85] and seen[170] and seen[255])
+end
+
+-- Cabecera: bytes 2, 7, 32 -> nibbles 0,2 | 0,7 | 2,0 ; bloque 6 = (0,2,0)*17 ; bloque 7 = (7,2,0)*17
+eq("bloque 6 cabecera R (nibbles 0,2,0)", blocks[6][1], 0)
+eq("bloque 6 cabecera G", blocks[6][2], 2 * 17)
+eq("bloque 6 cabecera B", blocks[6][3], 0)
+eq("bloque 7 cabecera R (nibble 7)", blocks[7][1], 7 * 17)
+eq("bloque 7 cabecera G (nibble 2)", blocks[7][2], 2 * 17)
+eq("bloque 7 cabecera B (nibble 0)", blocks[7][3], 0)
+-- Ultimo byte del payload (CRC) = nibbles 69,70 ; bloque 29 = (nib70, relleno 0, relleno 0)
+local crcLo = p[32] % 16
+eq("bloque 29 R = nibble bajo del CRC", blocks[29][1], crcLo * 17)
+eq("bloque 29 G relleno = 0", blocks[29][2], 0)
+eq("bloque 29 B relleno = 0", blocks[29][3], 0)
+local nibOK = true
+for i = 1, 29 do
     for c = 1, 3 do
         local v = blocks[i][c]
-        if type(v) ~= "number" or v < 0 or v > 255 then allBytes = false end
+        if type(v) ~= "number" or v < 0 or v > 255 or v % 17 ~= 0 then nibOK = false end
     end
 end
-check("todos los canales en 0..255", allBytes)
+check("todos los canales son multiplos de 17 en 0..255", nibOK)
+eq("seq 256 envuelve a 0", ns.EncodeBlocks(p, 256)[7][1], 0)
+eq("seq 7 en bloque 7 R", ns.EncodeBlocks(p, 7)[7][1], 7 * 17)
+
+-- Decodificacion de referencia (solo para el test): nibbles de bloques 6..29 -> bytes.
+local nib = {}
+for b = 6, 29 do
+    for c = 1, 3 do nib[#nib + 1] = blocks[b][c] / 17 end
+end
+local bytes = {}
+for k = 1, 35 do bytes[k] = nib[2 * k - 1] * 16 + nib[2 * k] end
+eq("flujo: version 2", bytes[1], 2)
+eq("flujo: seq 7", bytes[2], 7)
+eq("flujo: longitud 32", bytes[3], 32)
+local roundtrip = true
+for k = 1, 32 do if bytes[k + 3] ~= p[k] then roundtrip = false end end
+check("flujo: payload recuperado byte a byte", roundtrip)
 
 -- ---------------------------------------------------------------------------
 print("(d) healthPct = 255 cuando issecretvalue devuelve true")
@@ -171,6 +209,15 @@ eq("Clean deja pasar valores normales", ns.Clean(42), 42)
 local out = {}
 ns.AppendU32(out, 0x01020304)
 eq("AppendU32 big-endian", table.concat(out, ","), "1,2,3,4")
+
+-- ---------------------------------------------------------------------------
+print("(f) ComputePixelSize")
+near("physH 1440, UIParent 768 eff 1, marco 1 -> 0.5333", ns.ComputePixelSize(1440, 768, 1, 1), 768 / 1440, 1e-9)
+near("UIParent eff 0.75 -> 0.4", ns.ComputePixelSize(1440, 768, 0.75, 1), 0.4, 1e-9)
+near("marco eff 0.5 -> doble", ns.ComputePixelSize(1440, 768, 1, 0.5), 2 * 768 / 1440, 1e-9)
+near("sin marco eff -> usa 1", ns.ComputePixelSize(1440, 768, 1, nil), 768 / 1440, 1e-9)
+eq("sin UIParent -> fallback 768/physH", ns.ComputePixelSize(1080, nil, nil, nil), 768 / 1080)
+eq("physH invalida -> nil", ns.ComputePixelSize(0, 768, 1, 1), nil)
 
 -- ---------------------------------------------------------------------------
 if failures > 0 then

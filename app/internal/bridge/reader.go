@@ -24,7 +24,8 @@ func FindWoWWindow() (hwnd uintptr, rect image.Rectangle, err error) {
 	return capture.FindWoWWindow()
 }
 
-// Reader polls the top-left 28x2 strip of the WoW client area and decodes it.
+// Reader polls the top-left StripWidth x StripHeight region (28 blocks, up to 16 px
+// pitch) of the WoW client area and decodes it.
 // It keeps working across WoW being closed, reopened or minimized.
 type Reader struct {
 	pollEvery time.Duration

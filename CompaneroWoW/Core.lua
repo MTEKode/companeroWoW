@@ -174,6 +174,9 @@ local function showStatus()
     for _ in pairs(db.knowledge.npcs) do nNpcs = nNpcs + 1 end
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     say("Franja de píxeles: " .. (ns.IsStripOn() and "activa" or "inactiva"))
+    if ns.BridgeDebugLines then
+        for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
+    end
 end
 
 local function handleSlash(msg)
