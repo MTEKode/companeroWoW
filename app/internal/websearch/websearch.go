@@ -142,6 +142,7 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 		hits     []Hit
 		errs     []error
 		attempts int
+		boost    = map[string]int{} // extra rank for hits that a targeted search found
 	)
 	if c.wantsWiki(siteEntry) {
 		// Two queries: the plain one and one biased towards Forever content.
@@ -153,6 +154,25 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 				continue
 			}
 			hits = append(hits, h...)
+		}
+		if len(hits) == 0 {
+			// Nothing matched in full text: retry once with the targeted searches. Titles and
+			// prefixes match names the full-text search misses (the wiki writes titles in
+			// English), and pages in Category:Forever are ranked first.
+			for _, step := range c.wikiRetry(query) {
+				attempts++
+				h, err := step.run(ctx)
+				if err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				if step.boost > 0 {
+					for _, hit := range h {
+						boost[hit.URL] += step.boost
+					}
+				}
+				hits = append(hits, h...)
+			}
 		}
 	}
 	for _, dom := range c.otherDomains(siteEntry) {
@@ -174,7 +194,7 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 		return nil, fmt.Errorf("no pude consultar las fuentes web: %w", errors.Join(errs...))
 	}
 
-	hits = c.finish(hits, siteEntry)
+	hits = c.finish(hits, siteEntry, boost)
 	if c.st != nil && len(hits) > 0 {
 		if b, err := json.Marshal(hits); err == nil {
 			_ = c.st.CachePut(key, string(b))
@@ -291,8 +311,8 @@ func cacheSite(siteEntry string) string {
 }
 
 // finish filters hits to allowed hosts (and the requested site), removes duplicates,
-// puts Forever-related hits first and caps the list.
-func (c *Client) finish(hits []Hit, siteEntry string) []Hit {
+// ranks them and caps the list. boost holds extra rank by URL, from the targeted searches.
+func (c *Client) finish(hits []Hit, siteEntry string, boost map[string]int) []Hit {
 	seen := make(map[string]bool, len(hits))
 	kept := make([]Hit, 0, len(hits))
 	for _, h := range hits {
@@ -315,7 +335,7 @@ func (c *Client) finish(hits []Hit, siteEntry string) []Hit {
 		kept = append(kept, h)
 	}
 	sort.SliceStable(kept, func(i, j int) bool {
-		return mentionsForever(kept[i]) && !mentionsForever(kept[j])
+		return rank(kept[i], boost) > rank(kept[j], boost)
 	})
 	if len(kept) > maxHits {
 		kept = kept[:maxHits]
@@ -323,8 +343,17 @@ func (c *Client) finish(hits []Hit, siteEntry string) []Hit {
 	return kept
 }
 
-func mentionsForever(h Hit) bool {
-	return strings.Contains(strings.ToLower(h.Title+" "+h.Snippet), "forever")
+// rank orders hits: a title with "Forever" beats a snippet that mentions it, and both beat
+// anything else. The boost from a targeted search adds to that.
+func rank(h Hit, boost map[string]int) int {
+	score := boost[h.URL]
+	if strings.Contains(strings.ToLower(h.Title), "forever") {
+		score += 4
+	}
+	if strings.Contains(strings.ToLower(h.Snippet), "forever") {
+		score += 2
+	}
+	return score
 }
 
 // ---- HTTP ------------------------------------------------------------------

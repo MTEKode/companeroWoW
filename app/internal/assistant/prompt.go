@@ -9,7 +9,7 @@ var SystemPrompt = skill.SystemPrompt()
 
 // proactiveInstruction is appended to the prompt of each proactive tip. Tips use the
 // skill's answer format, shortened.
-const proactiveInstruction = "Responde en castellano en como máximo 2 líneas cortas y, si importa un lugar, añade una línea «📍 /compa marca <x> <y> <texto>». Empieza por contexto_jugador; si no hay datos, dilo en una línea."
+const proactiveInstruction = "Responde en castellano en como máximo 2 líneas cortas y, si importa un lugar, añade una línea «📍 /compa marca <x> <y> <texto>». Usa el contexto del jugador que trae la pregunta; si no hay datos, dilo en una línea."
 
 // tipPrompts maps a LiveState event code to the question asked for a proactive tip.
 var tipPrompts = map[uint8]string{

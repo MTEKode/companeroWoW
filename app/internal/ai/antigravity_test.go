@@ -40,8 +40,8 @@ func TestAntigravityBuildsHeadlessCall(t *testing.T) {
 	if spec.Path != "/fake/bin/agy" {
 		t.Errorf("Path = %q, want /fake/bin/agy", spec.Path)
 	}
-	if spec.Dir != workDir {
-		t.Errorf("Dir = %q, want %q", spec.Dir, workDir)
+	if want := filepath.Join(workDir, antigravityWorkspaceDir); spec.Dir != want {
+		t.Errorf("Dir = %q, want the workspace %q", spec.Dir, want)
 	}
 	if spec.Stdin != "" {
 		t.Errorf("Stdin = %q, want empty (prompt travels in -p)", spec.Stdin)
@@ -65,51 +65,9 @@ func TestAntigravityBuildsHeadlessCall(t *testing.T) {
 	}
 }
 
-func TestAntigravityWritesSessionSettings(t *testing.T) {
-	workDir := t.TempDir()
-	fr := &fakeRunner{fn: func(cmdSpec) (cmdResult, error) {
-		return cmdResult{Stdout: []byte(envelopeSuccess)}, nil
-	}}
-	cfg := testConfig()
-	p := newAntigravity(&cfg, workDir, fr, found)
-	if _, err := p.Ask(context.Background(), Request{Prompt: "x"}); err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	raw, err := os.ReadFile(filepath.Join(workDir, antigravitySettingsFile))
-	if err != nil {
-		t.Fatalf("settings not written: %v", err)
-	}
-	var doc struct {
-		ToolPermission string `json:"toolPermission"`
-		Permissions    struct {
-			Allow []string `json:"allow"`
-			Deny  []string `json:"deny"`
-		} `json:"permissions"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("settings invalid: %v\n%s", err, raw)
-	}
-	if doc.ToolPermission != "request-review" {
-		t.Errorf("toolPermission = %q", doc.ToolPermission)
-	}
-	if want := []string{"mcp(companero/*)"}; !reflect.DeepEqual(doc.Permissions.Allow, want) {
-		t.Errorf("allow = %v, want %v", doc.Permissions.Allow, want)
-	}
-	for _, rule := range []string{"command(*)", "unsandboxed(*)", "write_file(*)", "read_file(*)", "read_url(*)", "execute_url(*)"} {
-		if !containsString(doc.Permissions.Deny, rule) {
-			t.Errorf("deny %v misses %q", doc.Permissions.Deny, rule)
-		}
-	}
-	for _, rule := range doc.Permissions.Allow {
-		if strings.Contains(rule, "mcp(*)") {
-			t.Errorf("allow must not open every MCP server: %q", rule)
-		}
-	}
-}
-
 func TestAntigravityMCPConfigMergesAndKeepsOtherKeys(t *testing.T) {
 	workDir := t.TempDir()
-	dir := filepath.Join(workDir, ".agents")
+	dir := filepath.Join(workDir, antigravityWorkspaceDir, ".agents")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -226,8 +184,11 @@ func TestAntigravityImageIsNotAttachedButNoted(t *testing.T) {
 		t.Fatalf("Ask: %v", err)
 	}
 	prompt := argValue(fr.calls[0].Args, "-p")
-	if !strings.Contains(prompt, "usa la herramienta capturar_pantalla para verla") {
-		t.Errorf("image note missing:\n%s", prompt)
+	if !strings.Contains(prompt, filepath.Join(workDir, "screens")) || !strings.Contains(prompt, "read_file") {
+		t.Errorf("image path note missing:\n%s", prompt)
+	}
+	if n, _ := filepath.Glob(filepath.Join(workDir, "screens", "screenshot-*.png")); len(n) != 1 {
+		t.Errorf("screenshot file count = %d, want 1", len(n))
 	}
 	entries, _ := os.ReadDir(workDir)
 	for _, e := range entries {

@@ -38,10 +38,6 @@ func contextoJugador(g *gamedata.Service) Def {
 	}
 }
 
-type guideArgs struct {
-	QuestID *int64 `json:"quest_id"`
-}
-
 func guiaMision(g *gamedata.Service) Def {
 	return Def{
 		Name:        "guia_mision",
@@ -50,19 +46,23 @@ func guiaMision(g *gamedata.Service) Def {
 			"quest_id": intProp("Número de la misión. Si se omite, se usa la misión rastreada.", 1),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a guideArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
-			if a.QuestID != nil && *a.QuestID < 0 {
+			// Without a quest id the tracked quest is used.
+			id, ok, ierr := a.integer(aliasQuestID...)
+			if ierr != nil {
+				return Result{}, errors.New("quest_id debe ser un número positivo")
+			}
+			if ok && id < 0 {
 				return Result{}, errors.New("quest_id debe ser un número positivo")
 			}
 			if g == nil {
 				return Result{}, errNoGame
 			}
-			var id int64
-			if a.QuestID != nil {
-				id = *a.QuestID
+			if !ok {
+				id = 0
 			}
 			v, err := g.QuestGuide(id)
 			if err != nil {

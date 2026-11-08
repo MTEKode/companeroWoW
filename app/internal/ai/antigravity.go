@@ -9,10 +9,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/MTEKode/companeroWoW/app/internal/capture"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/skill"
 )
@@ -23,9 +26,9 @@ const (
 	antigravityPromptLimit = 24000
 	// antigravityMCPTimeoutSec is the per-call timeout agy applies to our MCP tools.
 	antigravityMCPTimeoutSec = 120
-	// antigravityImageNote replaces the screenshot: headless agy has no image attach flag,
-	// so the model is told to fetch the capture with the MCP tool instead.
-	antigravityImageNote = "El usuario ha adjuntado una captura: usa la herramienta capturar_pantalla para verla."
+	// antigravityWorkspaceDir is the folder under the data directory where agy runs. It holds
+	// only the skill, the MCP registration and the session settings: no keys, no database.
+	antigravityWorkspaceDir = "agy"
 	// antigravitySettingsFile is the per-session settings file passed with --settings.
 	antigravitySettingsFile = "antigravity-settings.json"
 	// antigravitySkillLine asks for the workspace skill by name; agy also activates skills
@@ -33,27 +36,38 @@ const (
 	antigravitySkillLine = "Aplica la skill \"" + skill.Name + "\" de este workspace a la respuesta."
 )
 
-// antigravityAllow lets the model use only the companion's MCP server.
+// antigravityEfforts are the values of agy's --effort flag (see agy --help).
+var antigravityEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// agyNameRE accepts model names such as "gemini-3.8-flash-low": a flag value never holds
+// spaces or quotes.
+var agyNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}$`)
+
+// antigravityAllow lets the model use only the companion's MCP server; writeAntigravitySettings
+// adds read access to the screens folder.
 var antigravityAllow = []string{"mcp(" + mcpServerName + "/*)"}
 
 // antigravityDeny overrides any allow rule (deny > ask > allow), including the user's global
-// settings: shell and any command, unsandboxed execution, file writes, file reads (the model
-// must not read the user's .env or other files) and URL fetches. Other tools default to ask,
-// and headless runs soft-deny an approval they cannot obtain.
-var antigravityDeny = []string{
-	"command(*)", "unsandboxed(*)", "write_file(*)", "read_file(*)", "read_url(*)", "execute_url(*)",
-}
+// settings: shell and any command, unsandboxed execution, file writes and URL fetches.
+// Reads are not denied as a whole: read_file(*) would also deny the screens folder, and a deny
+// cannot be carved out by an allow. Instead, the workspace holds no secrets, reads outside it
+// need approval (refused in a headless run) and the secret files are denied by path.
+var antigravityDeny = []string{"command(*)", "unsandboxed(*)", "write_file(*)", "read_url(*)", "execute_url(*)"}
 
 // antigravity is the Antigravity CLI (agy) in headless mode: one `agy -p` process per question,
-// with cwd = workDir, the companion's MCP server registered in the workspace and a session
-// settings file that restricts tools. The user's global agy settings are not modified.
+// with cwd = the workspace under the data directory, the companion's MCP server registered in
+// the workspace and a session settings file that restricts tools. The user's global agy
+// settings are not modified.
 type antigravity struct {
-	command  string
-	workDir  string
-	mcpURL   string
-	timeout  time.Duration
-	run      runner
-	lookPath func(string) (string, error)
+	command   string
+	workDir   string // the data directory: the screens folder and the secret files live here
+	workspace string // agy's working directory: workDir\agy
+	mcpURL    string
+	model     string // --model; empty leaves agy's default
+	effort    string // --effort; empty leaves it out
+	timeout   time.Duration
+	run       runner
+	lookPath  func(string) (string, error)
 }
 
 // NewAntigravity returns the Antigravity CLI provider. Its command is cfg.AntigravityCommand
@@ -63,13 +77,29 @@ func NewAntigravity(cfg *config.Config, workDir string) Provider {
 }
 
 func newAntigravity(cfg *config.Config, workDir string, r runner, lookPath func(string) (string, error)) *antigravity {
+	model := cfgString(cfg, func(c *config.Config) string { return c.AntigravityModel }, "")
+	if !agyNameRE.MatchString(model) {
+		if model != "" {
+			log.Printf("antigravity: modelo %q no válido, se usa el de agy", model)
+		}
+		model = ""
+	}
+	// An empty effort is a choice: it leaves --effort out. The default comes from config.Defaults.
+	effort := effortOf(cfg, func(c *config.Config) string { return c.AntigravityEffort })
+	if !slices.Contains(antigravityEfforts, effort) {
+		log.Printf("antigravity: esfuerzo %q no válido, se omite --effort", effort)
+		effort = ""
+	}
 	return &antigravity{
-		command:  cfgString(cfg, func(c *config.Config) string { return c.AntigravityCommand }, "agy"),
-		workDir:  workDir,
-		mcpURL:   mcpURL(cfg),
-		timeout:  aiTimeout(cfg),
-		run:      r,
-		lookPath: lookPath,
+		command:   cfgString(cfg, func(c *config.Config) string { return c.AntigravityCommand }, "agy"),
+		workDir:   workDir,
+		workspace: filepath.Join(workDir, antigravityWorkspaceDir),
+		mcpURL:    mcpURL(cfg),
+		model:     model,
+		effort:    effort,
+		timeout:   aiTimeout(cfg),
+		run:       r,
+		lookPath:  lookPath,
 	}
 }
 
@@ -80,6 +110,11 @@ func (a *antigravity) Available() error {
 		return fmt.Errorf("CLI antigravity (agy) no disponible: %w", err)
 	}
 	return nil
+}
+
+// screensDir is the folder where screenshots are saved for agy to read.
+func (a *antigravity) screensDir() string {
+	return config.ScreensDir(a.workDir)
 }
 
 func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
@@ -93,40 +128,53 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, fmt.Errorf("CLI antigravity (agy) no disponible: %w", err)
 	}
-	if err := os.MkdirAll(a.workDir, 0o755); err != nil {
+	if err := os.MkdirAll(a.workspace, 0o755); err != nil {
 		return Response{}, fmt.Errorf("crear carpeta de trabajo: %w", err)
 	}
-	if err := writeAntigravityMCP(filepath.Join(a.workDir, ".agents", "mcp_config.json"), a.mcpURL); err != nil {
+	if err := writeAntigravityMCP(filepath.Join(a.workspace, ".agents", "mcp_config.json"), a.mcpURL); err != nil {
 		return Response{}, err
 	}
 	// The skill lives in the workspace (.agents/skills/companero/SKILL.md, plus AGENTS.md as
 	// always-on rules). When it cannot be written, the instructions travel inline instead.
-	if _, err := skill.DeployAntigravity(a.workDir); err != nil {
+	if _, err := skill.DeployAntigravity(a.workspace); err != nil {
 		log.Printf("antigravity: skill inline (no pude escribir el workspace): %v", err)
 	} else {
 		req.Skill = ""
 		req.System = antigravitySkillLine + "\n\n" + req.System
 	}
-	settingsPath := filepath.Join(a.workDir, antigravitySettingsFile)
-	if err := writeAntigravitySettings(settingsPath); err != nil {
+	settingsPath := filepath.Join(a.workspace, antigravitySettingsFile)
+	if err := writeAntigravitySettings(settingsPath, a.screensDir(), a.protectedFiles()); err != nil {
 		return Response{}, err
 	}
 
+	// A screenshot from the overlay is saved as a file: headless agy takes no image, but it can
+	// read the file that the prompt names.
 	var imageLine string
 	if len(req.ImagePNG) > 0 {
-		imageLine = antigravityImageNote
+		path, err := capture.SavePNG(a.screensDir(), req.ImagePNG)
+		if err != nil {
+			log.Printf("antigravity: captura sin archivo: %v", err)
+		} else {
+			imageLine = "El usuario ha adjuntado una captura: está en " + path + ". Léela con read_file antes de responder."
+		}
 	}
 	prompt := buildPromptCapped(req, imageLine, antigravityPromptLimit)
 
 	args := []string{
 		"--settings", settingsPath,
 		"--output-format", "json",
-		"-p", prompt,
 	}
+	if a.model != "" {
+		args = append(args, "--model", a.model)
+	}
+	if a.effort != "" {
+		args = append(args, "--effort", a.effort)
+	}
+	args = append(args, "-p", prompt)
 	res, err := a.run.run(ctx, cmdSpec{
 		Path: exe,
 		Args: args,
-		Dir:  a.workDir,
+		Dir:  a.workspace,
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("antigravity: %w", err)
@@ -139,6 +187,25 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 	return Response{Text: text, Provider: a.Name()}, nil
+}
+
+// protectedFiles lists the files agy must never read: the API keys in every .env path, and the
+// companion's database and configuration. Files are denied by exact path, never a folder that
+// holds the screens folder.
+func (a *antigravity) protectedFiles() []string {
+	files := append([]string{}, config.DotenvPaths()...)
+	files = append(files,
+		filepath.Join(a.workDir, "companero.db"),
+		filepath.Join(a.workDir, "config.json"),
+	)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		files = append(files,
+			filepath.Join(home, ".env"),
+			filepath.Join(home, ".ssh"),
+			filepath.Join(home, ".aws"),
+		)
+	}
+	return files
 }
 
 // agyResult is the payload of a finished run: the json envelope itself, or the "result"
@@ -247,7 +314,7 @@ func agyErrorText(raw json.RawMessage) string {
 }
 
 // writeAntigravityMCP registers the companion's MCP server in the workspace file
-// <workDir>\.agents\mcp_config.json. Other servers and keys already in the file are kept.
+// <workDir>\agy\.agents\mcp_config.json. Other servers and keys already in the file are kept.
 func writeAntigravityMCP(path, url string) error {
 	doc, existing, err := readJSONObject(path)
 	if err != nil {
@@ -267,12 +334,20 @@ func writeAntigravityMCP(path, url string) error {
 
 // writeAntigravitySettings writes the per-session settings passed with --settings. The file is
 // owned by the companion, so it is rewritten whole. The user's global settings are untouched.
-func writeAntigravitySettings(path string) error {
+// The screens folder is allowed for reading; each protected file is denied by its exact path.
+// A deny on a folder would also cover the screens folder when the folder is inside it, so only
+// files are denied.
+func writeAntigravitySettings(path, screens string, protected []string) error {
+	allow := append(append([]string{}, antigravityAllow...), readRule(screens))
+	deny := append([]string{}, antigravityDeny...)
+	for _, p := range protected {
+		deny = append(deny, readRule(p))
+	}
 	doc := map[string]any{
 		"toolPermission": "request-review",
 		"permissions": map[string]any{
-			"allow": antigravityAllow,
-			"deny":  antigravityDeny,
+			"allow": allow,
+			"deny":  deny,
 		},
 	}
 	_, existing, err := readJSONObject(path)
@@ -280,6 +355,11 @@ func writeAntigravitySettings(path string) error {
 		return err
 	}
 	return writeJSONIfChanged(path, doc, existing)
+}
+
+// readRule is the permission rule that grants or denies reading one path.
+func readRule(path string) string {
+	return "read_file(" + filepath.Clean(path) + ")"
 }
 
 // readJSONObject reads a JSON object from path. A missing or blank file is an empty object.

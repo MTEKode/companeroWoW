@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,18 +49,28 @@ func CaptureWoW() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// CaptureWoWToFile writes a screenshot-<unix>.png into dir, keeps only the 10
-// newest screenshots there and returns the new file's path. If pruning fails the
-// path is still returned together with a non-nil error.
+// CaptureWoWToFile takes a screenshot of the WoW window and saves it with SavePNG.
 func CaptureWoWToFile(dir string) (string, error) {
 	data, err := CaptureWoW()
 	if err != nil {
 		return "", err
 	}
+	return SavePNG(dir, data)
+}
+
+// screenshotSeq numbers the files written by this process, so that two captures in the
+// same millisecond do not share a name.
+var screenshotSeq atomic.Uint32
+
+// SavePNG writes data into dir as a new screenshot-<time>-<n>.png file, keeps only the
+// newest keepScreenshots files there and returns the new path. If pruning fails the
+// path is still returned together with a non-nil error.
+func SavePNG(dir string, data []byte) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create screenshot dir: %w", err)
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%s%d.png", screenshotGlob, time.Now().Unix()))
+	name := fmt.Sprintf("%s%s-%04d.png", screenshotGlob, time.Now().Format("20060102-150405.000"), screenshotSeq.Add(1)%10000)
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write screenshot %s: %w", path, err)
 	}

@@ -35,19 +35,27 @@ var defaultNVIDIAProvider = APIProvider{
 
 // Config is the persisted application configuration.
 type Config struct {
-	WoWPath            string        `json:"wowPath"`
-	Account            string        `json:"account"`
-	Hotkey             string        `json:"hotkey"`
-	Language           string        `json:"language"`
-	ProviderOrder      []string      `json:"providerOrder"`
-	AntigravityCommand string        `json:"antigravityCommand"`
-	CodexCommand       string        `json:"codexCommand"`
-	APIProviders       []APIProvider `json:"apiProviders"`
-	MCPPort            int           `json:"mcpPort"`
-	Proactive          bool          `json:"proactive"`
-	WebSources         []string      `json:"webSources"`
-	PixelPollMs        int           `json:"pixelPollMs"`
-	AITimeoutSec       int           `json:"aiTimeoutSec"`
+	WoWPath            string   `json:"wowPath"`
+	Account            string   `json:"account"`
+	Hotkey             string   `json:"hotkey"`
+	Language           string   `json:"language"`
+	ProviderOrder      []string `json:"providerOrder"`
+	AntigravityCommand string   `json:"antigravityCommand"`
+	// AntigravityModel is passed as --model to agy when set; empty keeps agy's default.
+	AntigravityModel string `json:"antigravityModel"`
+	// AntigravityEffort is passed as --effort to agy when set (low, medium, high, xhigh, max).
+	AntigravityEffort string `json:"antigravityEffort"`
+	CodexCommand      string `json:"codexCommand"`
+	// CodexModel is passed as -m to codex when set; empty keeps codex's default.
+	CodexModel string `json:"codexModel"`
+	// CodexEffort is passed as model_reasoning_effort to codex when set.
+	CodexEffort  string        `json:"codexEffort"`
+	APIProviders []APIProvider `json:"apiProviders"`
+	MCPPort      int           `json:"mcpPort"`
+	Proactive    bool          `json:"proactive"`
+	WebSources   []string      `json:"webSources"`
+	PixelPollMs  int           `json:"pixelPollMs"`
+	AITimeoutSec int           `json:"aiTimeoutSec"`
 }
 
 // Defaults returns a Config populated with the default values.
@@ -59,10 +67,15 @@ func Defaults() Config {
 		Language:           "es",
 		ProviderOrder:      []string{"antigravity", "codex", "api"},
 		AntigravityCommand: "agy",
-		CodexCommand:       "codex",
-		APIProviders:       []APIProvider{defaultNVIDIAProvider},
-		MCPPort:            47321,
-		Proactive:          true,
+		// gemini-3.8-flash-low is the fastest model that `agy models` lists; the answers
+		// are short and the tools do the work, so speed matters more than depth.
+		AntigravityModel:  "gemini-3.8-flash-low",
+		AntigravityEffort: "low",
+		CodexCommand:      "codex",
+		CodexEffort:       "low",
+		APIProviders:      []APIProvider{defaultNVIDIAProvider},
+		MCPPort:           47321,
+		Proactive:         true,
 		WebSources: []string{
 			"warcraft.wiki.gg",
 			"www.warcrafttavern.com",
@@ -82,6 +95,12 @@ func (c *Config) PixelPoll() time.Duration {
 		return 250 * time.Millisecond
 	}
 	return time.Duration(c.PixelPollMs) * time.Millisecond
+}
+
+// ScreensDir is the folder under the data directory where screenshots are saved, so that
+// the Antigravity sessions can read them with read_file.
+func ScreensDir(dir string) string {
+	return filepath.Join(dir, "screens")
 }
 
 // DefaultDir returns %APPDATA%\CompaneroWoW.
