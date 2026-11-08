@@ -25,6 +25,15 @@ func cfgString(cfg *config.Config, field func(*config.Config) string, def string
 	return def
 }
 
+// effortOf returns the configured reasoning effort, trimmed. Without a configuration the
+// default is "low"; with one, an empty field means "no effort", not the default.
+func effortOf(cfg *config.Config, field func(*config.Config) string) string {
+	if cfg == nil {
+		return "low"
+	}
+	return strings.TrimSpace(field(cfg))
+}
+
 // mcpURL is the streamable HTTP endpoint of the companion's MCP server.
 func mcpURL(cfg *config.Config) string {
 	port := defaultMCPPort

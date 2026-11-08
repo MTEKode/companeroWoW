@@ -25,6 +25,10 @@ var (
 // dotenvPaths lists the .env files searched for API keys, in order: %APPDATA%\CompaneroWoW,
 // the folder of the executable, the working directory and the parent of the executable's
 // folder (dist\..\.env is the repository root during development).
+// DotenvPaths lists the .env files that may hold API keys. The Antigravity sessions deny
+// reading them.
+func DotenvPaths() []string { return dotenvPaths() }
+
 func dotenvPaths() []string {
 	var paths []string
 	if dir, err := DefaultDir(); err == nil {

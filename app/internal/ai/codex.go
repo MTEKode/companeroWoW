@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,10 +17,15 @@ type codex struct {
 	command  string
 	workDir  string
 	mcpURL   string
+	model    string // -m; empty leaves codex's default
+	effort   string // model_reasoning_effort; empty leaves it out
 	timeout  time.Duration
 	run      runner
 	lookPath func(string) (string, error)
 }
+
+// codexEffortRE accepts reasoning effort names such as "low" (they go into a -c value).
+var codexEffortRE = regexp.MustCompile(`^[a-z]{2,10}$`)
 
 // NewCodex returns the Codex CLI provider. It runs `codex exec` read-only with
 // cwd = workDir and the companion's MCP server passed as a -c override.
@@ -28,10 +34,25 @@ func NewCodex(cfg *config.Config, workDir string) Provider {
 }
 
 func newCodex(cfg *config.Config, workDir string, r runner, lookPath func(string) (string, error)) *codex {
+	model := cfgString(cfg, func(c *config.Config) string { return c.CodexModel }, "")
+	if !agyNameRE.MatchString(model) {
+		if model != "" {
+			log.Printf("codex: modelo %q no válido, se usa el de codex", model)
+		}
+		model = ""
+	}
+	// An empty effort is a choice: it leaves the override out. The default comes from config.Defaults.
+	effort := effortOf(cfg, func(c *config.Config) string { return c.CodexEffort })
+	if !codexEffortRE.MatchString(effort) {
+		log.Printf("codex: esfuerzo %q no válido, se omite", effort)
+		effort = ""
+	}
 	return &codex{
 		command:  cfgString(cfg, func(c *config.Config) string { return c.CodexCommand }, "codex"),
 		workDir:  workDir,
 		mcpURL:   mcpURL(cfg),
+		model:    model,
+		effort:   effort,
 		timeout:  aiTimeout(cfg),
 		run:      r,
 		lookPath: lookPath,
@@ -86,6 +107,12 @@ func (c *codex) Ask(ctx context.Context, req Request) (Response, error) {
 		"-c", fmt.Sprintf(`mcp_servers.%s.url="%s"`, mcpServerName, c.mcpURL),
 		"-c", fmt.Sprintf(`mcp_servers.%s.default_tools_approval_mode="approve"`, mcpServerName),
 		"-o", lastPath,
+	}
+	if c.model != "" {
+		args = append(args, "-m", c.model)
+	}
+	if c.effort != "" {
+		args = append(args, "-c", fmt.Sprintf(`model_reasoning_effort="%s"`, c.effort))
 	}
 
 	var imageLine string

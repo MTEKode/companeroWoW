@@ -17,11 +17,24 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
 )
 
-// maxAnswerLines is the longest answer the format allows unless the question asks for detail.
-const maxAnswerLines = 8
+// maxAnswerLines and maxAnswerChars bound an answer unless the question asks for detail.
+// The skill asks for a first line with the action, up to three bullets and a short source
+// line: five lines, about 450 characters, with some room.
+const (
+	maxAnswerLines = 5
+	maxAnswerChars = 500
+)
 
-// maxToolCalls is the most tool calls one answer may use.
-const maxToolCalls = 6
+// maxToolCalls is the most tool calls one answer may use; maxWebToolCalls is the budget when
+// the answer searched the web.
+const (
+	maxToolCalls    = 4
+	maxWebToolCalls = 6
+)
+
+// maxLatencySec is the time after which an answer is reported as slow. The check is
+// informational: it does not fail the question.
+const maxLatencySec = 40
 
 // maxOutputChars trims each tool output kept in the report.
 const maxOutputChars = 400
@@ -43,6 +56,10 @@ type Question struct {
 	// Tools lists the tools of which at least one must be called; empty means none is required.
 	Tools []string
 }
+
+// webTools are the tools that search or read the web: a question that uses them gets the
+// larger tool budget.
+var webTools = []string{"buscar_web", "leer_pagina"}
 
 // Questions is the scripted set: situational, professions, gold, screen, lore, web and refusal.
 var Questions = []Question{
@@ -96,11 +113,20 @@ type ToolCall struct {
 	Err        string  `json:"err,omitempty"`
 }
 
-// Check is one automatic check of an answer.
+// Check is one automatic check of an answer. Info checks are reported but do not decide
+// whether the question passed.
 type Check struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail"`
+	Info   bool   `json:"info,omitempty"`
+}
+
+// contextReporter is implemented by an Asker that reports the player context it sent with
+// the last question. The noise check reads it; Askers without it are checked on the tool
+// outputs alone.
+type contextReporter interface {
+	LastContext() string
 }
 
 // Record is the outcome of one question.
@@ -149,7 +175,12 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 		if drain != nil {
 			rec.Tools = toolCalls(drain())
 		}
+		injected := ""
+		if cr, ok := asker.(contextReporter); ok {
+			injected = cr.LastContext()
+		}
 		rec.Checks = CheckAnswer(q, rec.Answer, rec.Tools, err)
+		rec.Checks = append(rec.Checks, NoiseCheck(rec.Answer, rec.Tools, injected), LatencyCheck(rec.DurationSec))
 		rec.Passed = allOK(rec.Checks)
 		rep.Records = append(rep.Records, rec)
 		rep.Total++
@@ -172,8 +203,9 @@ func CheckAnswer(q Question, answer string, calls []ToolCall, err error) []Check
 
 	lines := nonEmptyLines(trimmed)
 	if !q.Detail {
-		out = append(out, Check{Name: "longitud", OK: len(lines) <= maxAnswerLines,
-			Detail: fmt.Sprintf("%d líneas (máximo %d)", len(lines), maxAnswerLines)})
+		chars := len([]rune(trimmed))
+		out = append(out, Check{Name: "longitud", OK: len(lines) <= maxAnswerLines && chars <= maxAnswerChars,
+			Detail: fmt.Sprintf("%d líneas (máximo %d), %d caracteres (máximo %d)", len(lines), maxAnswerLines, chars, maxAnswerChars)})
 	}
 	if q.Location {
 		out = append(out, Check{Name: "coordenadas", OK: HasCoordinates(trimmed),
@@ -189,9 +221,49 @@ func CheckAnswer(q Question, answer string, calls []ToolCall, err error) []Check
 		out = append(out, Check{Name: "herramientas", OK: usedAny(calls, q.Tools),
 			Detail: "esperadas una de: " + strings.Join(q.Tools, ", ")})
 	}
-	out = append(out, Check{Name: "pocas_herramientas", OK: len(calls) <= maxToolCalls,
-		Detail: fmt.Sprintf("%d llamadas (máximo %d)", len(calls), maxToolCalls)})
+	budget := maxToolCalls
+	if usedAny(calls, webTools) {
+		budget = maxWebToolCalls
+	}
+	out = append(out, Check{Name: "pocas_herramientas", OK: len(calls) <= budget,
+		Detail: fmt.Sprintf("%d llamadas (máximo %d)", len(calls), budget)})
 	return out
+}
+
+// NoiseCheck fails when the answer talks about syncing or the window mode although the data
+// it needs was there: the live bridge was connected, or the addon data was available and not
+// flagged as stale. injected is the player context the assistant sent with the question; the
+// tool outputs are read too.
+func NoiseCheck(answer string, calls []ToolCall, injected string) Check {
+	// Compact JSON (the injected context) and indented JSON (the tool outputs) are both
+	// normalised to "key": value so that one set of patterns matches them.
+	evidence := injected
+	for _, c := range calls {
+		evidence += "\n" + c.Output
+	}
+	evidence = strings.NewReplacer(": ", ":").Replace(evidence)
+	bridge := strings.Contains(evidence, `"puenteConectado":true`)
+	// Data is there when a tool reports it available, or when the player context carries the
+	// location or the character (the pre-consulted block has no top-level "available").
+	available := (strings.Contains(evidence, `"available":true`) && !strings.Contains(evidence, `"hint"`)) ||
+		strings.Contains(evidence, `"ubicacion":{`) || strings.Contains(evidence, `"personaje":{`)
+	stale := strings.Contains(evidence, "más de 10 minutos") || strings.Contains(evidence, "No hay datos del addon")
+	low := strings.ToLower(answer)
+	mentionsWindow := strings.Contains(low, "ventana")
+	mentionsSync := strings.Contains(low, "sync") || strings.Contains(low, "sincroniz")
+	switch {
+	case mentionsWindow && bridge:
+		return Check{Name: "ruido", OK: false, Detail: "menciona la ventana sin bordes con el puente conectado"}
+	case mentionsSync && available && !stale:
+		return Check{Name: "ruido", OK: false, Detail: "pide sincronizar con datos disponibles y sin avisos de antigüedad"}
+	}
+	return Check{Name: "ruido", OK: true, Detail: "sin avisos innecesarios"}
+}
+
+// LatencyCheck reports an answer that took longer than maxLatencySec. It is informational.
+func LatencyCheck(sec float64) Check {
+	return Check{Name: "latencia", OK: sec <= maxLatencySec, Info: true,
+		Detail: fmt.Sprintf("%.1f s (aviso a partir de %d s)", sec, maxLatencySec)}
 }
 
 // coordRE is the answer format: "(x, y)" with one decimal and a dot.
@@ -293,7 +365,7 @@ func errDetail(err error, answer string) string {
 
 func allOK(checks []Check) bool {
 	for _, c := range checks {
-		if !c.OK {
+		if !c.OK && !c.Info {
 			return false
 		}
 	}
@@ -350,6 +422,9 @@ func Markdown(rep Report) string {
 			mark := "✅"
 			if !c.OK {
 				mark = "❌"
+				if c.Info {
+					mark = "⚠️"
+				}
 			}
 			fmt.Fprintf(&b, "- %s %s — %s\n", mark, c.Name, c.Detail)
 		}

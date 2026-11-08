@@ -74,6 +74,7 @@ func runEval(cfg *config.Config, dir, outPath, provider string) int {
 	waitForGame(g)
 
 	rec := &eval.Recorder{}
+	tools.ScreenshotDir = config.ScreensDir(dir)
 	reg := tools.Build(g, websearch.New(c.WebSources, st))
 	reg.SetObserver(rec.Observe)
 

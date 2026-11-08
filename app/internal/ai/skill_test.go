@@ -71,7 +71,7 @@ func TestAntigravityDeploysWorkspaceSkillAndNamesIt(t *testing.T) {
 	if _, err := p.Ask(context.Background(), req); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if _, err := os.Stat(skill.WorkspaceSkillPath(workDir)); err != nil {
+	if _, err := os.Stat(skill.WorkspaceSkillPath(filepath.Join(workDir, antigravityWorkspaceDir))); err != nil {
 		t.Fatalf("workspace skill not deployed: %v", err)
 	}
 	prompt := argValue(fr.calls[0].Args, "-p")

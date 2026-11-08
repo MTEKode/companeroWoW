@@ -148,6 +148,8 @@ func runApp(cfg *config.Config, dir string) int {
 	g.Start(ctx)
 
 	ws := websearch.New(cfg.WebSources, st)
+	// capturar_pantalla also saves each capture where the CLI providers can read it.
+	tools.ScreenshotDir = config.ScreensDir(dir)
 	reg := tools.Build(g, ws)
 
 	mcpErrs := &errBox{}

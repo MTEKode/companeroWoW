@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
@@ -41,6 +42,9 @@ type Assistant struct {
 	st    *store.Store
 	cfg   *config.Config
 	now   func() time.Time
+
+	mu      sync.Mutex
+	lastCtx string // the player context block of the last question
 }
 
 // New creates the assistant over the provider chain, the game data, the store and the
@@ -95,9 +99,17 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 	if a.asker == nil {
 		return ai.Response{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
+	// The player context is consulted here, once, so the provider does not need a tool call
+	// for the usual "where am I / what now" questions.
+	system := a.stateBlock()
+	block := a.playerContextBlock()
+	a.setLastContext(block)
+	if block != "" {
+		system += "\n\n" + block
+	}
 	req := ai.Request{
 		Skill:   SystemPrompt,
-		System:  a.stateBlock(),
+		System:  system,
 		History: history,
 		Prompt:  q,
 	}
@@ -110,6 +122,20 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 		}
 	}
 	return a.asker.Ask(ctx, req)
+}
+
+// LastContext returns the player context block that the last question carried, or "" when
+// there was none. The evaluation harness reads it to check the answers.
+func (a *Assistant) LastContext() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastCtx
+}
+
+func (a *Assistant) setLastContext(block string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastCtx = block
 }
 
 // ClearHistory deletes every stored chat message.
@@ -234,7 +260,8 @@ func (a *Assistant) stateBlock() string {
 		}
 	}
 	if len(lines) == 0 {
-		return "Estado actual: sin datos del juego (pide al usuario que escriba /compa sync en el juego o que use modo ventana sin bordes)."
+		// The context block says what to do when data is missing; this line only states it.
+		return "Estado actual: sin datos del juego en este momento."
 	}
 	return "Estado actual:\n- " + strings.Join(lines, "\n- ")
 }

@@ -22,14 +22,43 @@ func (e *apiError) Error() string {
 	return "wiki: " + e.Code
 }
 
+// wikiStep is one targeted search of the retry. boost is the extra rank of its hits.
+type wikiStep struct {
+	run   func(ctx context.Context) ([]Hit, error)
+	boost int
+}
+
+// wikiRetry lists the targeted searches that run when the plain searches found nothing:
+// titles that contain "Forever" and the query, the title prefix "Forever <query>", and the
+// pages of Category:Forever that match the query (ranked first).
+func (c *Client) wikiRetry(query string) []wikiStep {
+	return []wikiStep{
+		{run: func(ctx context.Context) ([]Hit, error) { return c.wikiSearchWith(ctx, query+" Forever", "title") }},
+		{run: func(ctx context.Context) ([]Hit, error) { return c.wikiSearchWith(ctx, query, "title") }},
+		{run: func(ctx context.Context) ([]Hit, error) { return c.wikiPrefixSearch(ctx, "Forever "+query) }},
+		{run: func(ctx context.Context) ([]Hit, error) {
+			return c.wikiSearchWith(ctx, `incategory:"Forever" `+query, "")
+		}, boost: 3},
+	}
+}
+
 // wikiSearch runs a MediaWiki full-text search on warcraft.wiki.gg.
 func (c *Client) wikiSearch(ctx context.Context, q string) ([]Hit, error) {
+	return c.wikiSearchWith(ctx, q, "")
+}
+
+// wikiSearchWith runs a search on warcraft.wiki.gg. what is "" for full text or "title" to
+// match page titles only (srwhat).
+func (c *Client) wikiSearchWith(ctx context.Context, q, what string) ([]Hit, error) {
 	v := url.Values{}
 	v.Set("action", "query")
 	v.Set("list", "search")
 	v.Set("srsearch", q)
 	v.Set("srlimit", "8")
 	v.Set("format", "json")
+	if what != "" {
+		v.Set("srwhat", what)
+	}
 	body, _, err := c.get(ctx, c.wikiAPI+"?"+v.Encode())
 	if err != nil {
 		return nil, err
@@ -59,6 +88,46 @@ func (c *Client) wikiSearch(ctx context.Context, q string) ([]Hit, error) {
 			URL:     wikiSiteURL + "/wiki/" + wikiTitlePath(s.Title),
 			Snippet: collapse(htmlToText(s.Snippet)),
 			Source:  "wiki.gg API",
+		})
+	}
+	return hits, nil
+}
+
+// wikiPrefixSearch lists the pages whose titles start with q (list=prefixsearch).
+func (c *Client) wikiPrefixSearch(ctx context.Context, q string) ([]Hit, error) {
+	v := url.Values{}
+	v.Set("action", "query")
+	v.Set("list", "prefixsearch")
+	v.Set("pssearch", q)
+	v.Set("pslimit", "8")
+	v.Set("format", "json")
+	body, _, err := c.get(ctx, c.wikiAPI+"?"+v.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Error *apiError `json:"error"`
+		Query struct {
+			PrefixSearch []struct {
+				Title string `json:"title"`
+			} `json:"prefixsearch"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("respuesta del wiki no válida: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	hits := make([]Hit, 0, len(resp.Query.PrefixSearch))
+	for _, s := range resp.Query.PrefixSearch {
+		if s.Title == "" {
+			continue
+		}
+		hits = append(hits, Hit{
+			Title:  s.Title,
+			URL:    wikiSiteURL + "/wiki/" + wikiTitlePath(s.Title),
+			Source: "wiki.gg API",
 		})
 	}
 	return hits, nil

@@ -109,31 +109,41 @@ func (g *Service) PlayerContext() (any, error) {
 		}
 	}
 
+	// Freshness. The live bridge is current by definition, so the SavedVariables age only
+	// matters for what the addon saves there and nowhere else: the quest log and the
+	// professions. A note asks for a sync only when such a field is in this answer.
 	fresh := map[string]any{"questieDisponible": false}
+	bridge := false
+	svAge, svKnown := 0.0, false
 	if st, err := g.Status(); err == nil {
 		if m := asMap(st); m != nil {
+			bridge = truthy(m["bridgeConnected"])
 			fresh["puenteConectado"] = m["bridgeConnected"]
-			if age, ok := m["savedVariablesAgeSec"]; ok {
+			if age, ok := numOK(m["savedVariablesAgeSec"]); ok {
+				svAge, svKnown = age, true
 				fresh["svHaceSeg"] = age
-				if n, _ := numOK(age); n > staleAddonSec {
-					notes = append(notes, "Los datos del addon tienen más de 10 minutos: pide /compa sync en el juego.")
-				}
-			} else {
-				notes = append(notes, "No hay datos del addon: escribe /compa sync en el juego.")
 			}
 		}
+	}
+	_, hasTracked := out["misionRastreada"]
+	_, hasProfs := out["profesiones"]
+	if svKnown && svAge > staleAddonSec && (hasTracked || hasProfs) {
+		notes = append(notes, "Los datos de misiones o profesiones del addon tienen más de 10 minutos: pide /compa sync en el juego.")
+	}
+	if !svKnown && !bridge && (hasTracked || hasProfs) {
+		notes = append(notes, "No hay datos del addon: escribe /compa sync en el juego.")
 	}
 	if ch, _, ok := g.activeCharacter(); ok {
 		qx := readQuestie(ch.data)
 		if qx.Available {
 			fresh["questieDisponible"] = true
 			fresh["questieHaceSeg"] = ageSeconds(qx.ExportedAt)
-		} else {
-			notes = append(notes, "Questie no exportó datos de misiones: no tengo coordenadas de misiones.")
+		} else if hasTracked {
+			notes = append(notes, "Questie no exportó coordenadas de misiones: la guía no tiene coordenadas exactas.")
 		}
 	}
 	out["datos"] = fresh
-	if !pos.OK {
+	if !pos.OK && !bridge {
 		notes = append(notes, "No sé la posición exacta: abre WoW en modo ventana o sin bordes.")
 	}
 	if len(notes) > 0 {

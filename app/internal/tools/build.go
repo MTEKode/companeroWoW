@@ -1,12 +1,10 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
@@ -16,6 +14,12 @@ import (
 
 // CaptureFunc takes the screenshot for capturar_pantalla. Tests override it.
 var CaptureFunc = capture.CaptureWoW
+
+// ScreenshotDir, when set, is the folder where capturar_pantalla also saves each capture
+// as a PNG file and names its path in the answer. A CLI provider whose model cannot use
+// image content can then open the file with read_file. The folder keeps only the newest
+// files (capture.SavePNG). Set it before Build; empty means image content only.
+var ScreenshotDir string
 
 const (
 	knowledgeDefaultLimit = 10
@@ -81,7 +85,7 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 func capturarPantalla() Def {
 	return Def{
 		Name:        "capturar_pantalla",
-		Description: "Toma una captura de la ventana de World of Warcraft y la envía como imagen. Úsala cuando necesites ver lo que el jugador ve (la escena, textos, mapa o interfaz) y los datos de las demás herramientas no basten.",
+		Description: "Toma una captura de la ventana de World of Warcraft y la envía como imagen; también guarda el archivo y devuelve su ruta. Úsala cuando necesites ver lo que el jugador ve (la escena, textos, mapa o interfaz) y los datos de las demás herramientas no basten.",
 		InputSchema: schema(nil),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			if CaptureFunc == nil {
@@ -91,9 +95,18 @@ func capturarPantalla() Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude capturar la ventana de WoW (%w). Abre el juego en modo ventana o sin bordes", err)
 			}
+			text := "Captura de la ventana de World of Warcraft adjunta (PNG)."
+			if ScreenshotDir != "" {
+				path, serr := capture.SavePNG(ScreenshotDir, png)
+				if serr != nil {
+					text += " No pude guardar el archivo: " + serr.Error() + "."
+				} else {
+					text += " Archivo: " + path + ". Si no ves la imagen, léela con read_file de esa ruta."
+				}
+			}
 			return Result{Content: []Content{
 				{Type: "image", Data: png, MimeType: "image/png"},
-				{Type: "text", Text: "Captura de la ventana de World of Warcraft adjunta (PNG)."},
+				{Type: "text", Text: text},
 			}}, nil
 		},
 	}
@@ -118,10 +131,6 @@ func getter(g *gamedata.Service, name, label, desc string, fn func(*gamedata.Ser
 	}
 }
 
-type questArgs struct {
-	QuestID *int64 `json:"quest_id"`
-}
-
 func obtenerMision(g *gamedata.Service) Def {
 	return Def{
 		Name:        "obtener_mision",
@@ -130,28 +139,24 @@ func obtenerMision(g *gamedata.Service) Def {
 			"quest_id": intProp("Número de la misión (quest_id), por ejemplo 90001.", 1),
 		}, "quest_id"),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a questArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
-			if a.QuestID == nil || *a.QuestID <= 0 {
+			id, ok, ierr := a.integer(aliasQuestID...)
+			if !ok || ierr != nil || id <= 0 {
 				return Result{}, errors.New("falta quest_id: indica el número de la misión, por ejemplo 90001")
 			}
 			if g == nil {
 				return Result{}, errNoGame
 			}
-			v, err := g.Quest(*a.QuestID)
+			v, err := g.Quest(id)
 			if err != nil {
-				return Result{}, fmt.Errorf("no pude leer la misión %d: %v", *a.QuestID, err)
+				return Result{}, fmt.Errorf("no pude leer la misión %d: %v", id, err)
 			}
 			return jsonResult(v)
 		},
 	}
-}
-
-type knowledgeArgs struct {
-	Texto  string `json:"texto"`
-	Limite *int   `json:"limite"`
 }
 
 func buscarConocimiento(g *gamedata.Service) Def {
@@ -163,11 +168,11 @@ func buscarConocimiento(g *gamedata.Service) Def {
 			"limite": intProp("Máximo de resultados por tipo (por defecto 10).", 1),
 		}, "texto"),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a knowledgeArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
-			texto := strings.TrimSpace(a.Texto)
+			texto, _ := a.text(aliasText...)
 			if texto == "" {
 				return Result{}, errors.New("falta texto: escribe el nombre o la palabra clave a buscar")
 			}
@@ -178,7 +183,7 @@ func buscarConocimiento(g *gamedata.Service) Def {
 			if st == nil {
 				return Result{}, errNoKB
 			}
-			limite := clampLimit(a.Limite, knowledgeDefaultLimit, maxLimit)
+			limite := clampLimit(a.intPtr(aliasLimit...), knowledgeDefaultLimit, maxLimit)
 			quests, err := st.SearchQuests(texto, limite)
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude buscar misiones: %v", err)
@@ -213,11 +218,6 @@ func buscarConocimiento(g *gamedata.Service) Def {
 	}
 }
 
-type npcMapArgs struct {
-	MapID  *int `json:"map_id"`
-	Limite *int `json:"limite"`
-}
-
 func npcsEnMapa(g *gamedata.Service) Def {
 	return Def{
 		Name:        "npcs_en_mapa",
@@ -227,14 +227,14 @@ func npcsEnMapa(g *gamedata.Service) Def {
 			"limite": intProp("Máximo de NPCs a devolver (por defecto 30).", 1),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a npcMapArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
 			if g == nil {
 				return Result{}, errNoGame
 			}
-			mapID, err := resolveMap(g, a.MapID)
+			mapID, err := resolveMap(g, requestedMap(a))
 			if err != nil {
 				return Result{}, err
 			}
@@ -242,7 +242,7 @@ func npcsEnMapa(g *gamedata.Service) Def {
 			if st == nil {
 				return Result{}, errNoKB
 			}
-			limite := clampLimit(a.Limite, npcMapDefaultLimit, maxNpcMapLimit)
+			limite := clampLimit(a.intPtr(aliasLimit...), npcMapDefaultLimit, maxNpcMapLimit)
 			npcs, err := st.NpcsOnMap(mapID, limite)
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude listar los NPCs del mapa %d: %v", mapID, err)
@@ -269,11 +269,6 @@ func npcsEnMapa(g *gamedata.Service) Def {
 	}
 }
 
-type webArgs struct {
-	Consulta string `json:"consulta"`
-	Sitio    string `json:"sitio"`
-}
-
 func buscarWeb(ws *websearch.Client) Def {
 	return Def{
 		Name:        "buscar_web",
@@ -283,18 +278,19 @@ func buscarWeb(ws *websearch.Client) Def {
 			"sitio":    strProp("Opcional: un único sitio de la lista permitida (por ejemplo warcraft.wiki.gg) en el que buscar."),
 		}, "consulta"),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a webArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
-			consulta := strings.TrimSpace(a.Consulta)
+			consulta, _ := a.text(aliasText...)
+			sitio, _ := a.text(aliasSite...)
 			if consulta == "" {
 				return Result{}, errors.New("falta consulta: escribe qué buscar")
 			}
 			if ws == nil {
 				return Result{}, errors.New("la búsqueda web no está configurada")
 			}
-			hits, err := ws.Search(ctx, consulta, a.Sitio)
+			hits, err := ws.Search(ctx, consulta, sitio)
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude buscar en la web: %v", err)
 			}
@@ -303,7 +299,7 @@ func buscarWeb(ws *websearch.Client) Def {
 			}
 			out := map[string]any{
 				"consulta":   consulta,
-				"sitio":      strings.TrimSpace(a.Sitio),
+				"sitio":      sitio,
 				"total":      len(hits),
 				"resultados": hits,
 			}
@@ -315,10 +311,6 @@ func buscarWeb(ws *websearch.Client) Def {
 	}
 }
 
-type pageArgs struct {
-	URL string `json:"url"`
-}
-
 func leerPagina(ws *websearch.Client) Def {
 	return Def{
 		Name:        "leer_pagina",
@@ -327,11 +319,11 @@ func leerPagina(ws *websearch.Client) Def {
 			"url": strProp("Dirección completa de la página, tal como la devolvió buscar_web."),
 		}, "url"),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			var a pageArgs
-			if err := decode(args, &a); err != nil {
+			a, err := parseArgs(args)
+			if err != nil {
 				return Result{}, err
 			}
-			u := strings.TrimSpace(a.URL)
+			u, _ := a.text(aliasURL...)
 			if u == "" {
 				return Result{}, errors.New("falta url: indica la dirección de la página")
 			}
@@ -396,16 +388,15 @@ func clampLimit(p *int, def, max int) int {
 	return *p
 }
 
-// decode unmarshals tool arguments; empty or null arguments leave v at its zero value.
-func decode(args json.RawMessage, v any) error {
-	trimmed := bytes.TrimSpace(args)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+// requestedMap returns the map_id argument (any alias), or nil when it is absent or holds
+// no number, so that the live map is used instead.
+func requestedMap(a argValues) *int {
+	id, ok, err := a.integer(aliasMapID...)
+	if !ok || err != nil {
 		return nil
 	}
-	if err := json.Unmarshal(trimmed, v); err != nil {
-		return fmt.Errorf("argumentos no válidos: %v", err)
-	}
-	return nil
+	v := int(id)
+	return &v
 }
 
 func jsonResult(v any) (Result, error) {
