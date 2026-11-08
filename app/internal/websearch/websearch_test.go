@@ -2,6 +2,8 @@ package websearch
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -328,6 +330,136 @@ func TestSearchRejectsEmptyQuery(t *testing.T) {
 	c := New(allowed, nil)
 	if _, err := c.Search(context.Background(), "   ", ""); err == nil {
 		t.Fatal("empty query accepted")
+	}
+}
+
+// rigTransport routes fake hostnames to loopback test servers, so redirect tests can use
+// different hosts without DNS. Any host not in routes is refused: nothing reaches the internet.
+func rigTransport(routes map[string]string) *http.Transport {
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	return &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		target, ok := routes[host]
+		if !ok {
+			return nil, errors.New("host de prueba no mapeado: " + host)
+		}
+		return d.DialContext(ctx, network, target)
+	}}
+}
+
+func TestFetchRedirectToDisallowedHostIsRefused(t *testing.T) {
+	var evilHits atomic.Int32
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits.Add(1)
+		_, _ = w.Write([]byte("contenido ajeno"))
+	}))
+	defer evil.Close()
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.test/steal", http.StatusFound)
+	}))
+	defer site.Close()
+
+	c := New([]string{"allowed.test"}, nil)
+	c.minInterval = 0
+	c.http.Transport = rigTransport(map[string]string{
+		"allowed.test": site.Listener.Addr().String(),
+		"evil.test":    evil.Listener.Addr().String(),
+	})
+	_, err := c.Fetch(context.Background(), "http://allowed.test/page")
+	if err == nil || !strings.Contains(err.Error(), "redirección a dominio no permitido: evil.test") {
+		t.Fatalf("err = %v, want redirección a dominio no permitido: evil.test", err)
+	}
+	if n := evilHits.Load(); n != 0 {
+		t.Fatalf("disallowed host received %d requests, want 0", n)
+	}
+}
+
+func TestFetchRedirectBetweenAllowedHostsWorks(t *testing.T) {
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://other.test/clean", http.StatusMovedPermanently)
+	}))
+	defer start.Close()
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><main><p>destino permitido</p></main></body></html>"))
+	}))
+	defer dest.Close()
+
+	c := New([]string{"allowed.test", "other.test"}, nil)
+	c.minInterval = 0
+	c.http.Transport = rigTransport(map[string]string{
+		"allowed.test": start.Listener.Addr().String(),
+		"other.test":   dest.Listener.Addr().String(),
+	})
+	text, err := c.Fetch(context.Background(), "http://allowed.test/start")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !strings.Contains(text, "destino permitido") {
+		t.Errorf("redirect target not read:\n%s", text)
+	}
+}
+
+func TestFetchMoreThanFiveRedirectsIsRefused(t *testing.T) {
+	var hits atomic.Int32
+	loop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, "http://allowed.test/loop", http.StatusFound)
+	}))
+	defer loop.Close()
+
+	c := New([]string{"allowed.test"}, nil)
+	c.minInterval = 0
+	c.http.Transport = rigTransport(map[string]string{"allowed.test": loop.Listener.Addr().String()})
+	_, err := c.Fetch(context.Background(), "http://allowed.test/loop")
+	if err == nil || !strings.Contains(err.Error(), "demasiadas redirecciones") {
+		t.Fatalf("err = %v, want demasiadas redirecciones", err)
+	}
+	// The original request plus the 5 followed redirects; the 6th redirect is refused.
+	if n := hits.Load(); n != maxRedirects+1 {
+		t.Errorf("server saw %d requests, want %d", n, maxRedirects+1)
+	}
+}
+
+func TestSearchEndpointRedirectStaysOnItsHost(t *testing.T) {
+	var evilHits atomic.Int32
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits.Add(1)
+	}))
+	defer evil.Close()
+	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/html/":
+			http.Redirect(w, r, "http://ddg.test/html2/", http.StatusFound)
+		case "/html2/":
+			_, _ = w.Write([]byte("<html><body>ok</body></html>"))
+		default:
+			http.Redirect(w, r, "http://evil.test/", http.StatusFound)
+		}
+	}))
+	defer ddg.Close()
+
+	c := New([]string{"allowed.test"}, nil)
+	c.minInterval = 0
+	c.ddgEndpoint = "http://ddg.test/html/"
+	c.http.Transport = rigTransport(map[string]string{
+		"ddg.test":  ddg.Listener.Addr().String(),
+		"evil.test": evil.Listener.Addr().String(),
+	})
+	// A search endpoint may redirect within its own host...
+	body, _, err := c.get(context.Background(), "http://ddg.test/html/")
+	if err != nil || !strings.Contains(string(body), "ok") {
+		t.Fatalf("search redirect within its host: body=%q err=%v", body, err)
+	}
+	// ...but never to a host outside the allow-list.
+	if _, _, err := c.get(context.Background(), "http://ddg.test/evil"); err == nil || !strings.Contains(err.Error(), "evil.test") {
+		t.Fatalf("err = %v, want refusal of redirect to evil.test", err)
+	}
+	if n := evilHits.Load(); n != 0 {
+		t.Fatalf("disallowed host received %d requests, want 0", n)
 	}
 }
 

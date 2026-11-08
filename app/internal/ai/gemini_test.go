@@ -102,9 +102,23 @@ func TestGeminiBuildsHeadlessCallAndSettings(t *testing.T) {
 	if srv.HTTPURL != "http://127.0.0.1:47321/mcp" || !srv.Trust {
 		t.Errorf("companero server = %+v", srv)
 	}
-	for _, tool := range []string{"run_shell_command", "write_file", "replace"} {
+	for _, tool := range []string{
+		"run_shell_command", "write_file", "replace",
+		"invoke_agent", "codebase_investigator", "browser_agent", "complete_task", "activate_skill",
+		"tracker_create_task", "tracker_update_task", "tracker_add_dependency", "tracker_get_task",
+		"tracker_list_tasks", "tracker_visualize", "write_todos", "update_topic", "save_memory",
+		"ask_user", "enter_plan_mode", "exit_plan_mode",
+	} {
 		if !containsString(doc.Tools.Exclude, tool) {
 			t.Errorf("tools.exclude %v missing %q", doc.Tools.Exclude, tool)
+		}
+	}
+	if len(doc.Tools.Exclude) != 20 {
+		t.Errorf("tools.exclude has %d entries, want 20: %v", len(doc.Tools.Exclude), doc.Tools.Exclude)
+	}
+	for _, tool := range []string{"read_file", "read_many_files", "glob", "grep_search", "list_directory", "google_web_search", "web_fetch"} {
+		if containsString(doc.Tools.Exclude, tool) {
+			t.Errorf("read-only/web tool %q must stay enabled, exclude = %v", tool, doc.Tools.Exclude)
 		}
 	}
 }
@@ -152,8 +166,8 @@ func TestGeminiSettingsKeepsOtherKeysAndDoesNotDuplicate(t *testing.T) {
 			t.Errorf("exclude entry %v duplicated %d times", v, n)
 		}
 	}
-	if len(excl) != 3 {
-		t.Errorf("exclude = %v, want the 3 unique entries", excl)
+	if len(excl) != len(geminiExcludedTools) {
+		t.Errorf("exclude = %v, want the %d unique entries", excl, len(geminiExcludedTools))
 	}
 }
 

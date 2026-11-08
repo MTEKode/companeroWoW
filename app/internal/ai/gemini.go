@@ -21,9 +21,22 @@ const (
 	geminiPromptArg = "Responde a la pregunta del texto recibido por stdin, en español."
 )
 
-// geminiExcludedTools are built-in tools the model must never get: shell and file edits.
-// Everything else the model can use is either read-only, web search, or an MCP tool.
-var geminiExcludedTools = []string{"run_shell_command", "write_file", "replace"}
+// geminiExcludedTools are built-in gemini-cli tools (checked against gemini-cli 0.67) the
+// model must never get: shell and file edits, sub-agents, the browser agent, task trackers,
+// todo lists, memory and any other state-changing or interactive tool. What stays enabled is
+// read-only (read_file, read_many_files, glob, grep_search, list_directory, get_internal_docs,
+// cli_help, MCP resource readers), web (google_web_search, web_fetch) or our MCP server.
+var geminiExcludedTools = []string{
+	// shell and file edits
+	"run_shell_command", "write_file", "replace",
+	// agents and sub-agents
+	"invoke_agent", "codebase_investigator", "browser_agent", "complete_task", "activate_skill",
+	// task tracker, todo and memory state
+	"tracker_create_task", "tracker_update_task", "tracker_add_dependency", "tracker_get_task",
+	"tracker_list_tasks", "tracker_visualize", "write_todos", "update_topic", "save_memory",
+	// interactive or mode-changing tools that do not fit a headless call
+	"ask_user", "enter_plan_mode", "exit_plan_mode",
+}
 
 type gemini struct {
 	command  string

@@ -24,6 +24,7 @@ const (
 	requestTimeout     = 15 * time.Second
 	maxBodyBytes       = 2 << 20
 	maxHits            = 8
+	maxRedirects       = 5
 	maxPageRunes       = 12000
 	searchTTL          = 24 * time.Hour
 	pageTTL            = 7 * 24 * time.Hour
@@ -61,11 +62,14 @@ type Client struct {
 func New(allowedDomains []string, st *store.Store) *Client {
 	c := &Client{
 		st:          st,
-		http:        &http.Client{Timeout: requestTimeout},
 		wikiAPI:     wikiAPIURL,
 		ddgEndpoint: ddgURL,
 		minInterval: defaultMinInterval,
 		next:        make(map[string]time.Time),
+	}
+	c.http = &http.Client{
+		Timeout:       requestTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return c.checkRedirect(req, via) },
 	}
 	for _, d := range allowedDomains {
 		if h := cleanEntry(d); h != "" {
@@ -73,6 +77,38 @@ func New(allowedDomains []string, st *store.Store) *Client {
 		}
 	}
 	return c
+}
+
+// checkRedirect vets every redirect hop. A hop must use http or https and land on an
+// allow-listed host. The only exception is a search request: a redirect that stays on the
+// host of the search endpoint it started from (DuckDuckGo or the wiki.gg API) is allowed.
+// Fetch always starts on an allow-listed host, so the exception never applies to pages.
+func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > maxRedirects {
+		return fmt.Errorf("demasiadas redirecciones (máximo %d)", maxRedirects)
+	}
+	if s := req.URL.Scheme; s != "http" && s != "https" {
+		return fmt.Errorf("redirección a esquema no permitido: %s", s)
+	}
+	host := req.URL.Hostname()
+	if _, ok := c.match(host); ok {
+		return nil
+	}
+	if len(via) > 0 && c.isSearchEndpoint(via[0].URL) && normHost(host) == normHost(via[0].URL.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("redirección a dominio no permitido: %s", host)
+}
+
+// isSearchEndpoint reports whether u points at the DuckDuckGo or wiki.gg API endpoint.
+func (c *Client) isSearchEndpoint(u *url.URL) bool {
+	h := normHost(u.Hostname())
+	for _, endpoint := range []string{c.ddgEndpoint, c.wikiAPI} {
+		if eu, err := url.Parse(endpoint); err == nil && normHost(eu.Hostname()) == h {
+			return true
+		}
+	}
+	return false
 }
 
 // Search looks for WoW Forever pages matching query. If site is non-empty it must be
