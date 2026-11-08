@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -157,7 +156,7 @@ func runApp(cfg *config.Config, dir string) int {
 	uiErr := ui.Run(ui.Options{
 		Hotkey:    cfg.Hotkey,
 		StatePath: filepath.Join(dir, "window.json"),
-		DataPath:  filepath.Join(dir, "webview2"),
+		Avoid:     avoidStrip,
 		Backend:   asst,
 		Tips:      tips,
 		Status: func() ui.Status {
@@ -173,14 +172,22 @@ func runApp(cfg *config.Config, dir string) int {
 		log.Printf("mcp: shutdown timed out")
 	}
 	if uiErr != nil {
-		// ErrRuntimeMissing has already been shown to the user in a message box.
-		if !errors.Is(uiErr, ui.ErrRuntimeMissing) {
-			log.Printf("ui: %v", uiErr)
-		}
+		log.Printf("ui: %v", uiErr)
 		return 1
 	}
 	log.Printf("Compañero WoW cerrado")
 	return 0
+}
+
+// avoidStrip returns the WoW pixel strip at the top-left of the client area. The bridge
+// reads it from the screen, so the overlay must never cover it. The bridge's strip
+// (StripWidth x StripHeight) is larger than the minimum the overlay needs, so it is used.
+func avoidStrip() (ui.Rect, bool) {
+	_, rect, err := bridge.FindWoWWindow()
+	if err != nil {
+		return ui.Rect{}, false
+	}
+	return ui.Rect{X: rect.Min.X, Y: rect.Min.Y, W: bridge.StripWidth, H: bridge.StripHeight}, true
 }
 
 // buildStatus gathers what the status bar shows. It is called by the UI every two seconds.
@@ -302,7 +309,6 @@ type diagReport struct {
 	MCPPort             int            `json:"mcpPort"`
 	Hotkey              string         `json:"hotkey"`
 	Proactive           bool           `json:"proactive"`
-	WebView2Installed   bool           `json:"webView2Installed"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -318,7 +324,6 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		MCPPort:           cfg.MCPPort,
 		Hotkey:            cfg.Hotkey,
 		Proactive:         cfg.Proactive,
-		WebView2Installed: ui.RuntimeInstalled(),
 		SavedVariablesAge: -1,
 	}
 	if _, _, err := bridge.FindWoWWindow(); err == nil {

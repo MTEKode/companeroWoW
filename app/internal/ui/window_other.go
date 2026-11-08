@@ -4,13 +4,10 @@ package ui
 
 import "errors"
 
-// Run needs Windows and WebView2; elsewhere it reports that the overlay is unavailable.
+// Run needs Windows: the panel is a Win32 window.
 func Run(Options) error {
 	return errors.New("la ventana de Compañero WoW solo está disponible en Windows")
 }
 
 // Activate has nothing to bring forward outside Windows.
 func Activate() bool { return false }
-
-// RuntimeInstalled is always false outside Windows.
-func RuntimeInstalled() bool { return false }

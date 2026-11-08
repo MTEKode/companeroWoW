@@ -4,435 +4,940 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
-	webview "github.com/jchv/go-webview2"
-	"github.com/jchv/go-webview2/webviewloader"
+	"github.com/MTEKode/companeroWoW/app/internal/assistant"
 	"golang.org/x/sys/windows"
 )
 
-var (
-	user32                  = windows.NewLazySystemDLL("user32.dll")
-	shell32                 = windows.NewLazySystemDLL("shell32.dll")
-	procSetWindowPos        = user32.NewProc("SetWindowPos")
-	procShowWindow          = user32.NewProc("ShowWindow")
-	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
-	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
-	procSetWindowLongPtrW   = user32.NewProc("SetWindowLongPtrW")
-	procGetWindowLongPtrW   = user32.NewProc("GetWindowLongPtrW")
-	procCallWindowProcW     = user32.NewProc("CallWindowProcW")
-	procGetWindowRect       = user32.NewProc("GetWindowRect")
-	procGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
-	procFindWindowW         = user32.NewProc("FindWindowW")
-	procMessageBoxW         = user32.NewProc("MessageBoxW")
-	procShellExecuteW       = shell32.NewProc("ShellExecuteW")
-)
-
 const (
-	swHide           = 0
-	swShow           = 5
-	swShowNoActivate = 4
-	swRestore        = 9
+	windowClassName = "CompaneroWoWPanel"
+	// panelAlpha is the window opacity (230 of 255, about 90 %).
+	panelAlpha   = 230
+	cornerRadius = 12
+	statusPeriod = 2 * time.Second
+	tipQueueSize = 16
 
-	hwndTopmost   = ^uintptr(0) // (HWND)-1
-	swpNoSize     = 0x0001
-	swpNoMove     = 0x0002
-	swpNoActivate = 0x0010
+	// Custom messages posted to the window from other goroutines.
+	msgAnswer = wmApp + 1
+	msgTip    = wmApp + 2
+	msgStatus = wmApp + 3
+	msgToggle = wmApp + 4
 
-	gwlpWndProc = ^uintptr(3) // GWLP_WNDPROC (-4)
-	wmClose     = 0x0010
+	idCheck = 2001
+	idSend  = 2002
+	idInput = 2003
 
-	smCxScreen = 0
-	smCyScreen = 1
-
-	mbOK        = 0x00000000
-	mbIconError = 0x00000010
+	menuClear = 1001
+	menuQuit  = 1002
 )
 
-// window is the overlay. Only the UI thread touches wv and the saved geometry; other
-// goroutines hand work over with wv.Dispatch.
-type window struct {
-	wv       webview.WebView
-	hwnd     uintptr
-	opts     Options
-	state    windowState
-	quitting atomic.Bool
+// Palette: dark brown background, gold headings and borders, parchment text.
+var (
+	colBG      = rgbColor(0x16, 0x11, 0x0C)
+	colHeader  = rgbColor(0x2A, 0x1F, 0x14)
+	colConv    = rgbColor(0x1B, 0x15, 0x0F)
+	colInput   = rgbColor(0x2C, 0x22, 0x16)
+	colButton  = rgbColor(0x3B, 0x2C, 0x1A)
+	colGold    = rgbColor(0xC8, 0xA2, 0x4A)
+	colHeading = rgbColor(0xFF, 0xD1, 0x00)
+	colText    = rgbColor(0xE8, 0xDC, 0xC0)
+	colMeta    = rgbColor(0x8C, 0x80, 0x70)
+	colError   = rgbColor(0xE8, 0x7A, 0x5E)
+	colTipBG   = rgbColor(0x3D, 0x2F, 0x12)
+	colLink    = rgbColor(0x7F, 0xB8, 0xE6)
+	colOK      = rgbColor(0x9F, 0xD0, 0x6A)
+	colWarn    = rgbColor(0xE0, 0xB0, 0x50)
+	colBad     = rgbColor(0xD0, 0x70, 0x60)
+)
 
-	mu     sync.Mutex
-	notice string // hotkey or other notice shown in the status bar
+// current is the panel. The window procedures are plain functions, so they find the
+// window through this variable. Only the UI thread reads or writes its fields, except
+// the fields documented as safe for other goroutines.
+var (
+	current      *window
+	origEditProc uintptr
+	editProcCB   uintptr
+)
+
+type winBrushes struct {
+	bg, header, conv, input, button, gold uintptr
 }
 
-// current is the single overlay window. The window procedure is a plain function, so it
-// finds the window through this variable.
-var (
-	current  *window
-	origProc uintptr
-)
+type winFonts struct {
+	ui, title, small uintptr
+}
 
-// Run creates the overlay window and runs its message loop on the calling thread,
-// which must be the main thread. It returns when the user quits (or on error). Closing
-// the window only hides it. If WebView2 is missing, a message box is shown and
-// ErrRuntimeMissing is returned.
+type window struct {
+	hwnd, inst               uintptr
+	conv, input, check, send uintptr
+	opts                     Options
+	dpi                      uint32
+	scale                    float64
+	fonts                    winFonts
+	brushes                  winBrushes
+	state                    windowState
+
+	quitting    bool // UI thread only
+	busy        bool // UI thread only
+	notice      string
+	entries     []entry
+	statusText  string
+	statusColor uint32
+
+	// latest is written by the status goroutine and read on the UI thread.
+	latestMu sync.Mutex
+	latest   Status
+
+	// avoid is the WoW pixel strip the panel must not cover; written by refreshAvoid
+	// from any goroutine, read under the same mutex.
+	avoidMu sync.Mutex
+	avoid   Rect
+	avoidOK bool
+
+	answers chan entry         // answers from the ask goroutine
+	tips    chan assistant.Tip // tips from the tip goroutine
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+// Run creates the panel and runs its message loop on the calling thread, which must be
+// the main thread. It returns when the user chooses Salir. Closing the panel with × or
+// Alt+F4 only hides it.
 func Run(opts Options) error {
 	runtime.LockOSThread()
+	log.Printf("ui: iniciando el panel nativo")
 
-	if err := checkRuntime(); err != nil {
-		showMessage("Compañero WoW necesita Microsoft Edge WebView2 Runtime, que no está instalado.\n\n"+
-			"Descárgalo e instálalo desde:\n"+WebView2DownloadURL+"\n\n"+
-			"Después vuelve a abrir la aplicación.", "Compañero WoW")
-		return ErrRuntimeMissing
+	// Another component may have fixed the awareness already (the capture code does at
+	// startup); then this call fails and the existing setting stands.
+	if call(procSetProcessDpiAwarenessCtx, dpiContextPerMon2) != 0 {
+		log.Printf("ui: DPI por monitor (v2) activado")
+	} else {
+		log.Printf("ui: DPI por monitor no cambiado (ya fijado por otro componente): %v", windows.GetLastError())
 	}
-	html, err := pageHTML()
-	if err != nil {
+
+	lib := utf16Of("Msftedit.dll")
+	if call(procLoadLibraryW, ptrOf(&lib[0])) == 0 {
+		return fmt.Errorf("no pude cargar Msftedit.dll (el control de texto de Windows): %w", windows.GetLastError())
+	}
+	log.Printf("ui: Msftedit.dll cargado")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &window{
+		opts:    opts,
+		ctx:     ctx,
+		cancel:  cancel,
+		answers: make(chan entry, 1),
+		tips:    make(chan assistant.Tip, tipQueueSize),
+	}
+	w.inst = call(procGetModuleHandleW, 0)
+	w.setDPI(uint32(call(procGetDpiForSystem)))
+
+	if err := w.register(); err != nil {
 		return err
 	}
+	log.Printf("ui: clase de ventana registrada")
 
-	state := loadWindowState(opts.StatePath)
-	wv := webview.NewWithOptions(webview.WebViewOptions{
-		DataPath: opts.DataPath,
-		WindowOptions: webview.WindowOptions{
-			Title:  WindowTitle,
-			Width:  uint(state.W),
-			Height: uint(state.H),
-		},
-	})
-	if wv == nil {
-		return errors.New("no pude crear la ventana de WebView2")
+	state, found := loadWindowState(opts.StatePath)
+	if !found {
+		state = defaultState(w.scale)
 	}
+	w.refreshAvoid()
+	placed := w.placement(state, found)
+	w.state = placed
+	log.Printf("ui: posición inicial %d,%d (%dx%d); zona a no cubrir: %s", placed.X, placed.Y, placed.W, placed.H, w.avoidText())
 
-	win := &window{wv: wv, hwnd: uintptr(wv.Window()), opts: opts, state: state}
-	current = win
-	win.placeWindow()
-	win.subclass()
+	title := utf16Of(WindowTitle)
+	class := utf16Of(windowClassName)
+	current = w
+	hwnd := call(procCreateWindowExW,
+		wsExTopmost|wsExToolWindow|wsExLayered,
+		ptrOf(&class[0]), ptrOf(&title[0]),
+		wsPopup|wsThickFrame|wsClipChildren,
+		uintptr(w.state.X), uintptr(w.state.Y), uintptr(w.state.W), uintptr(w.state.H),
+		0, 0, w.inst, 0)
+	runtime.KeepAlive(title)
+	runtime.KeepAlive(class)
+	if hwnd == 0 {
+		current = nil
+		return fmt.Errorf("no pude crear la ventana: %w", windows.GetLastError())
+	}
+	w.hwnd = hwnd
+	w.setDPI(windowDPI(hwnd))
+	// Re-send the frame so the window procedure removes the standard frame.
+	call(procSetWindowPos, hwnd, 0, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
+	call(procSetLayeredWindowAttrs, hwnd, 0, panelAlpha, lwaAlpha)
+	log.Printf("ui: ventana creada en %d,%d (%dx%d), %d ppp", w.state.X, w.state.Y, w.state.W, w.state.H, w.dpi)
 
-	if err := win.bind(); err != nil {
+	w.makeBrushes()
+	w.makeFonts()
+	if err := w.createChildren(); err != nil {
 		return err
 	}
-	wv.SetHtml(html)
+	log.Printf("ui: controles creados (conversación, campo, casilla, enviar)")
 
-	win.registerHotkey()
-	win.show(true)
+	w.loadHistory()
+	w.layoutChildren()
+	w.applyRegion()
+	w.renderAll()
+	w.registerHotkey()
+	w.show(true)
 
-	go win.statusLoop()
-	go win.tipLoop()
+	go w.statusLoop()
+	go w.tipLoop()
+	log.Printf("ui: bucle de mensajes en marcha")
 
-	wv.Run()
-
-	win.saveGeometry()
+	var m winMsg
+	for {
+		r := int32(call(procGetMessageW, ptrOf(&m), 0, 0, 0))
+		if r <= 0 {
+			break
+		}
+		call(procTranslateMessage, ptrOf(&m))
+		call(procDispatchMessageW, ptrOf(&m))
+	}
+	cancel()
+	log.Printf("ui: panel cerrado")
 	return nil
 }
 
-// Activate brings an already running overlay to the front. It reports whether one was found.
+// Activate brings an already running panel to the front. It reports whether one was found.
 func Activate() bool {
-	title, err := windows.UTF16PtrFromString(WindowTitle)
-	if err != nil {
-		return false
-	}
-	h, _, _ := procFindWindowW.Call(0, uintptr(unsafe.Pointer(title)))
+	title := utf16Of(WindowTitle)
+	h := call(procFindWindowW, 0, ptrOf(&title[0]))
+	runtime.KeepAlive(title)
 	if h == 0 {
 		return false
 	}
-	procShowWindow.Call(h, swRestore)
-	procSetForegroundWindow.Call(h)
+	call(procShowWindow, h, swRestore)
+	call(procSetForegroundWindow, h)
 	return true
 }
 
-// checkRuntime reports whether the WebView2 runtime is installed.
-func checkRuntime() error {
-	version, err := webviewloader.GetInstalledVersion()
-	if err != nil {
-		return err
+// register registers the window class, once per process.
+func (w *window) register() error {
+	cls := utf16Of(windowClassName)
+	wc := wndClassEx{
+		Size:      uint32(unsafe.Sizeof(wndClassEx{})),
+		WndProc:   windows.NewCallback(wndProc),
+		Instance:  w.inst,
+		ClassName: &cls[0],
 	}
-	if strings.TrimSpace(version) == "" {
-		return ErrRuntimeMissing
+	atom := call(procRegisterClassExW, ptrOf(&wc))
+	runtime.KeepAlive(cls)
+	if atom == 0 {
+		return fmt.Errorf("no pude registrar la clase de ventana: %w", windows.GetLastError())
 	}
 	return nil
 }
 
-func showMessage(text, caption string) {
-	t, _ := windows.UTF16PtrFromString(text)
-	c, _ := windows.UTF16PtrFromString(caption)
-	procMessageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), mbOK|mbIconError)
-}
-
-// placeWindow applies the saved geometry, or a default spot at the top right of the
-// screen, and keeps the window always on top.
-func (w *window) placeWindow() {
-	sw, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	sh, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	s := w.state
-	if (s.X == 0 && s.Y == 0) || s.X < 0 || s.Y < 0 || int(sw) < s.X+64 || int(sh) < s.Y+64 {
-		s.X = int(sw) - s.W - 24
-		if s.X < 0 {
-			s.X = 0
-		}
-		s.Y = 80
+func (w *window) setDPI(dpi uint32) {
+	if dpi == 0 {
+		dpi = 96
 	}
-	w.state = s
-	procSetWindowPos.Call(w.hwnd, hwndTopmost, uintptr(s.X), uintptr(s.Y), uintptr(s.W), uintptr(s.H), swpNoActivate)
+	w.dpi = dpi
+	w.scale = float64(dpi) / 96
 }
 
-// subclass replaces the window procedure with one that hides the window on close and
-// passes every other message to the library's procedure.
-func (w *window) subclass() {
-	orig, _, _ := procGetWindowLongPtrW.Call(w.hwnd, gwlpWndProc)
-	origProc = orig
-	proc := windows.NewCallback(overlayProc)
-	procSetWindowLongPtrW.Call(w.hwnd, gwlpWndProc, proc)
+func windowDPI(hwnd uintptr) uint32 {
+	if d := uint32(call(procGetDpiForWindow, hwnd)); d != 0 {
+		return d
+	}
+	return 96
 }
 
-func overlayProc(hwnd, msg, wp, lp uintptr) uintptr {
-	if msg == wmClose && current != nil && !current.quitting.Load() {
-		current.hide()
+// screenRect returns the primary monitor in pixels.
+func screenRect() Rect {
+	return Rect{
+		W: int(call(procGetSystemMetrics, smCxScreen)),
+		H: int(call(procGetSystemMetrics, smCyScreen)),
+	}
+}
+
+// placement returns where the panel goes at startup: the saved place when it is on
+// screen, otherwise the right side of the screen, vertically centred. Either way it is
+// moved clear of the WoW pixel strip.
+func (w *window) placement(s windowState, found bool) windowState {
+	screen := screenRect()
+	avoid, _ := w.currentAvoid()
+	saved := Rect{X: s.X, Y: s.Y, W: s.W, H: s.H}
+	var r Rect
+	if !found || (s.X == 0 && s.Y == 0) || insideRect(saved, screen) != saved {
+		r = defaultPlacement(s.W, s.H, screen, avoid, scaled(24, w.scale))
+	} else {
+		r = clearOf(saved, avoid, screen)
+	}
+	return windowState{X: r.X, Y: r.Y, W: r.W, H: r.H}
+}
+
+// refreshAvoid asks for the WoW strip again. It is safe from any goroutine.
+func (w *window) refreshAvoid() {
+	if w.opts.Avoid == nil {
+		return
+	}
+	r, ok := w.opts.Avoid()
+	w.avoidMu.Lock()
+	w.avoid, w.avoidOK = r, ok
+	w.avoidMu.Unlock()
+}
+
+// currentAvoid returns the last known WoW strip. ok is false when WoW was not found, in
+// which case nothing needs to be kept clear.
+func (w *window) currentAvoid() (Rect, bool) {
+	w.avoidMu.Lock()
+	defer w.avoidMu.Unlock()
+	return w.avoid, w.avoidOK
+}
+
+func (w *window) avoidText() string {
+	r, ok := w.currentAvoid()
+	if !ok {
+		return "ninguna (WoW no encontrado)"
+	}
+	return fmt.Sprintf("%d,%d %dx%d", r.X, r.Y, r.W, r.H)
+}
+
+// enforceAvoid moves the panel out of the WoW strip when it overlaps it. UI thread only.
+func (w *window) enforceAvoid() {
+	avoid, ok := w.currentAvoid()
+	if !ok || w.hwnd == 0 {
+		return
+	}
+	var rc rect
+	call(procGetWindowRect, w.hwnd, ptrOf(&rc))
+	cur := fromRect(rc)
+	next := clearOf(cur, avoid, screenRect())
+	if next.X != cur.X || next.Y != cur.Y {
+		call(procSetWindowPos, w.hwnd, 0, uintptr(next.X), uintptr(next.Y), 0, 0,
+			swpNoSize|swpNoZOrder|swpNoActivate)
+		log.Printf("ui: el panel se movió fuera de la franja de píxeles de WoW")
+	}
+}
+
+// clampDrag keeps the rectangle proposed by WM_MOVING or WM_SIZING clear of the strip.
+// The message's rectangle is changed in place. UI thread only.
+func (w *window) clampDrag(lp uintptr) {
+	avoid, ok := w.currentAvoid()
+	if !ok {
+		return
+	}
+	rc := (*rect)(fromUintptr(lp))
+	*rc = toRect(clearOf(fromRect(*rc), avoid, screenRect()))
+}
+
+func (w *window) makeBrushes() {
+	solid := func(c uint32) uintptr { return call(procCreateSolidBrush, uintptr(c)) }
+	w.brushes = winBrushes{
+		bg:     solid(colBG),
+		header: solid(colHeader),
+		conv:   solid(colConv),
+		input:  solid(colInput),
+		button: solid(colButton),
+		gold:   solid(colGold),
+	}
+}
+
+// makeFonts creates the GDI fonts for the current DPI, replacing any earlier ones.
+func (w *window) makeFonts() {
+	for _, f := range []uintptr{w.fonts.ui, w.fonts.title, w.fonts.small} {
+		if f != 0 {
+			call(procDeleteObject, f)
+		}
+	}
+	w.fonts = winFonts{
+		ui:    newFont("Segoe UI", 10, w.dpi, fwNormal),
+		title: newFont("Segoe UI", 11, w.dpi, fwSemibold),
+		small: newFont("Segoe UI", 8.5, w.dpi, fwNormal),
+	}
+}
+
+// createChildren creates the conversation, the input, the checkbox and the send button,
+// and subclasses the input so that Enter sends and Shift+Enter starts a new line.
+func (w *window) createChildren() error {
+	conv, err := createConversation(w.hwnd, w.inst)
+	if err != nil {
+		return err
+	}
+	w.conv = conv
+	w.input = w.child("EDIT", "", wsChild|wsVisible|wsVScroll|wsTabStop|esMultiline|esAutoVScroll, idInput)
+	w.check = w.child("BUTTON", "Incluir captura", wsChild|wsVisible|wsTabStop|bsAutoCheckbox, idCheck)
+	w.send = w.child("BUTTON", "Enviar", wsChild|wsVisible|wsTabStop|bsOwnerDraw, idSend)
+	if w.input == 0 || w.check == 0 || w.send == 0 {
+		return errors.New("no pude crear los controles del panel")
+	}
+	editProcCB = windows.NewCallback(editProc)
+	origEditProc = call(procGetWindowLongPtrW, w.input, gwlpWndProc)
+	call(procSetWindowLongPtrW, w.input, gwlpWndProc, editProcCB)
+	w.applyFonts()
+	return nil
+}
+
+// child creates a child control with text and a numeric ID.
+func (w *window) child(class, text string, style uintptr, id uintptr) uintptr {
+	cls := utf16Of(class)
+	txt := utf16Of(text)
+	h := call(procCreateWindowExW, 0, ptrOf(&cls[0]), ptrOf(&txt[0]), style,
+		0, 0, 0, 0, w.hwnd, id, w.inst, 0)
+	runtime.KeepAlive(cls)
+	runtime.KeepAlive(txt)
+	return h
+}
+
+// applyFonts gives the controls the UI font.
+func (w *window) applyFonts() {
+	for _, h := range []uintptr{w.input, w.check, w.send} {
+		if h != 0 {
+			call(procSendMessageW, h, wmSetFont, w.fonts.ui, 1)
+		}
+	}
+}
+
+// layoutChildren places the controls for the current client size.
+func (w *window) layoutChildren() {
+	if w.conv == 0 || w.input == 0 {
+		return
+	}
+	cw, ch := w.clientSize()
+	l := computeLayout(cw, ch, w.scale)
+	move := func(h uintptr, r Rect) {
+		call(procMoveWindow, h, uintptr(r.X), uintptr(r.Y), uintptr(r.W), uintptr(r.H), 1)
+	}
+	move(w.conv, l.Conv)
+	move(w.input, l.Input)
+	move(w.check, l.Check)
+	move(w.send, l.Send)
+	call(procInvalidateRect, w.hwnd, 0, 1)
+}
+
+// applyRegion rounds the corners of the panel.
+func (w *window) applyRegion() {
+	cw, ch := w.clientSize()
+	d := uintptr(scaled(cornerRadius, w.scale) * 2)
+	rgn := call(procCreateRoundRectRgn, 0, 0, uintptr(cw+1), uintptr(ch+1), d, d)
+	call(procSetWindowRgn, w.hwnd, rgn, 1)
+}
+
+func (w *window) clientSize() (int, int) {
+	var r rect
+	call(procGetClientRect, w.hwnd, ptrOf(&r))
+	return int(r.Right - r.Left), int(r.Bottom - r.Top)
+}
+
+// wndProc is the window procedure of the panel.
+func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
+	w := current
+	if w == nil {
+		return call(procDefWindowProcW, hwnd, msg, wp, lp)
+	}
+	switch msg {
+	case wmNcCalcSize:
+		if wp != 0 {
+			// The whole window is client area: no standard frame is drawn.
+			return 0
+		}
+	case wmGetMinMaxInfo:
+		mm := (*minMaxInfo)(fromUintptr(lp))
+		mm.MinTrackSize = point{X: int32(scaled(minWidth, w.scale)), Y: int32(scaled(minHeight, w.scale))}
+		return 0
+	case wmNcHitTest:
+		return w.hitTest(lp)
+	case wmSize:
+		if wp != sizeMinimized && w.conv != 0 {
+			w.layoutChildren()
+			w.applyRegion()
+		}
+		return 0
+	case wmPaint:
+		w.paint()
+		return 0
+	case wmEraseBkgnd:
+		return 1
+	case wmCtlColorEdit:
+		return w.ctlColor(wp, colText, colInput, w.brushes.input)
+	case wmCtlColorBtn, wmCtlColorStat:
+		call(procSetBkMode, wp, transparent)
+		return w.ctlColor(wp, colText, colBG, w.brushes.bg)
+	case wmDrawItem:
+		if di := (*drawItemStruct)(fromUintptr(lp)); di.CtlID == idSend {
+			w.drawSend(di)
+			return 1
+		}
+	case wmCommand:
+		if lp == w.send {
+			w.submit()
+			return 0
+		}
+		if lp == 0 {
+			switch loWordCmd(wp) {
+			case menuClear:
+				w.clearHistory()
+			case menuQuit:
+				w.quit()
+			}
+			return 0
+		}
+	case wmNotify:
+		nh := (*nmhdr)(fromUintptr(lp))
+		if nh.HWndFrom == w.conv && nh.Code == enLink {
+			if lk := (*enLinkMsg)(fromUintptr(lp)); lk.Msg == wmLButtonUp {
+				w.openLink(w.linkText(lk.Range))
+			}
+		}
+		return 0
+	case wmLButtonDown:
+		w.onLButtonDown(loWord(lp), hiWord(lp))
+		return 0
+	case wmRButtonUp:
+		if hiWord(lp) < scaled(headerHeight, w.scale) {
+			w.showMenu()
+		}
+		return 0
+	case wmMoving, wmSizing:
+		w.clampDrag(lp)
+		return 1
+	case wmExitSizeMove:
+		w.saveGeometry()
+		return 0
+	case wmDpiChanged:
+		w.onDPIChanged(wp, lp)
+		return 0
+	case wmClose:
+		if !w.quitting {
+			w.hide()
+			return 0
+		}
+	case wmDestroy:
+		call(procPostQuitMessage, 0)
+		return 0
+	case msgAnswer:
+		w.drainAnswers()
+		return 0
+	case msgTip:
+		w.drainTips()
+		return 0
+	case msgStatus:
+		w.enforceAvoid()
+		w.refreshStatus()
+		return 0
+	case msgToggle:
+		w.toggle()
 		return 0
 	}
-	r, _, _ := procCallWindowProcW.Call(origProc, hwnd, msg, wp, lp)
-	return r
+	return call(procDefWindowProcW, hwnd, msg, wp, lp)
 }
 
-func (w *window) visible() bool {
-	r, _, _ := procIsWindowVisible.Call(w.hwnd)
-	return r != 0
+// loWordCmd returns the command identifier of a WM_COMMAND.
+func loWordCmd(wp uintptr) int {
+	return int(wp & 0xFFFF)
 }
 
-// show makes the window visible. Focus is taken only when focus is true, so that tips
-// do not steal the keyboard from the game.
-func (w *window) show(focus bool) {
-	if focus {
-		procShowWindow.Call(w.hwnd, swShow)
-		procSetWindowPos.Call(w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
-		procSetForegroundWindow.Call(w.hwnd)
-		w.wv.Eval("window.companeroFocus&&companeroFocus()")
-	} else {
-		procShowWindow.Call(w.hwnd, swShowNoActivate)
-		procSetWindowPos.Call(w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
+// editProc is the subclassed input: Enter sends, Shift+Enter inserts a line break, and
+// Escape hides the panel.
+func editProc(hwnd, msg, wp, lp uintptr) uintptr {
+	if w := current; w != nil {
+		switch msg {
+		case wmKeyDown:
+			if wp == vkReturn && !shiftDown() {
+				w.submit()
+				return 0
+			}
+			if wp == vkEscape {
+				w.hide()
+				return 0
+			}
+		case wmChar:
+			// The key was handled on WM_KEYDOWN; do not insert the character.
+			if (wp == vkReturn && !shiftDown()) || wp == vkEscape {
+				return 0
+			}
+		}
 	}
-	w.pushStatusNow()
+	return call(procCallWindowProcW, origEditProc, hwnd, msg, wp, lp)
+}
+
+// hitTest resolves WM_NCHITTEST: the edges resize, everything else is client area.
+func (w *window) hitTest(lp uintptr) uintptr {
+	var r rect
+	call(procGetWindowRect, w.hwnd, ptrOf(&r))
+	x := loWord(lp) - int(r.Left)
+	y := hiWord(lp) - int(r.Top)
+	cw, ch := int(r.Right-r.Left), int(r.Bottom-r.Top)
+	// The header buttons sit inside the top resize band; they must stay clickable.
+	if _, ok := hitHeaderButton(x, y, cw, w.scale); ok {
+		return htClient
+	}
+	return uintptr(hitEdge(x, y, cw, ch, scaled(gripWidth, w.scale)))
+}
+
+func (w *window) ctlColor(hdc uintptr, text, bg uint32, brush uintptr) uintptr {
+	call(procSetTextColor, hdc, uintptr(text))
+	call(procSetBkColor, hdc, uintptr(bg))
+	return brush
+}
+
+// onLButtonDown handles the header buttons, and starts moving the window when the header
+// is dragged. The system does the moving, so the panel stays smooth.
+func (w *window) onLButtonDown(x, y int) {
+	cw, _ := w.clientSize()
+	if btn, ok := hitHeaderButton(x, y, cw, w.scale); ok {
+		switch btn.Action {
+		case actionClear:
+			w.clearHistory()
+		case actionHide, actionClose:
+			w.hide()
+		}
+		return
+	}
+	if y < scaled(headerHeight, w.scale) {
+		call(procReleaseCapture)
+		call(procSendMessageW, w.hwnd, wmNcLButtonDown, htCaption, 0)
+	}
+}
+
+// showMenu opens the header context menu.
+func (w *window) showMenu() {
+	menu := call(procCreatePopupMenu)
+	if menu == 0 {
+		return
+	}
+	defer call(procDestroyMenu, menu)
+	clear := utf16Of("Limpiar historial")
+	quit := utf16Of("Salir")
+	call(procAppendMenuW, menu, mfString, menuClear, ptrOf(&clear[0]))
+	call(procAppendMenuW, menu, mfSeparator, 0, 0)
+	call(procAppendMenuW, menu, mfString, menuQuit, ptrOf(&quit[0]))
+	runtime.KeepAlive(clear)
+	runtime.KeepAlive(quit)
+	var pt point
+	call(procGetCursorPos, ptrOf(&pt))
+	call(procSetForegroundWindow, w.hwnd)
+	cmd := call(procTrackPopupMenu, menu, tpmRightButton|tpmReturnCmd,
+		uintptr(pt.X), uintptr(pt.Y), 0, w.hwnd, 0)
+	switch cmd {
+	case menuClear:
+		w.clearHistory()
+	case menuQuit:
+		w.quit()
+	}
+}
+
+// drawSend paints the owner-drawn send button in the panel palette.
+func (w *window) drawSend(di *drawItemStruct) {
+	r := fromRect(di.RcItem)
+	color := uint32(colText)
+	if di.ItemState&odsDisabled != 0 {
+		color = colMeta
+	}
+	fillRect(di.HDC, r, w.brushes.button)
+	frameRect(di.HDC, r, w.brushes.gold)
+	drawText(di.HDC, "Enviar", r, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.ui, color)
+}
+
+// paint draws the background, the header with its buttons, the frame and the status bar.
+// The controls paint themselves.
+func (w *window) paint() {
+	var ps paintStruct
+	hdc := call(procBeginPaint, w.hwnd, ptrOf(&ps))
+	defer call(procEndPaint, w.hwnd, ptrOf(&ps))
+	call(procSetBkMode, hdc, transparent)
+
+	cw, ch := w.clientSize()
+	l := computeLayout(cw, ch, w.scale)
+	fillRect(hdc, Rect{W: cw, H: ch}, w.brushes.bg)
+	fillRect(hdc, l.Header, w.brushes.header)
+	fillRect(hdc, Rect{Y: l.Header.H - 1, W: cw, H: 1}, w.brushes.gold)
+	drawText(hdc, "Compañero", Rect{X: scaled(padding, w.scale), W: cw / 2, H: l.Header.H},
+		dtLeft|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.title, colHeading)
+	for _, b := range headerButtons(cw, w.scale) {
+		fillRect(hdc, b.Rect, w.brushes.button)
+		frameRect(hdc, b.Rect, w.brushes.gold)
+		drawText(hdc, b.Label, b.Rect, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.ui, colText)
+	}
+	drawText(hdc, w.statusText, l.Status,
+		dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix, w.fonts.small, w.statusColor)
+	frameRect(hdc, Rect{W: cw, H: ch}, w.brushes.gold)
+}
+
+// onDPIChanged adopts the size and DPI the system suggests when the panel moves to a
+// monitor with another scale.
+func (w *window) onDPIChanged(wp, lp uintptr) {
+	w.setDPI(uint32(wp & 0xFFFF))
+	s := (*rect)(fromUintptr(lp))
+	w.makeFonts()
+	w.applyFonts()
+	call(procSetWindowPos, w.hwnd, 0, uintptr(s.Left), uintptr(s.Top),
+		uintptr(s.Right-s.Left), uintptr(s.Bottom-s.Top), swpNoZOrder|swpNoActivate)
+	log.Printf("ui: DPI cambiado a %d", w.dpi)
+	w.renderAll()
+	w.refreshStatus()
+}
+
+// show makes the panel visible. The focus moves to the input only when focus is true, so
+// that tips never take the keyboard from the game.
+func (w *window) show(focus bool) {
+	w.refreshAvoid()
+	w.enforceAvoid()
+	if focus {
+		call(procShowWindow, w.hwnd, swShow)
+		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
+		call(procSetForegroundWindow, w.hwnd)
+		call(procSetFocus, w.input)
+	} else {
+		call(procShowWindow, w.hwnd, swShowNoActivate)
+		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
+	}
+	go w.pollStatus()
 }
 
 func (w *window) hide() {
 	w.saveGeometry()
-	procShowWindow.Call(w.hwnd, swHide)
+	call(procShowWindow, w.hwnd, swHide)
 }
 
-// toggle is the hotkey action: hide when visible, show with focus otherwise.
+// toggle is the hotkey action: hide when shown, show with focus otherwise.
 func (w *window) toggle() {
-	if w.visible() {
+	if isVisible(w.hwnd) {
 		w.hide()
 		return
 	}
 	w.show(true)
 }
 
+// quit closes the panel for good; the message loop ends afterwards.
+func (w *window) quit() {
+	w.quitting = true
+	w.saveGeometry()
+	log.Printf("ui: Salir desde el panel")
+	call(procDestroyWindow, w.hwnd)
+}
+
+// saveGeometry remembers the position and size of the panel.
 func (w *window) saveGeometry() {
-	var r struct{ Left, Top, Right, Bottom int32 }
-	if ok, _, _ := procGetWindowRect.Call(w.hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
+	var r rect
+	if call(procGetWindowRect, w.hwnd, ptrOf(&r)) == 0 {
 		return
 	}
 	s := windowState{X: int(r.Left), Y: int(r.Top), W: int(r.Right - r.Left), H: int(r.Bottom - r.Top)}
-	if s.W < minWidth || s.H < minHeight {
+	if s.W < scaled(minWidth, w.scale) || s.H < scaled(minHeight, w.scale) {
 		return
 	}
 	w.state = s
 	if err := saveWindowState(w.opts.StatePath, s); err != nil {
-		log.Printf("ui: save window state: %v", err)
+		log.Printf("ui: guardar la posición: %v", err)
 	}
 }
 
+// registerHotkey installs the global shortcut. Its thread posts a message to the panel,
+// so the panel is only touched from the UI thread.
 func (w *window) registerHotkey() {
 	hk, err := ParseHotkey(w.opts.Hotkey)
 	if err != nil {
-		w.setNotice(fmt.Sprintf("Atajo no válido en config.json: %v", err))
+		w.notice = fmt.Sprintf("Atajo no válido en config.json: %v", err)
+		log.Printf("ui: atajo no válido: %v", err)
 		return
 	}
-	if err := startHotkey(hk, func() {
-		w.wv.Dispatch(w.toggle)
-	}); err != nil {
-		log.Printf("ui: hotkey %s: %v", hk, err)
-		w.setNotice(fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk))
+	hwnd := w.hwnd
+	if err := startHotkey(hk, func() { postMessage(hwnd, msgToggle, 0, 0) }); err != nil {
+		w.notice = fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk)
+		log.Printf("ui: atajo %s: %v", hk, err)
+		return
 	}
+	log.Printf("ui: atajo %s registrado", hk)
 }
 
-func (w *window) setNotice(s string) {
-	w.mu.Lock()
-	w.notice = s
-	w.mu.Unlock()
+func (w *window) loadHistory() {
+	if w.opts.Backend == nil {
+		return
+	}
+	msgs, err := w.opts.Backend.History(60)
+	if err != nil {
+		log.Printf("ui: historial: %v", err)
+		w.entries = append(w.entries, entry{Kind: entryInfo, Text: "No pude leer el historial: " + err.Error()})
+		return
+	}
+	for _, m := range toAnswerMsgs(msgs) {
+		w.entries = append(w.entries, entryFromMsg(m))
+	}
+	log.Printf("ui: historial cargado (%d mensajes)", len(msgs))
 }
 
-func (w *window) getNotice() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.notice
-}
-
-// status returns the status with the window notice merged in.
-func (w *window) status() Status {
-	var s Status
-	if w.opts.Status != nil {
-		s = w.opts.Status()
-	}
-	if s.Hints == nil {
-		s.Hints = []string{}
-	}
-	if s.Providers == nil {
-		s.Providers = []string{}
-	}
-	if n := w.getNotice(); n != "" {
-		if s.Notice != "" {
-			s.Notice += " · "
+func (w *window) clearHistory() {
+	if w.opts.Backend != nil {
+		if err := w.opts.Backend.ClearHistory(); err != nil {
+			log.Printf("ui: borrar historial: %v", err)
+			w.notice = "No pude borrar el historial"
+			w.refreshStatus()
+			return
 		}
-		s.Notice += n
 	}
-	return s
+	w.entries = nil
+	w.renderAll()
+	w.refreshStatus()
 }
 
-// pushStatusNow sends the status to the page (UI thread).
-func (w *window) pushStatusNow() {
+// add appends an entry to the conversation.
+func (w *window) add(e entry) {
+	w.entries = append(w.entries, e)
+	w.appendRuns(entryRuns(e))
+}
+
+// submit sends the question in the input. The answer comes back through msgAnswer.
+func (w *window) submit() {
+	if w.busy {
+		return
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(getWindowText(w.input), "\r\n", "\n"))
+	if text == "" {
+		return
+	}
+	withShot := call(procSendMessageW, w.check, bmGetCheck, 0, 0) == bstChecked
+	setWindowText(w.input, "")
+	w.add(entry{Kind: entryUser, Text: text})
+	w.busy = true
+	call(procEnableWindow, w.send, 0)
+	w.refreshStatus()
+	go w.ask(text, withShot)
+}
+
+// ask runs the question in the background and hands the answer to the UI thread.
+func (w *window) ask(text string, withShot bool) {
+	e := w.answer(text, withShot)
+	w.answers <- e
+	postMessage(w.hwnd, msgAnswer, 0, 0)
+}
+
+func (w *window) answer(text string, withShot bool) entry {
+	if w.opts.Backend == nil {
+		return entry{Kind: entryError, Text: askError(errors.New("el asistente no está disponible"))}
+	}
+	resp, err := w.opts.Backend.Ask(w.ctx, text, withShot)
+	if err != nil {
+		return entry{Kind: entryError, Text: askError(err)}
+	}
+	return entry{Kind: entryAssistant, Text: resp.Text, Provider: resp.Provider, At: time.Now().Format("15:04")}
+}
+
+// drainAnswers shows the answer that the ask goroutine delivered.
+func (w *window) drainAnswers() {
+	select {
+	case e := <-w.answers:
+		w.busy = false
+		w.add(e)
+		call(procEnableWindow, w.send, 1)
+		w.refreshStatus()
+	default:
+	}
+}
+
+// drainTips shows the queued proactive tips. A hidden panel is shown without focus.
+func (w *window) drainTips() {
+	for {
+		select {
+		case tip := <-w.tips:
+			w.add(entry{Kind: entryTip, Title: tip.Title, Text: tip.Text})
+			if !isVisible(w.hwnd) {
+				w.show(false)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// openLink opens an http or https link in the default browser.
+func (w *window) openLink(raw string) {
+	u, err := safeURL(raw)
+	if err != nil {
+		log.Printf("ui: enlace rechazado: %v", err)
+		return
+	}
+	op := utf16Of("open")
+	target := utf16Of(u)
+	r := call(procShellExecuteW, w.hwnd, ptrOf(&op[0]), ptrOf(&target[0]), 0, 0, swShowNormal)
+	runtime.KeepAlive(op)
+	runtime.KeepAlive(target)
+	if r <= 32 {
+		w.notice = "No pude abrir el enlace en el navegador"
+		w.refreshStatus()
+	}
+}
+
+// refreshStatus repaints the status bar from the latest status and the busy flag.
+func (w *window) refreshStatus() {
+	w.latestMu.Lock()
+	s := w.latest
+	w.latestMu.Unlock()
+	w.statusText = formatStatus(s, w.notice, w.busy)
+	w.statusColor = statusColour(s, w.busy)
+	cw, ch := w.clientSize()
+	rc := toRect(computeLayout(cw, ch, w.scale).Status)
+	call(procInvalidateRect, w.hwnd, ptrOf(&rc), 1)
+}
+
+// statusColour picks the colour of the status line from the bridge state.
+func statusColour(s Status, busy bool) uint32 {
+	switch {
+	case busy:
+		return colHeading
+	case s.Bridge == "connected":
+		return colOK
+	case s.Bridge == "no_strip":
+		return colWarn
+	case s.Bridge == "":
+		return colMeta
+	}
+	return colBad
+}
+
+// statusLoop asks for a fresh status every two seconds while the panel is visible.
+func (w *window) statusLoop() {
+	t := time.NewTicker(statusPeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-t.C:
+			if isVisible(w.hwnd) {
+				w.pollStatus()
+			}
+		}
+	}
+}
+
+// pollStatus reads the status from the callback (any goroutine) and asks the UI thread
+// to show it.
+func (w *window) pollStatus() {
+	w.refreshAvoid()
 	if w.opts.Status == nil {
 		return
 	}
-	js, err := json.Marshal(w.status())
-	if err != nil {
-		return
-	}
-	w.wv.Eval("window.companeroStatus&&companeroStatus(" + string(js) + ")")
+	s := w.opts.Status()
+	w.latestMu.Lock()
+	w.latest = s
+	w.latestMu.Unlock()
+	postMessage(w.hwnd, msgStatus, 0, 0)
 }
 
-// statusLoop pushes the status every two seconds while the window is visible.
-func (w *window) statusLoop() {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		if !w.visible() {
-			continue
-		}
-		s := w.status()
-		js, err := json.Marshal(s)
-		if err != nil {
-			continue
-		}
-		w.wv.Dispatch(func() {
-			if w.visible() {
-				w.wv.Eval("window.companeroStatus&&companeroStatus(" + string(js) + ")")
-			}
-		})
-	}
-}
-
-// tipLoop shows each proactive tip. A hidden window is shown without taking focus.
+// tipLoop queues proactive tips for the UI thread.
 func (w *window) tipLoop() {
 	if w.opts.Tips == nil {
 		return
 	}
 	for tip := range w.opts.Tips {
-		js, err := json.Marshal(map[string]string{"title": tip.Title, "text": tip.Text})
-		if err != nil {
-			continue
-		}
-		w.wv.Dispatch(func() {
-			if !w.visible() {
-				w.show(false)
-			}
-			w.wv.Eval("window.companeroTip&&companeroTip(" + string(js) + ")")
-		})
-	}
-}
-
-// bind exposes the Go functions the page calls. Each runs on the UI thread, except
-// uiAsk, which runs the question in the background and answers through Eval.
-func (w *window) bind() error {
-	bindings := map[string]any{
-		"uiHistory":      w.uiHistory,
-		"uiClearHistory": w.uiClearHistory,
-		"uiStatus":       w.status,
-		"uiOpenURL":      w.uiOpenURL,
-		"uiQuit":         w.uiQuit,
-		"uiAsk":          w.uiAsk,
-	}
-	for name, fn := range bindings {
-		if err := w.wv.Bind(name, fn); err != nil {
-			return fmt.Errorf("bind %s: %w", name, err)
+		select {
+		case w.tips <- tip:
+			postMessage(w.hwnd, msgTip, 0, 0)
+		default:
+			log.Printf("ui: consejo descartado (cola llena): %s", tip.Title)
 		}
 	}
-	return nil
-}
-
-func (w *window) uiHistory() ([]answerMsg, error) {
-	if w.opts.Backend == nil {
-		return []answerMsg{}, nil
-	}
-	msgs, err := w.opts.Backend.History(60)
-	if err != nil {
-		return nil, err
-	}
-	return toAnswerMsgs(msgs), nil
-}
-
-func (w *window) uiClearHistory() error {
-	if w.opts.Backend == nil {
-		return nil
-	}
-	return w.opts.Backend.ClearHistory()
-}
-
-func (w *window) uiOpenURL(raw string) error {
-	u, err := safeURL(raw)
-	if err != nil {
-		return err
-	}
-	op, _ := windows.UTF16PtrFromString("open")
-	target, _ := windows.UTF16PtrFromString(u)
-	r, _, _ := procShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(target)), 0, 0, swShow)
-	if r <= 32 {
-		return fmt.Errorf("no pude abrir el enlace en el navegador")
-	}
-	return nil
-}
-
-// uiQuit closes the window for good; wv.Run returns afterwards.
-func (w *window) uiQuit() {
-	w.quitting.Store(true)
-	w.saveGeometry()
-	w.wv.Destroy()
-}
-
-// uiAsk starts a question in the background. The answer is delivered with
-// companeroAnswer(id, ok, payload) on the UI thread.
-func (w *window) uiAsk(id int, text string, withShot bool) {
-	go func() {
-		payload, ok := w.answer(text, withShot)
-		js, err := json.Marshal(payload)
-		if err != nil {
-			js = []byte(`"error"`)
-		}
-		w.wv.Dispatch(func() {
-			w.wv.Eval(fmt.Sprintf("window.companeroAnswer(%d, %t, %s)", id, ok, js))
-		})
-	}()
-}
-
-// answer runs the question and returns either an answerPayload (ok) or an error text.
-func (w *window) answer(text string, withShot bool) (any, bool) {
-	if w.opts.Backend == nil {
-		return askError(errors.New("el asistente no está disponible")), false
-	}
-	resp, err := w.opts.Backend.Ask(context.Background(), text, withShot)
-	if err != nil {
-		return askError(err), false
-	}
-	return answerPayload{Text: resp.Text, Provider: resp.Provider}, true
-}
-
-// RuntimeInstalled reports whether the WebView2 runtime is available.
-func RuntimeInstalled() bool {
-	return checkRuntime() == nil
 }

@@ -1,10 +1,6 @@
 package ui
 
-import (
-	"path/filepath"
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestParseHotkeyTable(t *testing.T) {
 	cases := []struct {
@@ -52,51 +48,6 @@ func TestParseHotkeyTable(t *testing.T) {
 		}
 		if s := got.String(); s != tc.wantStr {
 			t.Errorf("ParseHotkey(%q).String() = %q, want %q", tc.in, s, tc.wantStr)
-		}
-	}
-}
-
-func TestWindowStateFallbacks(t *testing.T) {
-	dir := t.TempDir()
-	if got := loadWindowState(filepath.Join(dir, "missing.json")); got != defaultState() {
-		t.Errorf("missing file = %+v", got)
-	}
-	path := filepath.Join(dir, "window.json")
-	if err := saveWindowState(path, windowState{X: 10, Y: 20, W: 500, H: 700}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if got := loadWindowState(path); got != (windowState{X: 10, Y: 20, W: 500, H: 700}) {
-		t.Errorf("round trip = %+v", got)
-	}
-	if err := saveWindowState(path, windowState{X: 1, Y: 2, W: 50, H: 50}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if got := loadWindowState(path); got.W != defaultWidth || got.H != defaultHeight || got.X != 1 {
-		t.Errorf("too small size should fall back: %+v", got)
-	}
-}
-
-func TestSafeURL(t *testing.T) {
-	for _, ok := range []string{"https://warcraft.wiki.gg/wiki/Foo", "HTTP://example.com/a?b=c&d=e"} {
-		if _, err := safeURL(ok); err != nil {
-			t.Errorf("safeURL(%q) rejected: %v", ok, err)
-		}
-	}
-	for _, bad := range []string{"file:///C:/Windows", "javascript:alert(1)", "ms-settings:", "https://a b", "https://x\"y"} {
-		if _, err := safeURL(bad); err == nil {
-			t.Errorf("safeURL(%q) accepted", bad)
-		}
-	}
-}
-
-func TestPageHTMLIsSelfContained(t *testing.T) {
-	html, err := pageHTML()
-	if err != nil {
-		t.Fatalf("pageHTML: %v", err)
-	}
-	for _, bad := range []string{"/*CSS*/", "/*JS*/", "<link ", "src=\"http"} {
-		if strings.Contains(html, bad) {
-			t.Errorf("page contains %q", bad)
 		}
 	}
 }
