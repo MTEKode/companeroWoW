@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,7 @@ func connect(t *testing.T, url string) *mcp.ClientSession {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
-	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: url}, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: authedClient()}, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -202,4 +203,42 @@ func contentText(t *testing.T, res *mcp.CallToolResult) string {
 		sb.WriteString(m.Text)
 	}
 	return sb.String()
+}
+
+// authedClient sends the process token, as the CLI providers do.
+func authedClient() *http.Client {
+	return &http.Client{Transport: bearerTransport{base: http.DefaultTransport}}
+}
+
+type bearerTransport struct{ base http.RoundTripper }
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r2 := r.Clone(r.Context())
+	r2.Header.Set("Authorization", "Bearer "+mcpserver.Token())
+	return b.base.RoundTrip(r2)
+}
+
+func TestRequestsWithoutTokenAreUnauthorized(t *testing.T) {
+	srv := mcpserver.New(fixtureRegistry(t), "test")
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	for _, auth := range []string{"", "Bearer wrong", "Basic " + mcpserver.Token(), mcpserver.Token()} {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL, body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: status %d, want 401", auth, resp.StatusCode)
+		}
+		body = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	}
 }

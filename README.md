@@ -126,7 +126,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
 
-Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `.env` (opcional, claves de API), `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB), y las carpetas de trabajo de las CLI (`.agents\mcp_config.json` y `antigravity-settings.json`).
+Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `.env` (opcional, claves de API), `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB), y las carpetas de trabajo de las CLI: `agy\` (la skill, `.agents\mcp_config.json` y `antigravity-settings.json`) y `codex\` (solo `AGENTS.md`). La carpeta antigua `.agents\` de la raíz se borra al arrancar.
 
 ## Antigravity CLI
 
@@ -136,9 +136,11 @@ La app usa **Antigravity CLI** (`agy`) como proveedor principal. Funciona con cu
 2. Ejecuta `agy` una vez en una terminal y elige la cuenta personal de Google con la que quieres usarlo.
 3. Comprueba que la app lo ve: `.\dist\CompaneroWoW.exe --diag --diag-out diag.json` debe listar `antigravity` como disponible.
 
-Cómo lo usa la app: cada pregunta es un proceso `agy -p` que se lanza y termina solo (no queda nada residente), con la carpeta de trabajo `%APPDATA%\CompaneroWoW`. Antigravity recibe las herramientas del servidor local (`companero`) mediante `.agents\mcp_config.json`. Sus permisos se fijan en `antigravity-settings.json` que se pasa con `--settings` solo para esa llamada: el modelo puede usar únicamente las herramientas de la app. Se deniegan los comandos de shell, las escrituras y lecturas de archivos y la descarga de URL. Tu configuración global de Antigravity no se modifica. La app nunca usa `--dangerously-skip-permissions`.
+Cómo lo usa la app: cada pregunta es un proceso `agy -p` que se lanza y termina solo (no queda nada residente), con la carpeta de trabajo `%APPDATA%\CompaneroWoW\agy`, que solo contiene la skill, la configuración MCP y los ajustes de la llamada. Antigravity recibe las herramientas del servidor local (`companero`) mediante `.agents\mcp_config.json`, con un token aleatorio de la sesión en la cabecera `Authorization`; el servidor rechaza cualquier petición sin ese token. Sus permisos se fijan en `antigravity-settings.json`, que se pasa con `--settings` solo para esa llamada: el modelo puede usar únicamente las herramientas de la app y leer la carpeta de capturas (`screens`). Se deniegan los comandos de shell, las escrituras, la descarga de URL y la lectura de los archivos de la carpeta de datos (base de datos, registro, `config.json`, ventana, informes de evaluación), de los `.env` conocidos y de las carpetas `~\.ssh`, `~\.aws` y `~\.gemini`. Lo que queda fuera de la carpeta de trabajo necesita aprobación, que una llamada sin interfaz rechaza. Tu configuración global de Antigravity no se modifica. La app nunca usa `--dangerously-skip-permissions`.
 
-Las capturas no se adjuntan a Antigravity en modo headless; el modelo pide la captura con la herramienta `capturar_pantalla`.
+Las capturas no se adjuntan como imagen en modo headless: si la pregunta lleva una captura, se guarda en `screens` y el texto indica su ruta, que agy lee con `read_file`. El modelo también puede pedir una captura de la ventana de WoW con `capturar_pantalla`. Esas imágenes salen del PC hacia Antigravity.
+
+**Permisos de Codex CLI.** Codex corre en `%APPDATA%\CompaneroWoW\codex` con un sandbox de solo lectura y un perfil de permisos de archivos que concede lectura solo a los archivos del sistema que necesita el sandbox y a su carpeta de trabajo. Lo impone el sandbox de Codex en Windows, no la app: comprueba con una pregunta de prueba que Codex no lee un archivo de tu perfil de usuario antes de confiar en ello.
 
 ## Claves de API y `.env`
 
@@ -152,8 +154,9 @@ La app busca cada variable en este orden: la clave literal `apiKey` de `config.j
 
 1. `%APPDATA%\CompaneroWoW\.env`
 2. la carpeta del ejecutable (`dist\.env` en desarrollo)
-3. la carpeta de trabajo actual
-4. la carpeta padre del ejecutable (`dist\..\.env`, es decir, la raíz del repositorio en desarrollo)
+3. solo en desarrollo, si el ejecutable está en `<repo>\dist` y existe `<repo>\app\go.mod`: la raíz del repositorio (`<repo>\.env`)
+
+La carpeta de trabajo actual ya no se busca: un `.env` que esté en otra carpeta no se usa.
 
 Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las líneas que empiezan por `#` son comentarios; los valores pueden ir entre comillas simples o dobles; y se aceptan finales de línea de Windows (CRLF).
 
@@ -195,7 +198,17 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 
 ## Privacidad
 
-Todo se guarda y se procesa en tu equipo. Lo único que sale de él es la pregunta (y, si la pides, la captura) hacia el proveedor de IA que elijas (Antigravity CLI, Codex CLI o tu API), y las búsquedas o páginas que pide la herramienta de búsqueda a las fuentes de `webSources`. El servidor de herramientas escucha solo en `127.0.0.1`.
+Todo se guarda en tu equipo: la base de datos, el registro, la configuración y las capturas. Durante una pregunta salen del PC estos datos, hacia el proveedor de IA que elijas:
+
+- la pregunta;
+- un resumen del contexto del jugador (zona, personaje, misión rastreada, profesiones, dinero y avisos);
+- el historial reciente de la conversación (hasta 10 mensajes);
+- la captura de pantalla, solo si la pides o la herramienta la pide;
+- lo que el modelo lee con las herramientas (resultados de conocimiento y de búsqueda web, páginas de `webSources`).
+
+A quién: con Antigravity CLI, a Google, con la cuenta de Antigravity que elegiste; con Codex CLI, a OpenAI; con tu API, al proveedor que configuraste. La búsqueda web solo envía la consulta (en inglés) a DuckDuckGo y a warcraft.wiki.gg, y lee solo páginas de `webSources`. La app no pasa las claves de API a Antigravity ni a Codex.
+
+El texto de la web es contenido externo: el modelo lo trata como datos y no sigue las instrucciones que contenga. El servidor de herramientas escucha solo en `127.0.0.1` y exige el token de sesión.
 
 ## Limitaciones conocidas
 

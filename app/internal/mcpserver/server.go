@@ -56,7 +56,8 @@ func New(reg *tools.Registry, version string) *Server {
 }
 
 // Handler is the streamable HTTP MCP endpoint.
-func (s *Server) Handler() http.Handler { return s.handler }
+// Handler is the streamable HTTP MCP endpoint. Requests need the bearer token of this process.
+func (s *Server) Handler() http.Handler { return requireToken(s.handler) }
 
 // ListenAndServe serves the MCP endpoint at /mcp on 127.0.0.1:port until ctx is done,
 // then shuts down gracefully. A busy port yields a descriptive error.
@@ -70,7 +71,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(endpointPath, s.handler)
+	mux.Handle(endpointPath, s.Handler())
 	httpSrv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,

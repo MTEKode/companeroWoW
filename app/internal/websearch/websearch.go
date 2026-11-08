@@ -29,6 +29,8 @@ const (
 	searchTTL          = 24 * time.Hour
 	pageTTL            = 7 * 24 * time.Hour
 	defaultMinInterval = time.Second
+	// searchDeadline bounds one buscar_web call: the wiki and DuckDuckGo searches run under it.
+	searchDeadline = 12 * time.Second
 
 	wikiHost    = "warcraft.wiki.gg"
 	wikiSiteURL = "https://warcraft.wiki.gg"
@@ -138,53 +140,83 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 		}
 	}
 
+	// The engines run in parallel under one deadline: the wiki API (the plain query and the one
+	// biased towards Forever) and one DuckDuckGo query for all the other allowed domains. Only
+	// when the wiki's full-text search finds nothing, its targeted retry runs.
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, searchDeadline)
+	defer cancel()
+
 	var (
+		mu       sync.Mutex
 		hits     []Hit
 		errs     []error
 		attempts int
+		wikiHits int
 		boost    = map[string]int{} // extra rank for hits that a targeted search found
 	)
-	if c.wantsWiki(siteEntry) {
+	// step is one search of a stage. boost is the extra rank of its hits; wiki marks the wiki API.
+	type step struct {
+		run   func() ([]Hit, error)
+		boost int
+		wiki  bool
+	}
+	// stage runs its searches concurrently and merges what they return.
+	stage := func(steps []step) {
+		// Each search writes its own slot; the slots are merged in order, so the ranking does
+		// not depend on which engine answers first.
+		results := make([][]Hit, len(steps))
+		var wg sync.WaitGroup
+		for i, s := range steps {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				h, err := s.run()
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					errs = append(errs, err)
+					return
+				}
+				results[i] = h
+			}()
+		}
+		wg.Wait()
+		for i, s := range steps {
+			if s.wiki {
+				wikiHits += len(results[i])
+			}
+			for _, hit := range results[i] {
+				boost[hit.URL] += s.boost
+			}
+			hits = append(hits, results[i]...)
+		}
+	}
+
+	var first []step
+	wiki := c.wantsWiki(siteEntry)
+	if wiki {
 		// Two queries: the plain one and one biased towards Forever content.
 		for _, q := range []string{query, query + " Forever"} {
 			attempts++
-			h, err := c.wikiSearch(ctx, q)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			hits = append(hits, h...)
-		}
-		if len(hits) == 0 {
-			// Nothing matched in full text: retry once with the targeted searches. Titles and
-			// prefixes match names the full-text search misses (the wiki writes titles in
-			// English), and pages in Category:Forever are ranked first.
-			for _, step := range c.wikiRetry(query) {
-				attempts++
-				h, err := step.run(ctx)
-				if err != nil {
-					errs = append(errs, err)
-					continue
-				}
-				if step.boost > 0 {
-					for _, hit := range h {
-						boost[hit.URL] += step.boost
-					}
-				}
-				hits = append(hits, h...)
-			}
+			first = append(first, step{run: func() ([]Hit, error) { return c.wikiSearch(ctx, q) }, wiki: true})
 		}
 	}
-	for _, dom := range c.otherDomains(siteEntry) {
+	if doms := c.otherDomains(siteEntry); len(doms) > 0 {
 		attempts++
-		h, err := c.ddgSearch(ctx, query+" Forever", dom)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		hits = append(hits, h...)
+		first = append(first, step{run: func() ([]Hit, error) { return c.ddgSearch(ctx, query+" Forever", doms) }})
 	}
-	if err := ctx.Err(); err != nil {
+	stage(first)
+
+	if wiki && wikiHits == 0 && ctx.Err() == nil {
+		var retry []step
+		for _, ws := range c.wikiRetry(query) {
+			attempts++
+			retry = append(retry, step{run: func() ([]Hit, error) { return ws.run(ctx) }, boost: ws.boost})
+		}
+		stage(retry)
+	}
+	if err := parent.Err(); err != nil {
 		return nil, err
 	}
 	if attempts == 0 {

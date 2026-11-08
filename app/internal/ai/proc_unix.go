@@ -23,3 +23,6 @@ func killProcessTree(p *os.Process) error {
 	}
 	return p.Kill()
 }
+
+// joinJob has no job object on unix: the process group is killed instead.
+func joinJob(*os.Process) error { return nil }
