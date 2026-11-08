@@ -10,7 +10,8 @@ local bit = bit
 
 local MAX_QUESTS = 35
 local MAX_ZONE_QUESTS = 40
-local MAX_NPCS = 40
+local MAX_ZONE_NPCS = 60       -- PNJs con rol en la zona actual
+local MAX_CAPITAL_NPCS = 120   -- PNJs con rol en las capitales de la faccion (total)
 local MAX_STARTER_SPAWNS = 5
 local MAX_OBJECTIVE_SPAWNS = 10
 local EXPORT_THROTTLE = 10 -- segundos entre exportaciones automaticas
@@ -19,11 +20,32 @@ local EXPORT_THROTTLE = 10 -- segundos entre exportaciones automaticas
 ns.Questie = ns.Questie or {}
 local Q = ns.Questie
 
--- Mascaras de npcFlags de Questie que dan rol a un PNJ (orden = prioridad).
+-- Mascaras de QuestieDB.npcFlags (juego Forever: VENDOR=4, TRAINER=16, INNKEEPER=128...) que dan rol.
+-- Orden = prioridad. Los nombres son las claves de db.npcFlags.
 local ROLE_FLAGS = {
     { "FLIGHT_MASTER", "flightmaster" },
     { "INNKEEPER", "innkeeper" },
+    { "BANKER", "banker" },
+    { "AUCTIONEER", "auctioneer" },
+    { "TRAINER", "trainer" },
     { "VENDOR", "vendor" },
+}
+
+-- Palabras de subName (ingles o espanol, en minusculas) que dan rol cuando npcFlags no basta.
+-- Orden = prioridad: "vuelo" antes que "maestro" (Maestro de vuelo = vuelo, no entrenador).
+local ROLE_WORDS = {
+    { "flightmaster", { "flight master", "vuelo" } },
+    { "innkeeper", { "innkeeper", "posadero", "posadera" } },
+    { "banker", { "banker", "banquero", "banquera" } },
+    { "auctioneer", { "auctioneer", "subastador", "subastadora" } },
+    { "trainer", { "trainer", "instructor", "instructora", "maestro", "maestra" } },
+    { "vendor", { "vendor", "vendedor", "vendedora", "proveedor", "proveedora", "suministros" } },
+}
+
+-- Areas (areaId de Questie) de las capitales de cada faccion (QuestieDB corrections/enum/zones.lua).
+local CAPITALS = {
+    Alliance = { 1519, 1537, 1657 }, -- Ventormenta, Forjaz, Darnassus
+    Horde = { 1637, 1638, 1497 },    -- Orgrimmar, Cima del Trueno, Entrañas
 }
 
 local function nowSec()
@@ -353,71 +375,275 @@ local function zoneQuestList(db, zone, mapID, areaId, level, inLog)
     return out
 end
 
--- PNJs con rol (vuelo, posada, vendedor) con posicion en la zona. Cacheado por zona.
-local function zoneNpcCandidates(db, zone, areaId)
-    if Q.npcCache and Q.npcCache.areaId == areaId then return Q.npcCache.list end
-    local list = {}
+-- Rol por npcFlags (claves de db.npcFlags, las de este juego). nil si no tiene ninguno.
+local function roleFromFlags(db, flags)
     local flagTable = db.npcFlags
-    local pointers = db.NPCPointers
-    if type(flagTable) == "table" and type(pointers) == "table" then
-        for id in pairs(pointers) do
-            local flags = Num(ns.SafeCall(db.QueryNPCSingle, id, "npcFlags"))
-            if flags and flags > 0 then
-                local role = nil
-                for _, rf in ipairs(ROLE_FLAGS) do
-                    local mask = Num(flagTable[rf[1]])
-                    if mask and mask > 0 and bit.band(flags, mask) == mask then
-                        role = rf[2]
-                        break
-                    end
-                end
-                if role then
-                    local name = Str(ns.SafeCall(db.QueryNPCSingle, id, "name"))
-                    if name and string.sub(name, 1, 5) ~= "[DND]" then
-                        local spawns = convertSpawns(ns.SafeCall(db.QueryNPCSingle, id, "spawns"), zone, areaId)
-                        if #spawns > 0 then
-                            list[#list + 1] = {
-                                id = id,
-                                name = name,
-                                role = role,
-                                subtitle = Str(ns.SafeCall(db.QueryNPCSingle, id, "subName")),
-                                spawns = spawns,
-                            }
-                        end
-                    end
-                end
+    if not flags or flags <= 0 or type(flagTable) ~= "table" then return nil end
+    for _, rf in ipairs(ROLE_FLAGS) do
+        local mask = Num(flagTable[rf[1]])
+        if mask and mask > 0 and bit.band(flags, mask) == mask then return rf[2] end
+    end
+    return nil
+end
+
+-- Rol por subName (ingles o espanol, sin mayusculas). nil si no encaja con ninguna palabra.
+local function roleFromSubtitle(subtitle)
+    if not subtitle then return nil end
+    local s = string.lower(subtitle)
+    for _, rw in ipairs(ROLE_WORDS) do
+        for _, word in ipairs(rw[2]) do
+            if string.find(s, word, 1, true) then return rw[1] end
+        end
+    end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Trabajo incremental de PNJs: coroutines troceadas por tick (C_Timer.NewTicker).
+-- La exportacion NO espera: mientras el trabajo corre, questie.npcs no aparece; al terminar
+-- se reexporta sola (ExportQuestieNow). Nunca corre en combate ni de forma sincrona en SnapshotAll.
+-- Presupuesto por tick: NPC_TICK_MS (si existe debugprofilestop) y NPC_TICK_UNITS (un PNJ = una unidad).
+-- ---------------------------------------------------------------------------
+
+local NPC_TICK_SEC = 0.05   -- intervalo entre ticks
+local NPC_TICK_MS = 4       -- presupuesto de tiempo por tick
+local NPC_TICK_UNITS = 200  -- presupuesto de unidades por tick
+local NPC_CACHE_MAX = 6     -- listas de candidatos (una por zona) que se guardan
+
+local npcTasks = {}         -- { co, kind = "index" | "cands", key, onDone, cancelled }
+local npcTicker = nil       -- ticker de C_Timer.NewTicker activo
+local npcTickAfter = false  -- fallback sin NewTicker: cadena de C_Timer.After
+
+local function nowMs()
+    return Num(ns.Call("debugprofilestop"))
+end
+
+local function stopTicker()
+    if npcTicker then
+        ns.Method(npcTicker, "Cancel")
+        npcTicker = nil
+    end
+end
+
+-- Avanza las tareas dentro del presupuesto. Devuelve true si queda trabajo.
+local function runTasks()
+    -- En combate no se avanza: los trabajos siguen pendientes y se retoman fuera de combate.
+    if ns.InCombat() then return #npcTasks > 0 end
+    local t0 = nowMs()
+    local units, i = 0, 1
+    while i <= #npcTasks and units < NPC_TICK_UNITS do
+        local now = nowMs()
+        if t0 and now and now - t0 >= NPC_TICK_MS then break end
+        local task = npcTasks[i]
+        if task.cancelled then
+            table.remove(npcTasks, i)
+        else
+            local ok, n = coroutine.resume(task.co)
+            if not ok then
+                table.remove(npcTasks, i)
+                task.error = tostring(n)
+                if task.kind == "index" then Q.npcIndexFailed = true end
+            elseif coroutine.status(task.co) == "dead" then
+                table.remove(npcTasks, i)
+                if task.onDone then ns.SafeCall(task.onDone, task) end
+            else
+                -- Trabajo en curso (yield 1): sigue en esta misma tarea hasta agotar el presupuesto.
+                -- Esperando (yield 0): pasa a la siguiente tarea.
+                local cost = Num(n) or 1
+                units = units + math.max(1, cost)
+                if cost <= 0 then i = i + 1 end
             end
         end
     end
-    table.sort(list, function(a, b) return a.id < b.id end)
-    Q.npcCache = { areaId = areaId, list = list }
-    return list
+    return #npcTasks > 0
 end
 
-local function zoneNpcs(db, zone, areaId, mapID, px, py)
-    local out = {}
-    for _, c in ipairs(zoneNpcCandidates(db, zone, areaId)) do
-        local near = nearestFirst(c.spawns, mapID, px, py)[1]
-        if near then
-            local e = { id = c.id, name = c.name, role = c.role, mapID = near.mapID, x = near.x, y = near.y }
-            if c.subtitle then e.subtitle = c.subtitle end
-            out[#out + 1] = e
-        end
+local function tickAfter()
+    ns.Call("C_Timer.After", NPC_TICK_SEC, function()
+        if runTasks() then tickAfter() else npcTickAfter = false end
+    end)
+end
+
+local function ensureTicker()
+    if npcTicker or npcTickAfter or #npcTasks == 0 then return end
+    npcTicker = ns.Call("C_Timer.NewTicker", NPC_TICK_SEC, function()
+        if not runTasks() then stopTicker() end
+    end)
+    if not npcTicker then
+        npcTickAfter = true
+        tickAfter()
     end
-    -- Mas cercanos primero; sin posicion del jugador, el orden por id.
+end
+
+local function addTask(task)
+    npcTasks[#npcTasks + 1] = task
+    ensureTicker()
+end
+
+-- Indice global de PNJs con rol o subtitulo (cacheado en la sesion). Una pasada incremental
+-- sobre NPCPointers. Entradas { id, name, role, subtitle? }; role = "other" si solo tiene subtitulo.
+-- Los nombres vienen ya localizados por QuestieDB (l10n del cliente); sin traduccion, en ingles.
+local function indexWork(db)
+    return function()
+        local ids, n = {}, 0
+        local pointers = db.NPCPointers
+        if type(pointers) == "table" then
+            for id in pairs(pointers) do
+                n = n + 1
+                ids[n] = id
+                if n % 500 == 0 then coroutine.yield(1) end
+            end
+        end
+        local list = {}
+        for i = 1, n do
+            local id = Num(ids[i])
+            if id and id > 0 then
+                local subtitle = Str(ns.SafeCall(db.QueryNPCSingle, id, "subName"))
+                if subtitle == "" then subtitle = nil end
+                local role = roleFromFlags(db, Num(ns.SafeCall(db.QueryNPCSingle, id, "npcFlags")))
+                    or roleFromSubtitle(subtitle)
+                if role or subtitle then
+                    local name = Str(ns.SafeCall(db.QueryNPCSingle, id, "name"))
+                    if name and string.sub(name, 1, 5) ~= "[DND]" then
+                        list[#list + 1] = { id = id, name = name, role = role or "other", subtitle = subtitle }
+                    end
+                end
+            end
+            coroutine.yield(1)
+        end
+        table.sort(list, function(a, b) return a.id < b.id end)
+        Q.npcIndex = list
+    end
+end
+
+local function ensureIndex(db)
+    if Q.npcIndex or Q.npcIndexFailed then return end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "index" and not t.cancelled then return end
+    end
+    addTask({ kind = "index", co = coroutine.create(indexWork(db)) })
+end
+
+-- Candidatos de una zona: PNJs del indice con spawn en 'areas' (ids de area de Questie).
+-- Espera al indice si aun no esta listo. Devuelve { { npc, spawns = { [areaId] = {{mapID,x,y}...} } } }.
+local function candWork(db, zone, areas, key)
+    return function()
+        while not Q.npcIndex do
+            if Q.npcIndexFailed then return end
+            coroutine.yield(0)
+        end
+        local cands = {}
+        for _, npc in ipairs(Q.npcIndex) do
+            local raw = ns.SafeCall(db.QueryNPCSingle, npc.id, "spawns")
+            if type(raw) == "table" then
+                local byArea, any = {}, false
+                for _, areaId in ipairs(areas) do
+                    local spawns = convertSpawns(raw, zone, areaId)
+                    if #spawns > 0 then
+                        byArea[areaId] = spawns
+                        any = true
+                    end
+                end
+                if any then cands[#cands + 1] = { npc = npc, spawns = byArea } end
+            end
+            coroutine.yield(1)
+        end
+        Q.npcCands = Q.npcCands or {}
+        local count = 0
+        for _ in pairs(Q.npcCands) do count = count + 1 end
+        if count >= NPC_CACHE_MAX then Q.npcCands = {} end
+        Q.npcCands[key] = cands
+    end
+end
+
+-- Al terminar una lista de candidatos, reexporta (solo si quedo guardada).
+local function onCandsDone(task)
+    if Q.npcCands and Q.npcCands[task.key] then ns.SafeCall(ns.ExportQuestieNow) end
+end
+
+-- Pide la lista de candidatos de la zona (idempotente). Cancela la de otra zona: solo una a la vez.
+local function requestNpcCandidates(db, zone, areas, key)
+    if Q.npcCands and Q.npcCands[key] then return end
+    if Q.npcIndexFailed then return end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "cands" and t.key == key and not t.cancelled then return end
+    end
+    for _, t in ipairs(npcTasks) do
+        if t.kind == "cands" then t.cancelled = true end
+    end
+    ensureIndex(db)
+    addTask({ kind = "cands", key = key, co = coroutine.create(candWork(db, zone, areas, key)), onDone = onCandsDone })
+end
+
+-- Cancela y olvida todo el trabajo de PNJs (el indice y las zonas guardadas). Para pruebas y recargas.
+function ns.Questie.ResetNpc()
+    for _, t in ipairs(npcTasks) do t.cancelled = true end
+    npcTasks = {}
+    stopTicker()
+    npcTickAfter = false
+    Q.npcIndex = nil
+    Q.npcIndexFailed = nil
+    Q.npcCands = nil
+end
+
+-- Numero de tareas de PNJs pendientes (para pruebas).
+function ns.Questie.PendingNpcTasks()
+    return #npcTasks
+end
+
+-- Entradas { id, name, role, subtitle?, mapID, x, y } de los candidatos con spawn en 'areaIds'
+-- (el spawn mas cercano al jugador), excluyendo los ids de 'skip'. Mas cercanos primero;
+-- sin posicion del jugador en ese mapa, orden por id.
+local function npcEntries(cands, areaIds, skip, mapID, px, py)
     local keyed = {}
-    for i, e in ipairs(out) do
-        local d = math.huge
-        if px and py and e.mapID == mapID then d = math.sqrt((e.x - px) ^ 2 + (e.y - py) ^ 2) end
-        keyed[i] = { d = d, i = i, e = e }
+    for _, c in ipairs(cands) do
+        if not (skip and skip[c.npc.id]) then
+            local spawns = {}
+            for _, areaId in ipairs(areaIds) do
+                for _, s in ipairs(c.spawns[areaId] or {}) do spawns[#spawns + 1] = s end
+            end
+            local near = nearestFirst(spawns, mapID, px, py)[1]
+            if near then
+                local e = { id = c.npc.id, name = c.npc.name, role = c.npc.role, mapID = near.mapID, x = near.x, y = near.y }
+                if c.npc.subtitle then e.subtitle = c.npc.subtitle end
+                local d = math.huge
+                if px and py and near.mapID == mapID then d = math.sqrt((near.x - px) ^ 2 + (near.y - py) ^ 2) end
+                keyed[#keyed + 1] = { d = d, i = #keyed + 1, e = e }
+            end
+        end
     end
     table.sort(keyed, function(a, b)
         if a.d ~= b.d then return a.d < b.d end
         return a.i < b.i
     end)
-    local res = {}
-    for i = 1, math.min(#keyed, MAX_NPCS) do res[i] = keyed[i].e end
-    return res
+    local out = {}
+    for i, k in ipairs(keyed) do out[i] = k.e end
+    return out
+end
+
+-- PNJs con rol para la zona actual (max MAX_ZONE_NPCS) y para las capitales de la faccion
+-- (max MAX_CAPITAL_NPCS, sin repetir los de la zona). Devuelve zona primero, luego capitales.
+-- Devuelve nil mientras la lista de candidatos de la zona no esta lista (se pide en segundo plano).
+local function zoneNpcs(db, zone, areaId, faction, mapID, px, py)
+    local areas, capitalAreas = { areaId }, {}
+    for _, a in ipairs(CAPITALS[faction] or {}) do
+        capitalAreas[#capitalAreas + 1] = a
+        if a ~= areaId then areas[#areas + 1] = a end
+    end
+    local key = table.concat(areas, ",")
+    local cands = Q.npcCands and Q.npcCands[key]
+    if not cands then
+        requestNpcCandidates(db, zone, areas, key)
+        return nil
+    end
+    local zoneList = take(npcEntries(cands, { areaId }, nil, mapID, px, py), MAX_ZONE_NPCS)
+    local skip = {}
+    for _, e in ipairs(zoneList) do skip[e.id] = true end
+    local capList = take(npcEntries(cands, capitalAreas, skip, mapID, px, py), MAX_CAPITAL_NPCS)
+    local out = {}
+    for _, e in ipairs(zoneList) do out[#out + 1] = e end
+    for _, e in ipairs(capList) do out[#out + 1] = e end
+    return out
 end
 
 -- ---------------------------------------------------------------------------
@@ -463,7 +689,8 @@ function ns.BuildQuestieExport()
         if ok and type(list) == "table" then
             out.zoneQuests = { mapID = mapID, list = list }
         end
-        local okN, npcs = pcall(zoneNpcs, db, zone, areaId, mapID, px, py)
+        local faction = Str(Call("UnitFactionGroup", "player"))
+        local okN, npcs = pcall(zoneNpcs, db, zone, areaId, faction, mapID, px, py)
         if okN and type(npcs) == "table" then out.npcs = npcs end
     end
     return out
