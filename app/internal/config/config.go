@@ -209,6 +209,10 @@ func (c *Config) SavedVariablesPath() (string, error) {
 	return filepath.Join(c.WoWPath, "WTF", "Account", account, "SavedVariables", "CompaneroWoW.lua"), nil
 }
 
+// ErrNoSavedVariables means WoW's account folders exist but none holds the addon's data
+// yet. It is cleared by running /compa sync in game.
+var ErrNoSavedVariables = errors.New("ningún personaje tiene datos del addon (SavedVariables/CompaneroWoW.lua)")
+
 // savedVariablesRel is the file path below an account folder.
 var savedVariablesRel = filepath.Join("SavedVariables", "CompaneroWoW.lua")
 
@@ -234,7 +238,7 @@ func detectAccount(wowPath string) (string, error) {
 		}
 	}
 	if best == "" {
-		return "", fmt.Errorf("no account under %s contains SavedVariables\\CompaneroWoW.lua (run /compa sync in game)", accountsDir)
+		return "", fmt.Errorf("%w under %s", ErrNoSavedVariables, accountsDir)
 	}
 	return best, nil
 }

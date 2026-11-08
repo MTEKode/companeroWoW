@@ -13,9 +13,17 @@ import (
 
 const (
 	staleAfter       = 5 * time.Second
-	retryWhenNoWoW   = 2 * time.Second
 	defaultPollEvery = 250 * time.Millisecond
 	eventBuffer      = 16
+
+	// retryEvery is the wait after a failed read. slowRetryEvery replaces it once
+	// slowAfterFails reads in a row have failed, so a strip that never decodes (WoW
+	// closed, loading screen, a cover window) costs little.
+	retryEvery     = 2 * time.Second
+	slowRetryEvery = 5 * time.Second
+	slowAfterFails = 5
+	// windowGrabEvery bounds the PrintWindow fallback, which renders the whole client.
+	windowGrabEvery = 2 * time.Second
 )
 
 // FindWoWWindow returns the WoW window handle and its client-area rectangle in
@@ -24,7 +32,7 @@ func FindWoWWindow() (hwnd uintptr, rect image.Rectangle, err error) {
 	return capture.FindWoWWindow()
 }
 
-// Reader polls the top-left StripWidth x StripHeight region (28 blocks, up to 16 px
+// Reader polls the top-left StripWidth x StripHeight region (NumBlocks blocks, up to 16 px
 // pitch) of the WoW client area and decodes it.
 // It keeps working across WoW being closed, reopened or minimized.
 type Reader struct {
@@ -38,6 +46,18 @@ type Reader struct {
 	valid   bool
 	haveSeq bool
 	lastSeq uint8
+
+	// Poll-loop state, used only by the run goroutine (step).
+	failStreak     int
+	pitch          float64   // pitch of the last successful decode; 0 when unknown
+	lastWindowGrab time.Time // when the PrintWindow fallback last ran
+
+	// Seams for tests; NewReader wires the real Windows calls.
+	find       func() (uintptr, image.Rectangle, error)
+	grabScreen func(image.Rectangle) (*image.RGBA, error)
+	grabWindow func(uintptr, image.Rectangle) (*image.RGBA, error)
+	now        func() time.Time
+	win        windowGrabber
 }
 
 // NewReader creates a Reader that reads the strip every pollEvery (default 250ms).
@@ -45,10 +65,15 @@ func NewReader(pollEvery time.Duration) *Reader {
 	if pollEvery <= 0 {
 		pollEvery = defaultPollEvery
 	}
-	return &Reader{
-		pollEvery: pollEvery,
-		events:    make(chan LiveState, eventBuffer),
+	r := &Reader{
+		pollEvery:  pollEvery,
+		events:     make(chan LiveState, eventBuffer),
+		find:       FindWoWWindow,
+		grabScreen: capture.GrabScreen,
+		now:        time.Now,
 	}
+	r.grabWindow = r.win.grab
+	return r
 }
 
 // Start launches the poll loop in its own goroutine and returns immediately.
@@ -77,6 +102,7 @@ func (r *Reader) Events() <-chan LiveState {
 }
 
 func (r *Reader) run(ctx context.Context) {
+	defer r.win.close()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -85,29 +111,39 @@ func (r *Reader) run(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		next := r.pollEvery
-		if err := r.pollOnce(); err != nil {
-			if errors.Is(err, capture.ErrWoWNotFound) {
-				r.lost()
-			}
-			if errors.Is(err, capture.ErrWoWNotFound) || errors.Is(err, capture.ErrUnsupported) {
-				next = retryWhenNoWoW
-			}
-		}
-		timer.Reset(next)
+		timer.Reset(r.step())
 	}
 }
 
+// step does one poll and returns how long to wait before the next one: the configured
+// interval while reads succeed, retryEvery after a failure, and slowRetryEvery once
+// slowAfterFails reads in a row have failed.
+func (r *Reader) step() time.Duration {
+	err := r.pollOnce()
+	if err == nil {
+		r.failStreak = 0
+		return r.pollEvery
+	}
+	if errors.Is(err, capture.ErrWoWNotFound) {
+		r.lost()
+	}
+	r.failStreak++
+	if r.failStreak >= slowAfterFails {
+		return slowRetryEvery
+	}
+	return retryEvery
+}
+
 func (r *Reader) pollOnce() error {
-	hwnd, rect, err := FindWoWWindow()
+	hwnd, rect, err := r.find()
 	if err != nil {
 		return fmt.Errorf("locate WoW: %w", err)
 	}
-	st, err := readStrip(hwnd, rect)
+	st, err := r.readStrip(hwnd, rect)
 	if err != nil {
 		return err
 	}
-	st.ReadAt = time.Now()
+	st.ReadAt = r.now()
 	r.publish(st)
 	return nil
 }
@@ -115,22 +151,30 @@ func (r *Reader) pollOnce() error {
 // readStrip decodes the strip at the top-left of WoW's client area rect. It first
 // copies the strip from the screen, which is cheap. If that does not decode, a
 // window on top of WoW (the companion app, a browser) is probably covering the
-// strip, so it asks WoW to render its own content instead.
-func readStrip(hwnd uintptr, rect image.Rectangle) (LiveState, error) {
+// strip, so it asks WoW to render its own content instead. That fallback runs at
+// most once per windowGrabEvery.
+func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (LiveState, error) {
 	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+StripWidth, rect.Min.Y+StripHeight)
-	img, err := capture.GrabScreen(strip)
+	img, err := r.grabScreen(strip)
 	if err != nil {
 		return LiveState{}, fmt.Errorf("grab pixel strip: %w", err)
 	}
-	st, err := DecodeImage(img)
+	st, pitch, err := decodeStrip(img, r.pitch)
 	if err == nil {
+		r.pitch = pitch
 		return st, nil
 	}
-	own, gerr := grabWindowStrip(hwnd, rect)
+	now := r.now()
+	if !r.lastWindowGrab.IsZero() && now.Sub(r.lastWindowGrab) < windowGrabEvery {
+		return LiveState{}, err
+	}
+	r.lastWindowGrab = now
+	own, gerr := r.grabWindow(hwnd, rect)
 	if gerr != nil {
 		return LiveState{}, err
 	}
-	if st2, err2 := DecodeImage(own); err2 == nil {
+	if st2, p2, err2 := decodeStrip(own, r.pitch); err2 == nil {
+		r.pitch = p2
 		return st2, nil
 	}
 	return LiveState{}, err

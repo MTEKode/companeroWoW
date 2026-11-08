@@ -6,9 +6,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -46,6 +46,7 @@ const (
 	hintActivate  = "Activa el addon y usa modo ventana sin bordes"
 	hintWoWPath   = "Configura WoWPath en config.json"
 	hintSync      = "Escribe /compa sync en el juego para actualizar los datos"
+	hintSyncFirst = "Haz /compa sync en el juego para crear los datos"
 	hintNoProvide = "No hay proveedores de IA disponibles: instala Antigravity CLI (agy) o Codex CLI, o define una clave de API en .env"
 )
 
@@ -121,6 +122,11 @@ func runApp(cfg *config.Config, dir string) int {
 
 	// The companion's skill is written where each provider reads it, and again before each
 	// question if a file goes missing or changes.
+	if removed, err := config.CleanupLeftovers(dir); err != nil {
+		log.Printf("limpieza: %v", err)
+	} else if len(removed) > 0 {
+		log.Printf("limpieza: eliminados %s", strings.Join(removed, ", "))
+	}
 	if err := skill.DeployAll(dir); err != nil {
 		log.Printf("skill: %v", err)
 	}
@@ -135,15 +141,22 @@ func runApp(cfg *config.Config, dir string) int {
 			log.Printf("close store: %v", err)
 		}
 	}()
+	// Trims the chat history and the cache at start and then hourly. It is stopped and
+	// waited for before the store closes (defers run in reverse order).
+	maintDone := make(chan struct{})
+	go func() {
+		defer close(maintDone)
+		st.RunMaintenance(ctx, time.Hour)
+	}()
+	defer func() {
+		cancel()
+		<-maintDone
+	}()
 
 	reader := bridge.NewReader(cfg.PixelPoll())
-	var watcher *bridge.SVWatcher
-	svPath, svErr := cfg.SavedVariablesPath()
-	if svErr != nil {
-		log.Printf("SavedVariables: %v", svErr)
-	} else {
-		watcher = bridge.NewSVWatcher(svPath, 0)
-	}
+	// The watcher looks the file up until it exists, so WoW set up or /compa sync run
+	// after the app started are picked up without a restart.
+	watcher := bridge.NewSVWatcherFunc(cfg.SavedVariablesPath, 0)
 	g := gamedata.NewService(reader, watcher, st)
 	g.Start(ctx)
 
@@ -185,7 +198,7 @@ func runApp(cfg *config.Config, dir string) int {
 		Backend:   asst,
 		Tips:      tips,
 		Status: func() ui.Status {
-			return buildStatus(g, providers, svErr, mcpErrs.get())
+			return buildStatus(g, providers, watcher, mcpErrs.get())
 		},
 	})
 
@@ -216,7 +229,8 @@ func avoidStrip() (ui.Rect, bool) {
 }
 
 // buildStatus gathers what the status bar shows. It is called by the UI every two seconds.
-func buildStatus(g *gamedata.Service, providers []string, svErr error, mcpErr error) ui.Status {
+func buildStatus(g *gamedata.Service, providers []string, sv *bridge.SVWatcher, mcpErr error) ui.Status {
+	svErr := sv.PathError()
 	s := ui.Status{
 		Bridge:          "no_wow",
 		SavedVarsAgeSec: -1,
@@ -253,10 +267,15 @@ func buildStatus(g *gamedata.Service, providers []string, svErr error, mcpErr er
 	case "no_strip":
 		s.Hints = append(s.Hints, hintActivate)
 	}
-	if svErr != nil {
+	switch {
+	case errors.Is(svErr, config.ErrNoSavedVariables):
+		s.Hints = append(s.Hints, hintSyncFirst)
+	case svErr != nil:
 		s.Hints = append(s.Hints, hintWoWPath)
-	} else if !ageKnown || time.Duration(s.SavedVarsAgeSec)*time.Second > svStaleAfter {
-		s.Hints = append(s.Hints, hintSync)
+	default:
+		if !ageKnown || time.Duration(s.SavedVarsAgeSec)*time.Second > svStaleAfter {
+			s.Hints = append(s.Hints, hintSync)
+		}
 	}
 	if len(providers) == 0 {
 		s.Hints = append(s.Hints, hintNoProvide)
@@ -404,24 +423,6 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		}
 	}
 	return 0
-}
-
-// setupLog sends the log to companero.log in dir. The file is rotated when it reaches
-// 5 MB; one previous file is kept as companero.log.1.
-func setupLog(dir string) (io.Closer, error) {
-	path := filepath.Join(dir, "companero.log")
-	if fi, err := os.Stat(path); err == nil && fi.Size() >= logMaxBytes {
-		if err := os.Rename(path, path+".1"); err != nil {
-			return nil, fmt.Errorf("rotate log: %w", err)
-		}
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open log %s: %w", path, err)
-	}
-	log.SetOutput(f)
-	log.SetFlags(log.LstdFlags)
-	return f, nil
 }
 
 // errBox holds the last error of a background component, safe for concurrent use.

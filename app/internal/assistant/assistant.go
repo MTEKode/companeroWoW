@@ -27,6 +27,15 @@ const historyTurns = 10
 // text stays in the store and in the overlay.
 const historyAnswerRunes = 600
 
+// questionDeadline bounds one question, from the window to the last provider. The chain
+// tries providers in turn, so the bound is what keeps a stuck question from waiting
+// forever.
+const questionDeadline = 150 * time.Second
+
+// proactivePrefix marks the provider of a stored proactive tip ("proactivo:<provider>").
+// Tips are shown and stored, but are not sent back as conversation history.
+const proactivePrefix = "proactivo:"
+
 // asker is the part of ai.Chain the assistant uses. Tests inject a fake.
 type asker interface {
 	Ask(ctx context.Context, req ai.Request) (ai.Response, error)
@@ -73,6 +82,8 @@ func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot boo
 	if q == "" {
 		return ai.Response{}, errors.New("escribe una pregunta")
 	}
+	ctx, cancel := context.WithTimeout(ctx, questionDeadline)
+	defer cancel()
 	resp, err := a.ask(ctx, q, withScreenshot, a.history())
 	if err != nil {
 		return resp, err
@@ -101,15 +112,9 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 	}
 	// The player context is consulted here, once, so the provider does not need a tool call
 	// for the usual "where am I / what now" questions.
-	system := a.stateBlock()
-	block := a.playerContextBlock()
-	a.setLastContext(block)
-	if block != "" {
-		system += "\n\n" + block
-	}
 	req := ai.Request{
 		Skill:   SystemPrompt,
-		System:  system,
+		System:  a.systemPrompt(),
 		History: history,
 		Prompt:  q,
 	}
@@ -122,6 +127,19 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 		}
 	}
 	return a.asker.Ask(ctx, req)
+}
+
+// systemPrompt is the game state and the player context block that every question
+// carries, proactive tips included. The context is consulted here, once, so the provider
+// does not need a tool call for the usual "where am I / what now" questions.
+func (a *Assistant) systemPrompt() string {
+	system := a.stateBlock()
+	block := a.playerContextBlock()
+	a.setLastContext(block)
+	if block != "" {
+		system += "\n\n" + block
+	}
+	return system
 }
 
 // LastContext returns the player context block that the last question carried, or "" when
@@ -165,6 +183,9 @@ func (a *Assistant) history() []ai.Message {
 	out := make([]ai.Message, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		if strings.HasPrefix(m.Provider, proactivePrefix) {
 			continue
 		}
 		content := m.Content

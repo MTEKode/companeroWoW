@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -183,8 +184,16 @@ func luaKeyString(k lua.LValue) (string, bool) {
 // SVWatcher polls the SavedVariables file and reloads it when its size or
 // modification time changes.
 type SVWatcher struct {
-	path  string
 	every time.Duration
+
+	// resolve finds the file path. It is called until it succeeds and again every
+	// resolveEvery after that, so the file is picked up when WoW has been installed or
+	// /compa sync has run after the app started.
+	resolve      func() (string, error)
+	resolveEvery time.Duration
+	lastResolve  time.Time
+	path         string
+	pathErr      error
 
 	startOnce sync.Once
 	changes   chan *SavedVars
@@ -199,16 +208,65 @@ type SVWatcher struct {
 	lastErr error
 }
 
+// svResolveEvery is how often the file path is looked up again.
+const svResolveEvery = 5 * time.Second
+
 // NewSVWatcher watches path, polling every `every` (default 3s).
 func NewSVWatcher(path string, every time.Duration) *SVWatcher {
+	return NewSVWatcherFunc(func() (string, error) {
+		if path == "" {
+			return "", errors.New("saved variables path is empty")
+		}
+		return path, nil
+	}, every)
+}
+
+// NewSVWatcherFunc watches the file that resolve returns, polling every `every` (default
+// 3s). resolve may fail while WoW is not set up; the watcher keeps trying.
+func NewSVWatcherFunc(resolve func() (string, error), every time.Duration) *SVWatcher {
 	if every <= 0 {
 		every = svDefaultEvery
 	}
 	return &SVWatcher{
-		path:    path,
-		every:   every,
-		changes: make(chan *SavedVars, svChangeBuffer),
+		every:        every,
+		resolve:      resolve,
+		resolveEvery: svResolveEvery,
+		changes:      make(chan *SavedVars, svChangeBuffer),
 	}
+}
+
+// PathError returns the error of the latest path lookup, or nil when the file path is
+// known. It is what the status bar explains to the user.
+func (w *SVWatcher) PathError() error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.pathErr
+}
+
+// locate returns the file path, looking it up again when it is unknown or the last
+// lookup is older than resolveEvery. It must be called with pollMu held.
+func (w *SVWatcher) locate(now time.Time) (string, error) {
+	if w.path != "" && now.Sub(w.lastResolve) < w.resolveEvery {
+		return w.path, nil
+	}
+	w.lastResolve = now
+	path, err := w.resolve()
+	w.mu.Lock()
+	w.pathErr = err
+	w.mu.Unlock()
+	if err != nil {
+		if w.path != "" {
+			// Keep the known path: a failed lookup right after a success is not a reason
+			// to forget it. The error is still reported through PathError.
+			return w.path, nil
+		}
+		return "", err
+	}
+	if path != w.path {
+		w.path = path
+		w.attempted = false
+	}
+	return w.path, nil
 }
 
 // Start launches the polling goroutine and returns immediately. It stops when ctx ends.
@@ -239,7 +297,11 @@ func (w *SVWatcher) Poll() error {
 	w.pollMu.Lock()
 	defer w.pollMu.Unlock()
 
-	info, err := os.Stat(w.path)
+	path, err := w.locate(time.Now())
+	if err != nil {
+		return fmt.Errorf("locate saved variables: %w", err)
+	}
+	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat saved variables: %w", err)
 	}
@@ -250,7 +312,7 @@ func (w *SVWatcher) Poll() error {
 	w.lastMod = info.ModTime()
 	w.lastSize = info.Size()
 
-	sv, err := LoadSavedVariables(w.path)
+	sv, err := LoadSavedVariables(path)
 	w.mu.Lock()
 	w.lastErr = err
 	if err == nil {
