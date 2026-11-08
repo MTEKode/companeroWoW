@@ -37,4 +37,12 @@ const (
 	descBuscarWeb = "Busca en las fuentes web de WoW Forever (wiki, guías y bases de datos de la versión Forever) cuando el conocimiento local no basta. Solo devuelve páginas de esas fuentes, nunca de Classic ni de Retail. Puede limitarse a un sitio concreto. Devuelve títulos, enlaces y extractos; usa leer_pagina para leer una página completa."
 
 	descLeerPagina = "Lee el texto de una página de WoW Forever a partir de su URL, la que devolvió buscar_web. Úsala cuando el extracto no tenga la respuesta completa. Solo admite los sitios permitidos."
+
+	descEntrenar = "Dice qué hechizos de clase puede aprender ahora con su coste, cuánto cuesta en total, si el jugador puede pagarlos y dónde está el entrenador de su clase cuando se conoce. Incluye también los hechizos del siguiente nivel. Úsala cuando pregunten qué entrenar, qué hechizos tiene disponibles o cuánto cuesta subir de nivel en hechizos."
+
+	descPasoGuia = "Devuelve el paso actual de la guía de niveles (RXPGuides): nombre de la guía, número y texto del paso, zona y coordenadas (x, y) con los comandos /compa marca listos para copiar. Úsala cuando pregunten qué paso de la guía toca o adónde ir según la guía."
+
+	descRutaProfesion = "Devuelve cómo subir una profesión (SkillUpForever): el siguiente rango con sus recetas y materiales, la lista de la compra, y los entrenadores conocidos con su consejo de entrenamiento. Sin profesión devuelve todas. Úsala cuando pregunten cómo subir una profesión, qué comprar o qué recetas hacer."
+
+	descResumenSesion = "Resume la sesión de juego en curso, o la última si no hay ninguna: duración, XP ganada, cambio de oro, misiones completadas y entregadas, zonas visitadas y muertes. Úsala cuando pidan un resumen de lo que han hecho o cómo ha ido la sesión."
 )

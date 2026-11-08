@@ -177,7 +177,7 @@ func TestProfessionPlanTrainersAndTrainNow(t *testing.T) {
 	svc, _ := fixtureService(t)
 	m := objOf(t, svc.ProfessionPlan)
 	profs := m["profesiones"].([]map[string]any)
-	if len(profs) != 2 {
+	if len(profs) != 3 {
 		t.Fatalf("professions = %#v", profs)
 	}
 	herb := profs[0]

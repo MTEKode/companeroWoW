@@ -46,6 +46,7 @@ type Reader struct {
 	valid   bool
 	haveSeq bool
 	lastSeq uint8
+	subs    []func(LiveState) // see Subscribe; guarded by mu
 
 	// Poll-loop state, used only by the run goroutine (step).
 	failStreak     int
@@ -188,6 +189,19 @@ func (r *Reader) lost() {
 	r.mu.Unlock()
 }
 
+// Subscribe registers f to be called with every valid state, in the poll goroutine, after
+// the state is stored. Unlike Events, every subscriber sees every read, so several
+// components can follow the game without splitting the events between them. f must be
+// quick and must not block.
+func (r *Reader) Subscribe(f func(LiveState)) {
+	if f == nil {
+		return
+	}
+	r.mu.Lock()
+	r.subs = append(r.subs, f)
+	r.mu.Unlock()
+}
+
 func (r *Reader) publish(st LiveState) {
 	r.mu.Lock()
 	r.latest = st
@@ -195,8 +209,12 @@ func (r *Reader) publish(st LiveState) {
 	emit := r.haveSeq && st.EventSeq != r.lastSeq
 	r.haveSeq = true
 	r.lastSeq = st.EventSeq
+	subs := r.subs
 	r.mu.Unlock()
 
+	for _, f := range subs {
+		f(st)
+	}
 	if emit {
 		r.send(st)
 	}

@@ -59,7 +59,7 @@ Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco 
 El panel es una ventana nativa de Windows (sin navegador integrado): sin barra de título, con borde dorado y fondo oscuro semitransparente, para que parezca parte de la interfaz del juego. Siempre está encima de las demás ventanas y no aparece en la barra de tareas.
 
 - **Cabecera**: arrástrala para mover el panel. Tiene tres botones: **Limpiar** (borra el historial), **–** (oculta el panel) y **×** (también lo oculta). Cerrar con Alt+F4 también solo lo oculta.
-- **Menú contextual**: clic derecho en la cabecera para **Limpiar historial** o **Salir**. **Salir** cierra la aplicación de verdad.
+- **Menú contextual**: clic derecho en la cabecera para **Resumen de sesión** (un resumen corto de lo que llevas jugado, sin llamar a la IA), **Analizar sesión con IA** (el mismo resumen y 2 consejos de la IA), **Limpiar historial** o **Salir**. **Salir** cierra la aplicación de verdad.
 - **Tamaño**: arrastra los bordes o la esquina para cambiarlo; la posición y el tamaño se recuerdan en `window.json`.
 - Escribe tu pregunta y pulsa **Enter** (**Shift+Enter** para un salto de línea). **Escape** oculta el panel.
 - **Incluir captura**: envía una captura de la ventana de WoW para preguntas sobre lo que ves en pantalla.
@@ -195,6 +195,24 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `buscar_web` | Busca en las fuentes de WoW: Forever de `webSources`. |
 | `leer_pagina` | Lee una página de esas fuentes. |
 | `capturar_pantalla` | Captura de la ventana de WoW. |
+| `que_entrenar` | Hechizos de clase que puede aprender ahora (y del siguiente nivel) con su coste, si le alcanza el oro y el entrenador de su clase cuando se conoce. Requiere WhatsTraining. |
+| `paso_guia` | Paso actual de la guía de niveles (RXPGuides): texto, zona, coordenadas y los comandos `/compa marca`. Requiere RXPGuides. |
+| `ruta_profesion` | Cómo subir una profesión (SkillUpForever): recetas del siguiente rango, materiales, lista de la compra y entrenador. Acepta `profesion` o `skill_line_id`. Requiere SkillUpForever. |
+| `resumen_sesion` | Resumen de la sesión en curso o la última: duración, XP, oro, misiones, zonas y muertes. |
+
+Las herramientas de situación `contexto_jugador`, `guia_mision` y `plan_profesiones` también usan estos datos: el contexto muestra solo recuentos y el primer elemento de cada bloque.
+
+## Otros addons y sesiones
+
+El addon lee tres addons opcionales a través de sus APIs públicas y los guarda en SavedVariables junto a sus datos (fuera de combate, como mucho cada 10 s, al entrar y con `/compa sync`):
+
+- **WhatsTraining**: hechizos de clase disponibles y del siguiente nivel, con su coste en cobre.
+- **RXPGuides**: la guía activa, el paso actual y sus coordenadas, si el paso las trae.
+- **SkillUpForever**: la ruta de cada profesión (recetas, materiales y lista de la compra).
+
+Si uno de ellos no está instalado o falla, la herramienta correspondiente dice qué falta en lugar de dar error. El addon también cuenta los errores que ha capturado sin mostrarlos (`health`), y `estado_conexion` los muestra para diagnosticar.
+
+Una **sesión** empieza con el primer dato del puente tras 10 minutos sin datos, y termina tras otros 10 minutos sin datos o al cerrar la app. Se guarda en la base de datos local (tabla `sessions`): hora de inicio y fin, nivel y XP ganados, cambio de oro, misiones completadas y entregadas, zonas visitadas y muertes. Al arrancar, las sesiones que quedaron abiertas por un cierre brusco se cierran en su último dato.
 
 ## Privacidad
 

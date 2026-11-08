@@ -29,6 +29,8 @@ type Backend interface {
 	Ask(ctx context.Context, question string, withScreenshot bool) (ai.Response, error)
 	History(n int) ([]store.ChatMsg, error)
 	ClearHistory() error
+	// SessionSummary is the short summary of the play session (no AI call).
+	SessionSummary() (string, error)
 }
 
 // Status is the state line shown at the bottom of the window. It is refreshed every 2 s

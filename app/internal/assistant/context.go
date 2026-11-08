@@ -56,11 +56,14 @@ func compactContext(v any, limit int) string {
 		{"ubicacion", m["ubicacion"]},
 		{"personaje", m["personaje"]},
 		{"misionRastreada", m["misionRastreada"]},
+		{"guia", m["guia"]},
 		{"datos", m["datos"]},
 		{"avisos", m["avisos"]},
 		{"dinero", m["dinero"]},
 		{"objetivo", m["objetivo"]},
 		{"profesiones", m["profesiones"]},
+		{"entrenamiento", m["entrenamiento"]},
+		{"rutaProfesiones", m["rutaProfesiones"]},
 	}
 	out := map[string]any{}
 	for _, p := range parts {
@@ -103,4 +106,40 @@ func copyFields(m map[string]any) map[string]any {
 func fitsJSON(v any, limit int) bool {
 	data, err := json.Marshal(v)
 	return err == nil && utf8.RuneCount(data) <= limit
+}
+
+// trainingHeader introduces the trainable spells added to a level-up tip.
+const trainingHeader = "Hechizos que puede entrenar ahora (ya consultado con que_entrenar; úsalo si preguntan qué entrenar):"
+
+// trainingLimit caps the training block, header included, in runes.
+const trainingLimit = 700
+
+// trainingBlock is the compact answer of que_entrenar for the level-up tip. It returns ""
+// when the addon has no training data.
+func (a *Assistant) trainingBlock() string {
+	if a.g == nil {
+		return ""
+	}
+	v, err := a.g.TrainingPlan()
+	if err != nil {
+		return ""
+	}
+	m := asMap(v)
+	if !truthy(m["available"]) {
+		return ""
+	}
+	slim := map[string]any{}
+	for _, k := range []string{"clase", "ahora", "costeAhoraTexto", "proximoNivel", "dinero", "puedesPagarAhora", "nota"} {
+		if val, ok := m[k]; ok {
+			slim[k] = val
+		}
+	}
+	if trs, ok := m["entrenadores"].([]map[string]any); ok && len(trs) > 0 {
+		slim["entrenador"] = map[string]any{"nombre": trs[0]["nombre"], "coords": trs[0]["coords"], "marca": trs[0]["marca"]}
+	}
+	data, err := json.Marshal(slim)
+	if err != nil {
+		return ""
+	}
+	return truncateRunes(trainingHeader+"\n"+string(data), trainingLimit)
 }

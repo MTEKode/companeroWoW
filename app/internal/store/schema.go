@@ -62,6 +62,30 @@ var migrations = [][]string{
 			created_at INTEGER NOT NULL
 		)`,
 	},
+	{
+		// One row per play session (see internal/session). Times are Unix seconds; the
+		// lists are JSON arrays of ids.
+		`CREATE TABLE sessions (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			started_at       INTEGER NOT NULL,
+			last_data_at     INTEGER NOT NULL DEFAULT 0,
+			ended_at         INTEGER NOT NULL DEFAULT 0,
+			open             INTEGER NOT NULL DEFAULT 0,
+			start_level      INTEGER NOT NULL DEFAULT 0,
+			end_level        INTEGER NOT NULL DEFAULT 0,
+			levels_gained    INTEGER NOT NULL DEFAULT 0,
+			start_xp_pct     INTEGER NOT NULL DEFAULT 0,
+			end_xp_pct       INTEGER NOT NULL DEFAULT 0,
+			xp_gained_pct    REAL    NOT NULL DEFAULT 0,
+			money_start      INTEGER NOT NULL DEFAULT 0,
+			money_end        INTEGER NOT NULL DEFAULT 0,
+			quests_completed TEXT    NOT NULL DEFAULT '[]',
+			quests_turned_in TEXT    NOT NULL DEFAULT '[]',
+			zones            TEXT    NOT NULL DEFAULT '[]',
+			deaths           INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX sessions_started ON sessions(started_at)`,
+	},
 }
 
 // latestVersion is the user_version after all migrations have run.

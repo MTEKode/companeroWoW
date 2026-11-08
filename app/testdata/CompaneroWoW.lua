@@ -93,9 +93,58 @@ CompaneroWoWDB = {
 			["professions"] = {
 				{ ["name"] = "Herbalism", ["skillLineID"] = 182, ["rank"] = 150, ["maxRank"] = 150, ["isSecondary"] = false },
 				{ ["name"] = "Skinning", ["skillLineID"] = 393, ["rank"] = 75, ["maxRank"] = 75, ["isSecondary"] = false },
+				{ ["name"] = "Tailoring", ["skillLineID"] = 197, ["rank"] = 68, ["maxRank"] = 75, ["isSecondary"] = false },
 			},
 			["reputations"] = {
 				{ ["factionID"] = 76, ["name"] = "Orgrimmar", ["standing"] = 6, ["current"] = 12000, ["max"] = 21000 },
+			},
+			["training"] = {
+				["available"] = true,
+				["source"] = "WhatsTraining",
+				["exportedAt"] = 1793880000,
+				["spells"] = {
+					{ ["spellID"] = 8024, ["name"] = "Frost Shock", ["rank"] = "Rango 2", ["level"] = 38, ["cost"] = 4500, ["status"] = "AVAILABLE" },
+					{ ["spellID"] = 324, ["name"] = "Lightning Shield", ["rank"] = "Rango 3", ["level"] = 38, ["cost"] = 2500, ["status"] = "AVAILABLE" },
+					{ ["spellID"] = 25357, ["name"] = "Healing Wave", ["rank"] = "Rango 5", ["level"] = 40, ["cost"] = 15000, ["status"] = "NEXTLEVEL" },
+					{ ["spellID"] = 421, ["name"] = "Chain Lightning", ["rank"] = "Rango 2", ["level"] = 40, ["cost"] = 22000, ["status"] = "NEXTLEVEL" },
+					{ ["spellID"] = 17364, ["name"] = "Stormstrike", ["rank"] = "Rango 1", ["level"] = 44, ["cost"] = 90000, ["status"] = "OTHER" },
+				},
+			},
+			["guide"] = {
+				["available"] = true,
+				["source"] = "RXPGuides",
+				["exportedAt"] = 1793880000,
+				["group"] = "Leveling",
+				["guideName"] = "Orgrimmar 35-40",
+				["stepIndex"] = 12,
+				["stepId"] = "A12",
+				["stepText"] = "Acepta The Warchief's Orders con Garrosh Hellscream y mata 8 gnolls en Durotar.",
+				["stepMapID"] = 85,
+				["stepX"] = 0.5130,
+				["stepY"] = 0.3850,
+			},
+			["profPlan"] = {
+				["available"] = true,
+				["source"] = "SkillUpForever",
+				["exportedAt"] = 1793880000,
+				["professions"] = {
+					{ ["skillLineID"] = 197, ["name"] = "Sastrería", ["rank"] = 68, ["maxRank"] = 75,
+					  ["nextSteps"] = {
+					    { ["recipe"] = "Pantalones de lana", ["fromSkill"] = 68, ["toSkill"] = 75,
+					      ["materials"] = { { ["itemID"] = 2589, ["name"] = "Lino", ["count"] = 10 } } },
+					    { ["recipe"] = "Capucha de hilo", ["fromSkill"] = 70, ["toSkill"] = 75,
+					      ["materials"] = { { ["itemID"] = 4306, ["name"] = "Seda", ["count"] = 8 } } },
+					  },
+					  ["shopping"] = {
+					    { ["itemID"] = 2589, ["name"] = "Lino", ["count"] = 30 },
+					    { ["itemID"] = 4306, ["name"] = "Seda", ["count"] = 16 },
+					  },
+					},
+				},
+			},
+			["health"] = {
+				["luaErrors"] = 3,
+				["lastError"] = "pcall: attempt to index a nil value",
 			},
 			["questie"] = {
 				["available"] = true,
@@ -152,6 +201,7 @@ CompaneroWoWDB = {
 				["npcs"] = {
 					{ ["id"] = 3296, ["name"] = "Garrosh Hellscream", ["role"] = "other", ["subtitle"] = "Warchief", ["mapID"] = 85, ["x"] = 0.5130, ["y"] = 0.3850 },
 					{ ["id"] = 3010, ["name"] = "Hanna Rel", ["role"] = "trainer", ["subtitle"] = "Herbalism Trainer", ["mapID"] = 85, ["x"] = 0.4950, ["y"] = 0.4100 },
+					{ ["id"] = 3062, ["name"] = "Korla Windtotem", ["role"] = "trainer", ["subtitle"] = "Shaman Trainer", ["mapID"] = 85, ["x"] = 0.4800, ["y"] = 0.4300 },
 				},
 			},
 		},

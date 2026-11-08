@@ -35,8 +35,10 @@ const (
 	idSend  = 2002
 	idInput = 2003
 
-	menuClear = 1001
-	menuQuit  = 1002
+	menuClear     = 1001
+	menuQuit      = 1002
+	menuSession   = 1003
+	menuSessionAI = 1004
 )
 
 // Palette: dark brown background, gold headings and borders, parchment text.
@@ -491,12 +493,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			return 0
 		}
 		if lp == 0 {
-			switch loWordCmd(wp) {
-			case menuClear:
-				w.clearHistory()
-			case menuQuit:
-				w.quit()
-			}
+			w.menuCommand(loWordCmd(wp))
 			return 0
 		}
 	case wmNotify:
@@ -629,11 +626,18 @@ func (w *window) showMenu() {
 		return
 	}
 	defer call(procDestroyMenu, menu)
+	summary := utf16Of("Resumen de sesión")
+	summaryAI := utf16Of("Analizar sesión con IA")
 	clear := utf16Of("Limpiar historial")
 	quit := utf16Of("Salir")
+	call(procAppendMenuW, menu, mfString, menuSession, ptrOf(&summary[0]))
+	call(procAppendMenuW, menu, mfString, menuSessionAI, ptrOf(&summaryAI[0]))
+	call(procAppendMenuW, menu, mfSeparator, 0, 0)
 	call(procAppendMenuW, menu, mfString, menuClear, ptrOf(&clear[0]))
 	call(procAppendMenuW, menu, mfSeparator, 0, 0)
 	call(procAppendMenuW, menu, mfString, menuQuit, ptrOf(&quit[0]))
+	runtime.KeepAlive(summary)
+	runtime.KeepAlive(summaryAI)
 	runtime.KeepAlive(clear)
 	runtime.KeepAlive(quit)
 	var pt point
@@ -641,12 +645,46 @@ func (w *window) showMenu() {
 	call(procSetForegroundWindow, w.hwnd)
 	cmd := call(procTrackPopupMenu, menu, tpmRightButton|tpmReturnCmd,
 		uintptr(pt.X), uintptr(pt.Y), 0, w.hwnd, 0)
-	switch cmd {
+	w.menuCommand(int(cmd))
+}
+
+// menuCommand runs the header menu item with the given command id.
+func (w *window) menuCommand(id int) {
+	switch id {
+	case menuSession:
+		w.showSession(false)
+	case menuSessionAI:
+		w.showSession(true)
 	case menuClear:
 		w.clearHistory()
 	case menuQuit:
 		w.quit()
 	}
+}
+
+// showSession puts the session summary in the conversation. With withAI, it then asks the
+// assistant for two tips on it.
+func (w *window) showSession(withAI bool) {
+	if w.opts.Backend == nil {
+		w.add(entry{Kind: entryError, Text: "El asistente no está disponible."})
+		return
+	}
+	text, err := w.opts.Backend.SessionSummary()
+	if err != nil {
+		log.Printf("ui: resumen de sesión: %v", err)
+		w.add(entry{Kind: entryError, Text: "No pude preparar el resumen de la sesión. El detalle está en companero.log."})
+		return
+	}
+	w.add(entry{Kind: entryInfo, Text: text})
+	if withAI {
+		if w.busy {
+			w.setNotice("Espera a que termine la pregunta actual")
+		} else {
+			w.start(sessionAIDisplay, sessionAIPrompt(text), false)
+			return
+		}
+	}
+	w.refreshStatus()
 }
 
 // drawSend paints the owner-drawn send button in the panel palette.
@@ -824,14 +862,20 @@ func (w *window) submit() {
 	}
 	withShot := call(procSendMessageW, w.check, bmGetCheck, 0, 0) == bstChecked
 	setWindowText(w.input, "")
-	w.add(entry{Kind: entryUser, Text: text})
+	w.start(text, text, withShot)
+}
+
+// start sends question to the assistant and shows display as the user's message. The
+// answer comes back through msgAnswer.
+func (w *window) start(display, question string, withShot bool) {
+	w.add(entry{Kind: entryUser, Text: display})
 	w.busy = true
 	w.askGen++
 	ctx, cancel := context.WithCancel(w.ctx)
 	w.askCancel = cancel
 	call(procInvalidateRect, w.send, 0, 1)
 	w.refreshStatus()
-	go w.ask(ctx, w.askGen, text, withShot)
+	go w.ask(ctx, w.askGen, question, withShot)
 }
 
 // cancelAsk stops the question in flight: the button and Escape do this while the

@@ -42,6 +42,10 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(contextoJugador(g))
 	r.Add(guiaMision(g))
 	r.Add(planProfesiones(g))
+	r.Add(queEntrenar(g))
+	r.Add(pasoGuia(g))
+	r.Add(rutaProfesion(g))
+	r.Add(resumenSesion(g))
 	r.Add(capturarPantalla())
 
 	getters := []struct {
