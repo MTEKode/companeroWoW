@@ -84,10 +84,25 @@ eq("vacio -> 0xFFFF", C.CRC16({}, 1, 0), 0xFFFF)
 
 -- ---------------------------------------------------------------------------
 print("(c) Capacidad y numero de bloques")
-eq("N de 3440 px = 860", ns.BlockCount(3440), 860)
-eq("N de 5000 px = 1024 (tope)", ns.BlockCount(5000), 1024)
-eq("N de 1920 px = 480", ns.BlockCount(1920), 480)
-eq("ancho desconocido = 256", ns.BlockCount(nil), 256)
+-- N = bloques que caben en el ancho disponible (unidades del marco) menos 1 de margen.
+eq("N de 3440 unidades con bloque 4 = 859", ns.StripBlocks(3440, 4), 859)
+eq("N de 5000 unidades con bloque 4 = 1024 (tope)", ns.StripBlocks(5000, 4), 1024)
+eq("N de 1920 unidades con bloque 4 = 479", ns.StripBlocks(1920, 4), 479)
+eq("ancho desconocido = 256", ns.StripBlocks(nil, 4), 256)
+eq("ancho menor que 7 bloques = 0 (sin franja)", ns.StripBlocks(20, 4), 0)
+do
+    -- Garantia: N bloques mas su margen nunca pasan del ancho disponible.
+    local bad = nil
+    for avail = 50, 3440, 37 do
+        for _, blk in ipairs({ 1.9, 2.021, 2.7, 4, 5.333 }) do
+            local n = ns.StripBlocks(avail, blk)
+            if n > 0 and (n + 1) * blk > avail + 1e-9 then bad = bad or string.format("avail %d block %s n %d", avail, blk, n) end
+        end
+    end
+    check("N + 1 bloque cabe siempre en el ancho disponible", bad == nil, bad)
+end
+-- Capacidad sigue a N: N = 859 (3440 px a 4 px, con margen) -> 1234 bytes.
+eq("capacidad con N=StripBlocks(3440,4)=859 = 1234 bytes", C.Capacity(ns.StripBlocks(3440, 4)), 1234)
 eq("capacidad con N=860 = 1235 bytes", C.Capacity(860), 1235)
 eq("capacidad con N=5 = 0", C.Capacity(5), 0)
 eq("capacidad con N=6 = 0 (1 nibble de datos no basta)", C.Capacity(6), 0)
