@@ -233,6 +233,29 @@ eq("aprendido: 9001 ya no se ofrece -> origen aprendido", a9001 and a9001.source
 eq("aprendido: 9001 no accesible ahora", a9001 and a9001.accessibleNow, false)
 eq("aprendido: fuente aprendido en el resumen", res.block.sources.aprendido, true)
 
+-- Recompensas aprendidas al ver la mision (QUEST_DETAIL), antes de aceptarla.
+_G.GetQuestID = function() return 9001 end
+_G.GetTitleText = function() return "Un encargo sencillo" end
+_G.GetObjectiveText = function() return "" end
+_G.GetQuestText = function() return "" end
+_G.GetNumQuestChoices = function() return 1 end
+_G.GetQuestItemLink = function() return "|Hitem:7001|h" end
+_G.GetQuestItemInfo = function() return "Tunica", nil, 1, 3, true, 7001 end
+local detailFrame = frameWith("QUEST_DETAIL")
+check("frame de conocimiento registra QUEST_DETAIL", detailFrame ~= nil)
+detailFrame.onEvent(detailFrame, "QUEST_DETAIL")
+local seenRewards = CompaneroWoWDB.knowledge.quests[9001].rewards
+eq("aprendido: recompensa de la mision vista", seenRewards and seenRewards.items[1].itemID, 7001)
+eq("aprendido: la recompensa es elegible", seenRewards and seenRewards.items[1].choice, true)
+S.native.lines = {}
+res = runWindow()
+local r7001 = nil
+for _, r in ipairs(res.rewardItems) do
+    if r.itemID == 7001 then r7001 = r end
+end
+eq("recompensa aprendida llega a los candidatos", r7001 and r7001.source, "aprendido")
+S.native.lines = NATIVE.lines
+
 -- Entrenadores: TRAINER_SHOW anota los servicios disponibles.
 local kFrame = frameWith("TRAINER_SHOW")
 check("frame de conocimiento registra TRAINER_SHOW", kFrame ~= nil)

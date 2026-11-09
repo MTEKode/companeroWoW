@@ -121,6 +121,26 @@ local function questItem(kind, i, isChoice)
     return { itemID = itemID, link = link, count = Num(numItems), choice = isChoice }
 end
 
+-- Recompensas que muestra la ventana de la mision (al ofrecerla o al entregarla): money, xp, items.
+local function captureRewards(q)
+    local items = {}
+    local nRewards = Num(Call("GetNumQuestRewards")) or 0
+    for i = 1, nRewards do
+        local it = questItem("reward", i, false)
+        if it then items[#items + 1] = it end
+    end
+    local nChoices = Num(Call("GetNumQuestChoices")) or 0
+    for i = 1, nChoices do
+        local it = questItem("choice", i, true)
+        if it then items[#items + 1] = it end
+    end
+    q.rewards = {
+        money = Num(Call("GetRewardMoney")),
+        xp = Num(Call("GetRewardXP")),
+        items = items,
+    }
+end
+
 local function onQuestDetail()
     local qid = Num(Call("GetQuestID"))
     if not qid or qid <= 0 then return end
@@ -129,6 +149,7 @@ local function onQuestDetail()
     setIf(q, "title", Str(Call("GetTitleText")))
     setIf(q, "objectivesText", Str(Call("GetObjectiveText")))
     setIf(q, "descriptionText", Str(Call("GetQuestText")))
+    captureRewards(q) -- se aprenden antes de aceptarla: son las recompensas que puede dar
     local npc = unitNPC("npc")
     if npc then
         setIf(q, "giverNpcID", npc.npcID)
@@ -155,22 +176,7 @@ local function onQuestComplete()
         setIf(q, "turnInY", npc.y)
         upsertNPC(npc.npcID, { name = npc.name, mapID = npc.mapID, x = npc.x, y = npc.y, isQuestGiver = true })
     end
-    local items = {}
-    local nRewards = Num(Call("GetNumQuestRewards")) or 0
-    for i = 1, nRewards do
-        local it = questItem("reward", i, false)
-        if it then items[#items + 1] = it end
-    end
-    local nChoices = Num(Call("GetNumQuestChoices")) or 0
-    for i = 1, nChoices do
-        local it = questItem("choice", i, true)
-        if it then items[#items + 1] = it end
-    end
-    q.rewards = {
-        money = Num(Call("GetRewardMoney")),
-        xp = Num(Call("GetRewardXP")),
-        items = items,
-    }
+    captureRewards(q)
     q.lastSeen = ns.Now()
 end
 
