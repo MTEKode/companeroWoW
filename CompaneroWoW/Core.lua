@@ -334,6 +334,9 @@ local function showStatus()
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
     end
+    if ns.Channel then
+        for _, line in ipairs(ns.Channel.StatusLines()) do say(line) end
+    end
 end
 
 local function handleSlash(msg)
@@ -353,6 +356,7 @@ local function handleSlash(msg)
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
         ns.SnapshotAll()
+        if ns.Channel then ns.Channel.ForceCarousel() end -- canal en vivo: reenvia todo al cargar la app
         say("Datos guardados. Recargando la interfaz...")
         ns.Call("ReloadUI")
     elseif cmd == "marca" then

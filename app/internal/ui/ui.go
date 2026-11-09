@@ -47,6 +47,8 @@ type Status struct {
 	Hints           []string `json:"hints"`
 	Notice          string   `json:"notice,omitempty"`
 	Providers       []string `json:"providers"`
+	// Channel is the live data channel line ("Canal en vivo: OK (1.2 KB/s)"); empty when unknown.
+	Channel string `json:"channel,omitempty"`
 }
 
 // Options configures Run.

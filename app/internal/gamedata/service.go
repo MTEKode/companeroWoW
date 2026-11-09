@@ -491,6 +491,9 @@ func (g *Service) activeCharacter() (charEntry, *bridge.SavedVars, bool) {
 			found = true
 		}
 	}
+	if found {
+		best = g.overlayLive(best) // bloques del canal en vivo mas nuevos que SavedVariables
+	}
 	return best, sv, found
 }
 

@@ -28,8 +28,10 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
+load("CompaneroWoW/Json.lua")
 load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Bridge.lua")
+load("CompaneroWoW/Channel.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Questie.lua")
 load("CompaneroWoW/Knowledge.lua")
@@ -322,10 +324,15 @@ ns.InitBridge()
 local function setColorCount()
     return #W.callsNamed("SetColorTexture")
 end
+-- El canal en vivo cambia la trama en cada refresco mientras tenga trozos: aqui se prueba solo
+-- el repintado de la franja, con el canal en silencio.
+local realTick = ns.Channel.Tick
+ns.Channel.Tick = function() return nil end
 W.calls = {}
 ns.BridgeRefresh()
 local first = setColorCount()
-eq("franja: primer refresco pinta los 29 bloques", first, 29)
+eq("franja: primer refresco pinta todos los bloques", first, ns.bridge.blocks)
+eq("franja: 1920 px de ancho = 480 bloques", ns.bridge.blocks, 480)
 W.calls = {}
 ns.BridgeRefresh()
 ns.BridgeRefresh()
@@ -333,7 +340,8 @@ eq("franja: refrescos sin cambio no repintan", setColorCount(), 0)
 S.level = 10
 W.calls = {}
 ns.BridgeRefresh()
-check("franja: un cambio de bytes repinta", setColorCount() == 29)
+check("franja: un cambio de bytes repinta", setColorCount() > 0)
+ns.Channel.Tick = realTick
 
 -- Throttle de QUEST_LOG_UPDATE: como mucho 2 barridos por segundo.
 reset()
