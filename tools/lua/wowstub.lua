@@ -575,6 +575,14 @@ local function gearItems()
         [4110] = gearItem("Escudo de madera", 4, 6, "INVTYPE_SHIELD", 12, 14),
         [4111] = gearItem("Daga de mano izquierda", 2, 15, "INVTYPE_WEAPONOFFHAND", 10, 11),
         [4112] = gearItem("Maza de guerra", 2, 4, "INVTYPE_WEAPONMAINHAND", 17, 19, { uncached = true }),
+        -- Recompensas por el indice inverso de Questie (item.questRewards), para misiones sin datos de FDJ.
+        [4113] = gearItem("Anillo del vigía", 4, 0, "INVTYPE_FINGER", 12, 16, { questRewards = { 3003 } }),
+        [4114] = gearItem("Espada de la guardia", 2, 7, "INVTYPE_WEAPONMAINHAND", 12, 16, { questRewards = { 3003 } }),
+        [4115] = gearItem("Pergamino de la guardia", 0, 0, "", 12, 0, { questRewards = { 3003 } }),
+        [4116] = gearItem("Yelmo de la Corte", 4, 4, "INVTYPE_HEAD", 30, 40, { questRewards = { 3003 } }),
+        [4117] = gearItem("Capa de la guardia", 4, 0, "INVTYPE_CLOAK", 22, 24, { questRewards = { 3013 } }),
+        -- Sin requiredLevel en la ficha de Questie: se conserva en la ventana y el filtro mira GetItemInfo.
+        [4118] = gearItem("Medalla sin ficha", 4, 0, "INVTYPE_TRINKET", nil, 10, { questRewards = { 3012 } }),
     }
 end
 
@@ -696,13 +704,18 @@ function M.installGear(opts)
         return n[key]
     end
     QDB.QueryObjectSingle = function() return nil end
+    -- ItemPointers: todos los objetos (como QuestieDB.ItemPointers, hashmap id -> true).
+    QDB.ItemPointers = {}
+    for id in pairs(items) do QDB.ItemPointers[id] = true end
     QDB.QueryItemSingle = function(id, key)
         local it = G.items[id]
+        if key == "questRewards" then G.questRewardReads = (G.questRewardReads or 0) + 1 end
         if type(it) ~= "table" then return nil end
         if key == "class" then return it.classID end
         if key == "subClass" then return it.subclassID end
         if key == "requiredLevel" then return it.minLevel end
         if key == "name" then return it.name end
+        if key == "questRewards" then return it.questRewards end
         return nil
     end
     local ZDB = {}

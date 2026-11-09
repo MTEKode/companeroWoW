@@ -209,12 +209,26 @@ eq("3001 fin: PNJ 5001", qw.quests[3001].finisher.id, 5001)
 eq("3014 sin inicio", qw.quests[3014].starter, nil)
 eq("3001 recompensa: elegir 4101/4102", table.concat(qw.quests[3001].rewards.choice, ","), "4101,4102")
 eq("3002 recompensa fija 4103", table.concat(qw.quests[3002].rewards.fixed, ","), "4103")
+eq("3001 (FDJ) sin marca de Questie", qw.quests[3001].rewards.rewardsKnownAs, nil)
+
+-- Indice inverso de Questie (item.questRewards) para misiones sin datos de FDJ.
+check("3003 (Questie): elige entre 4113 y 4114 (sin 4116 de nivel 30)",
+    sameSet(qw.quests[3003].rewards.choice, { 4113, 4114 }), table.concat(qw.quests[3003].rewards.choice, ","))
+eq("3003 (Questie): marca questie-reverse", qw.quests[3003].rewards.rewardsKnownAs, "questie-reverse")
+eq("3003 (Questie): sin recompensa fija", #qw.quests[3003].rewards.fixed, 0)
+check("3013 (Questie): 4117 de nivel 22 entra", sameSet(qw.quests[3013].rewards.choice, { 4117 }))
+check("3012 (Questie): objeto sin requiredLevel en la ficha se conserva",
+    sameSet(qw.quests[3012].rewards.choice, { 4118 }))
 
 local cand = c.gearCandidates
 eq("candidatos disponibles", cand.available, true)
 eq("candidatos pendientes: 2 (uncached)", cand.pending, 2)
-check("candidatos: sin los no cargados aun", sameSet(keysOf(cand.items), { 4101, 4103, 4106, 4109 }),
+check("candidatos: sin los no cargados aun (incluye recompensas de Questie usables)",
+    sameSet(keysOf(cand.items), { 4101, 4103, 4106, 4109, 4113, 4117, 4118 }),
     table.concat(keysOf(cand.items), ","))
+check("candidato 4113: fuente de mision de Questie sin choice",
+    cand.items[4113] and cand.items[4113].sources[1].kind == "quest" and cand.items[4113].sources[1].questID == 3003
+    and cand.items[4113].sources[1].choice == nil)
 check("candidato 4101: fuente de mision eligible", cand.items[4101] and cand.items[4101].sources[1].kind == "quest"
     and cand.items[4101].sources[1].questID == 3001 and cand.items[4101].sources[1].choice == true)
 eq("candidato 4109 clase Weapon", cand.items[4109].class, "Weapon")
@@ -276,7 +290,7 @@ fire("ITEM_DATA_LOAD_RESULT", 4112, true)
 settle()
 check("tras la segunda carga: 4112 entra", char().gearCandidates.items[4112] ~= nil)
 eq("sin pendientes al final", char().gearCandidates.pending, nil)
-eq("total de candidatos: 6", count(char().gearCandidates.items), 6)
+eq("total de candidatos: 9", count(char().gearCandidates.items), 9)
 
 setup()
 G.FlushNow()
@@ -284,6 +298,45 @@ fire("ITEM_DATA_LOAD_RESULT", 4105, false)
 settle()
 eq("carga fallida: el objeto se descarta sin error", char().gearCandidates.items[4105], nil)
 eq("carga fallida: solo 4112 sigue pendiente", char().gearCandidates.pending, 1)
+
+-- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+outln("indice inverso de Questie (item.questRewards):")
+local function hasItem(list, id)
+    for _, e in ipairs(list or {}) do
+        if e.itemID == id then return true end
+    end
+    return false
+end
+setup()
+G.FlushNow()
+local rev = ns.QuestWindow.reverse
+check("indice: construido en la exportacion", rev ~= nil)
+eq("indice: 3003 tiene 3 objetos de equipo", rev and #rev.byQuest[3003], 3)
+check("indice: el pergamino (consumible) no entra", rev and not hasItem(rev.byQuest[3003], 4115))
+local function entryOf(list, id)
+    for _, e in ipairs(list or {}) do
+        if e.itemID == id then return e end
+    end
+    return nil
+end
+local e4116 = rev and entryOf(rev.byQuest[3003], 4116)
+check("indice: 4116 entra con requiredLevel 30 de su ficha", e4116 ~= nil and e4116.requiredLevel == 30)
+check("indice: se leyo questRewards", (W.GEAR.questRewardReads or 0) > 0)
+W.GEAR.questRewardReads = 0
+G.FlushNow()
+eq("indice: segunda exportacion de la sesion no lo vuelve a leer", W.GEAR.questRewardReads or 0, 0)
+check("indice: la sesion lo conserva", ns.QuestWindow.reverse == rev)
+
+-- Se construye en trozos: un tick con presupuesto corto no lo termina.
+setup({ bulkItems = 320 })
+S.msStep = 1
+fire("PLAYER_LEVEL_UP")
+W.tickAll()
+check("indice: un tick corto no lo termina", ns.QuestWindow.reverse == nil and G.Busy())
+S.msStep = 0
+settle()
+check("indice: se completa en varios ticks", ns.QuestWindow.reverse ~= nil)
 
 -- ---------------------------------------------------------------------------
 outln("topes (400 misiones, 300 candidatos, 6 mazmorras) y tamano:")

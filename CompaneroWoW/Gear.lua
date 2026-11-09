@@ -466,8 +466,11 @@ local function pipeline(out)
             end
             local mapID, px, py = ns.GetPlayerPosition()
             local res = {}
+            -- Indice inverso de Questie (una vez por sesion; trozos de coroutine dentro de este pipeline).
+            local reverse = nil
+            if db then reverse = QW.ReverseIndexWork(db) end
             QW.Work({
-                db = db, zone = zone, me = me, rewardIdx = QW.RewardIndex(),
+                db = db, zone = zone, me = me, rewardIdx = QW.RewardIndex(), reverse = reverse,
                 mapID = mapID, px = px, py = py, zoneNames = {},
             }, res)
             out.questWindow = res.block
@@ -741,6 +744,7 @@ function G.ResetForTests()
     G.itemCache = {}
     for k in pairs(loading) do loading[k] = nil end
     G.last = nil
+    QW.reverse = nil
 end
 
 -- Puntos de entrada para Core.lua (/compa sync, /compa estado).

@@ -204,12 +204,82 @@ local function copyList(list)
     return out
 end
 
+-- Indice inverso de Questie (item.questRewards). Cache de sesion: QW.reverse =
+-- { byQuest = { [questID] = { {itemID, requiredLevel}, ... } }, items = n }. nil hasta construirlo.
+QW.reverse = nil
+QW.REVERSE_MAX_PER_QUEST = 12
+local REVERSE_CHECK = 40        -- objetos del indice por trozo de coroutine (cada uno son 2-4 lecturas)
+local REVERSE_KEYS_CHECK = 1000 -- claves de ItemPointers por trozo al recogerlas
+
 -- rewards = { choice = {...}, fixed = {...} } o nil si la mision no tiene recompensas conocidas.
-local function rewardsFor(idx, qid)
+-- Primero ForeverDungeonJournal (idx, tal cual). Si no lo tiene, el indice inverso de Questie:
+-- Questie no distingue elegible de fija, asi que todo va en choice con rewardsKnownAs = "questie-reverse".
+-- Objetos sin requiredLevel en la ficha se conservan (el filtro de candidatos los mira despues).
+local function rewardsFor(idx, qid, reverse, level)
     local r = idx[qid]
-    if not r then return nil end
-    if r.choice then return { choice = copyList(r.items), fixed = {} } end
-    return { choice = {}, fixed = copyList(r.items) }
+    if r then
+        if r.choice then return { choice = copyList(r.items), fixed = {} } end
+        return { choice = {}, fixed = copyList(r.items) }
+    end
+    local list = reverse and reverse.byQuest[qid] or nil
+    if not list then return nil end
+    local items = {}
+    for _, e in ipairs(list) do
+        if e.requiredLevel == nil or e.requiredLevel <= level + QW.ABOVE then
+            items[#items + 1] = e.itemID
+            if #items >= QW.REVERSE_MAX_PER_QUEST then break end
+        end
+    end
+    if #items == 0 then return nil end
+    return { choice = items, fixed = {}, rewardsKnownAs = "questie-reverse" }
+end
+
+-- Construye el indice inverso recorriendo QuestieDB.ItemPointers en trozos (coroutine; no cede
+-- dentro de pcall). Guarda solo objetos de clase Armadura (4) o Arma (2) con questRewards.
+-- Una vez por sesion. Devuelve el indice, o nil si Questie no expone ItemPointers (se reintenta
+-- en la siguiente exportacion).
+function QW.ReverseIndexWork(db)
+    if QW.reverse then return QW.reverse end
+    local pointers = type(db) == "table" and db.ItemPointers or nil
+    if type(pointers) ~= "table" then return nil end
+    local ids, n = {}, 0
+    for id in pairs(pointers) do
+        if type(id) == "number" then
+            n = n + 1
+            ids[n] = id
+            if n % REVERSE_KEYS_CHECK == 0 then coroutine.yield(1) end
+        end
+    end
+    local byQuest, kept = {}, 0
+    for i = 1, n do
+        local id = ids[i]
+        local cls = Num(ns.SafeCall(db.QueryItemSingle, id, "class"))
+        if cls == 2 or cls == 4 then
+            local rewards = idList(ns.SafeCall(db.QueryItemSingle, id, "questRewards"))
+            if rewards and #rewards > 0 then
+                local req = Num(ns.SafeCall(db.QueryItemSingle, id, "requiredLevel"))
+                for _, qid in ipairs(rewards) do
+                    local list = byQuest[qid]
+                    if not list then
+                        list = {}
+                        byQuest[qid] = list
+                    end
+                    list[#list + 1] = { itemID = id, requiredLevel = req }
+                end
+                kept = kept + 1
+            end
+        end
+        if i % REVERSE_CHECK == 0 then coroutine.yield(1) end
+    end
+    -- Orden estable por id dentro de cada mision (listas cortas).
+    local k = 0
+    for _, list in pairs(byQuest) do
+        table.sort(list, function(a, b) return a.itemID < b.itemID end)
+        k = k + 1
+        if k % REVERSE_CHECK == 0 then coroutine.yield(1) end
+    end
+    QW.reverse = { byQuest = byQuest, items = kept }
+    return QW.reverse
 end
 
 -- ---------------------------------------------------------------------------
@@ -290,7 +360,7 @@ local function buildEntry(env, f)
     }
     e.starter = firstGiver(db, zone, questField(db, qid, "startedBy"), env.mapID, env.px, env.py)
     e.finisher = firstGiver(db, zone, questField(db, qid, "finishedBy"), env.mapID, env.px, env.py)
-    e.rewards = rewardsFor(env.rewardIdx, qid)
+    e.rewards = rewardsFor(env.rewardIdx, qid, env.reverse, env.me.level)
     return e
 end
 
@@ -368,9 +438,10 @@ function QW.Work(env, res)
         bytes = bytes + size
         quests[f.qid] = e
         if e.rewards then
-            local choice = e.rewards.choice
-            for _, itemID in ipairs(choice) do
-                rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid, choice = true }
+            -- choice = true solo si la eleccion viene de ForeverDungeonJournal (no del indice de Questie).
+            local known = e.rewards.rewardsKnownAs == nil
+            for _, itemID in ipairs(e.rewards.choice) do
+                rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid, choice = known or nil }
             end
             for _, itemID in ipairs(e.rewards.fixed) do
                 rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid }
