@@ -17,3 +17,5 @@ Integrations.lua
 Marks.lua
 Bridge.lua
 Events.lua
+Combat.lua
+Bars.lua

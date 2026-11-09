@@ -293,6 +293,9 @@ local function showHelp()
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
     say("  /compa marca - marca el siguiente paso de tu misión (con Questie)")
     say("  /compa marca borrar - quita la marca de Compañero")
+    say("  /compa barras - resumen de tus barras de acción")
+    say("  /compa barras aplicar <slot>:<spellID>,... - coloca hechizos conocidos (fuera de combate, con copia de seguridad)")
+    say("  /compa barras deshacer - restaura la última copia de seguridad de barras")
 end
 
 local function showStatus()
@@ -320,6 +323,10 @@ local function showStatus()
     if ns.IntegrationsStatusLines then
         for _, line in ipairs(ns.IntegrationsStatusLines()) do say(line) end
     end
+    if ns.CombatStatusLines then
+        for _, line in ipairs(ns.CombatStatusLines()) do say(line) end
+    end
+    if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
@@ -340,6 +347,7 @@ local function handleSlash(msg)
         if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita, antes de recargar
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
+        if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
         ns.SnapshotAll()
         say("Datos guardados. Recargando la interfaz...")
         ns.Call("ReloadUI")
@@ -355,6 +363,8 @@ local function handleSlash(msg)
         else
             say("Uso: /compa strip on|off")
         end
+    elseif cmd == "barras" then
+        if ns.Bars then ns.Bars.Command(raw) else say("Barras no disponibles.") end
     elseif cmd == "estado" then
         showStatus()
     else

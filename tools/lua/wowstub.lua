@@ -813,4 +813,216 @@ function M.uninstallGear()
     M.GEAR = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Combate (Combat.lua): C_DamageMeter de prueba, objetivo, zona y recursos.
+-- Los valores secretos (issecretvalue) son cajas flaggeadas: aritmetica sobre ellas daria error.
+-- M.DM.secretInCombat = true -> las lecturas de sesion dentro de combate devuelven valores secretos.
+-- Todas las lecturas de C_DamageMeter quedan registradas en M.calls con prefijo "C_DamageMeter.".
+-- ---------------------------------------------------------------------------
+local SECRET = setmetatable({}, { __mode = "k" })
+
+function M.secret(v)
+    local box = { v = v }
+    SECRET[box] = true
+    return box
+end
+
+-- Enumeraciones como las de Blizzard (valores de la wiki 12.1.5).
+M.ENUM = {
+    DamageMeterSessionType = { Overall = 0, Current = 1, Expired = 2 },
+    DamageMeterType = { DamageDone = 0, Dps = 1, HealingDone = 2, Hps = 3, Absorbs = 4, Interrupts = 5,
+                        Dispels = 6, DamageTaken = 7, AvoidableDamageTaken = 8, Deaths = 9, EnemyDamageTaken = 10 },
+}
+
+-- Sesion de prueba: f = { duration, guid, damageDone = {total, spells}, healingDone = {...}, damageTaken = {...} }
+-- spells = { {spellID, amount, creature?} }. Se sirve como sesion Current.
+M.DM = { fight = nil, secretInCombat = false, available = true }
+M.SPELL_NAMES = { [585] = "Castigo", [2050] = "Curación", [589] = "Dolor abrasador", [1752] = "Golpe furtivo",
+                  [9999] = "Explosión" }
+
+function M.setFight(f)
+    M.DM.fight = f
+end
+
+local function dmVal(v)
+    if M.DM.secretInCombat and M.state.inCombat then return M.secret(v) end
+    return v
+end
+
+local function dmMeterBlock(f, meter)
+    local E = M.ENUM.DamageMeterType
+    if meter == E.DamageDone then return f.damageDone, f.guid end
+    if meter == E.HealingDone then return f.healingDone, f.guid end
+    if meter == E.DamageTaken then return f.damageTaken, f.guid end
+    return nil, nil
+end
+
+local function dmSpellList(block)
+    local out = {}
+    for _, sp in ipairs(block and block.spells or {}) do
+        -- Formato: { spellID, amount, creature? } (posicional) o { spellID = , amount = , creature = }.
+        local id = sp.spellID or sp[1]
+        local amount = sp.amount or sp[2]
+        local creature = sp.creature or sp[3]
+        out[#out + 1] = { spellID = id, totalAmount = dmVal(amount), amountPerSecond = 0,
+                          creatureName = creature or "Lobo", overkillAmount = 0 }
+    end
+    return out
+end
+
+function M.installCombat()
+    local S = M.state
+    local E = M.ENUM
+    _G.Enum = M.ENUM
+    _G.issecretvalue = function(v) return type(v) == "table" and SECRET[v] == true end
+    _G.InCombatLockdown = function() return S.inCombat == true end
+    _G.UnitName = function(unit)
+        if unit == "target" then return S.target and S.target.name or nil end
+        return "Tester"
+    end
+    _G.UnitExists = function(unit)
+        if unit == "target" then return S.target ~= nil end
+        return unit == "player"
+    end
+    _G.UnitGUID = function(unit)
+        if unit == "target" then return S.target and S.target.guid or nil end
+        return "Player-1-0000AAAA"
+    end
+    _G.UnitLevel = function(unit)
+        if unit == "target" then return S.target and S.target.level or nil end
+        return S.level
+    end
+    _G.UnitClassification = function(unit)
+        if unit == "target" and S.target then return S.target.classification end
+        return nil
+    end
+    _G.UnitCanAttack = function(_, unit) return unit == "target" and S.target ~= nil and S.target.canAttack == true end
+    _G.UnitHealth = function() return dmVal(S.hp) end
+    _G.UnitHealthMax = function() return 100 end
+    _G.UnitPower = function() return dmVal(S.power) end
+    _G.UnitPowerMax = function() return 100 end
+    _G.IsInInstance = function() return S.inInstance == true, "none" end
+    _G.GetRealZoneText = function() return S.zone end
+    _G.C_Spell = _G.C_Spell or {}
+    _G.C_Spell.GetSpellName = function(id) rec("C_Spell.GetSpellName", id); return M.SPELL_NAMES[id] end
+    _G.C_DamageMeter = {
+        IsDamageMeterAvailable = function() return M.DM.available, nil end,
+        GetSessionDurationSeconds = function(sessionType)
+            rec("C_DamageMeter.GetSessionDurationSeconds", sessionType)
+            local f = M.DM.fight
+            return f and dmVal(f.duration) or nil
+        end,
+        GetCombatSessionFromType = function(sessionType, meter)
+            rec("C_DamageMeter.GetCombatSessionFromType", sessionType, meter)
+            local f = M.DM.fight
+            if f == nil or sessionType ~= E.DamageMeterSessionType.Current then return nil end
+            return {
+                totalAmount = 0,
+                durationSeconds = dmVal(f.duration),
+                combatSources = {
+                    { name = "Tester", sourceGUID = f.guid, isLocalPlayer = true, totalAmount = 0 },
+                },
+            }
+        end,
+        GetCombatSessionSourceFromType = function(sessionType, meter, guid)
+            rec("C_DamageMeter.GetCombatSessionSourceFromType", sessionType, meter, guid)
+            local f = M.DM.fight
+            if f == nil or sessionType ~= E.DamageMeterSessionType.Current then return nil end
+            local block, localGuid = dmMeterBlock(f, meter)
+            if block == nil or guid ~= localGuid then return nil end
+            local spells = dmSpellList(block)
+            if M.DM.secretInCombat and S.inCombat then spells = M.secret(spells) end
+            return { totalAmount = dmVal(block.total), maxAmount = 0, combatSpells = spells }
+        end,
+    }
+end
+
+function M.uninstallCombat()
+    for _, name in ipairs({ "Enum", "issecretvalue", "C_DamageMeter", "UnitGUID", "UnitClassification",
+                            "UnitCanAttack", "UnitHealth", "UnitHealthMax", "UnitPower", "UnitPowerMax",
+                            "IsInInstance", "GetRealZoneText" }) do
+        _G[name] = nil
+    end
+    M.DM = { fight = nil, secretInCombat = false, available = true }
+end
+
+-- ---------------------------------------------------------------------------
+-- Barras de accion (Bars.lua): GetActionInfo, bindings, Pickup*/PlaceAction, cursor y hechizos conocidos.
+-- M.BARS.actions[slot] = { type, id } (slot ocupado); M.BARS.bindings[nombre] = tecla; M.BARS.known[spellID].
+-- M.BARS.log = recorder de Pickup*/PlaceAction/ClearCursor (ademas de M.calls).
+-- ---------------------------------------------------------------------------
+M.BARS = nil
+
+function M.installBars()
+    local B = {
+        actions = {}, bindings = {}, known = {}, cursor = nil, macros = {}, items = {},
+        spellNames = {}, numGlobal = 0, numChar = 0,
+        shown = { MultiBarBottomLeft = false, MultiBarBottomRight = false, MultiBarRight = false, MultiBarLeft = false },
+        noPickupSpell = false, noPlaceAction = false,
+    }
+    M.BARS = B
+    _G.GetActionInfo = function(slot)
+        local a = B.actions[slot]
+        if not a then return nil end
+        return a.type, a.id, nil
+    end
+    _G.GetBindingKey = function(name)
+        rec("GetBindingKey", name)
+        return B.bindings[name]
+    end
+    _G.GetMacroInfo = function(i)
+        local m = B.macros[i]
+        if not m then return nil end
+        return m.name, 134400, m.body
+    end
+    _G.GetNumMacros = function() return B.numGlobal, B.numChar end
+    _G.GetCursorInfo = function()
+        if B.cursor then return B.cursor.type, B.cursor.id end
+        return nil
+    end
+    _G.ClearCursor = function() rec("ClearCursor"); B.cursor = nil end
+    _G.PickupAction = function(slot)
+        rec("PickupAction", slot)
+        local a = B.actions[slot]
+        B.cursor = a and { type = a.type, id = a.id } or nil
+        B.actions[slot] = nil
+    end
+    _G.PlaceAction = function(slot)
+        rec("PlaceAction", slot)
+        if B.noPlaceAction then return end
+        if B.cursor then B.actions[slot] = { type = B.cursor.type, id = B.cursor.id } end
+        B.cursor = nil
+    end
+    _G.PickupMacro = function(index)
+        rec("PickupMacro", index)
+        B.cursor = { type = "macro", id = index }
+    end
+    _G.PickupItem = nil
+    _G.C_Item = _G.C_Item or {}
+    _G.C_Item.GetItemNameByID = function(id) return B.items[id] end
+    _G.C_Item.PickupItem = function(id) rec("C_Item.PickupItem", id); B.cursor = { type = "item", id = id } end
+    _G.C_Spell = _G.C_Spell or {}
+    _G.C_Spell.GetSpellName = function(id) rec("C_Spell.GetSpellName", id); return B.spellNames[id] or M.SPELL_NAMES[id] end
+    _G.C_Spell.PickupSpell = function(id)
+        rec("C_Spell.PickupSpell", id)
+        if B.noPickupSpell then return end
+        B.cursor = { type = "spell", id = id }
+    end
+    _G.C_SpellBook = { IsSpellKnown = function(id) rec("C_SpellBook.IsSpellKnown", id); return B.known[id] == true end }
+    _G.MultiBarBottomLeft = { IsShown = function() return B.shown.MultiBarBottomLeft end }
+    _G.MultiBarBottomRight = { IsShown = function() return B.shown.MultiBarBottomRight end }
+    _G.MultiBarRight = { IsShown = function() return B.shown.MultiBarRight end }
+    _G.MultiBarLeft = { IsShown = function() return B.shown.MultiBarLeft end }
+    return B
+end
+
+function M.uninstallBars()
+    for _, name in ipairs({ "GetActionInfo", "GetBindingKey", "GetMacroInfo", "GetNumMacros", "GetCursorInfo",
+                            "ClearCursor", "PickupAction", "PlaceAction", "PickupMacro", "C_SpellBook",
+                            "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight", "MultiBarLeft" }) do
+        _G[name] = nil
+    end
+    M.BARS = nil
+end
+
 return M
