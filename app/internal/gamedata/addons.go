@@ -9,20 +9,18 @@ import (
 )
 
 // Readers of the blocks that the addon exports from the other addons (WhatsTraining,
-// RXPGuides, SkillUpForever) and from its own diagnostics. Each block is optional: a
+// SkillUpForever) and from its own diagnostics. Each block is optional: a
 // missing block, or one that says available=false, answers with a Spanish hint, never with
 // an error. The contract is in the addon's Integrations.lua.
 
 const (
 	hintTraining = "No tengo datos de entrenamiento: activa WhatsTraining en el addon y escribe /compa sync en el juego"
-	hintGuide    = "No tengo datos de la guía: activa RXPGuides en el addon y escribe /compa sync en el juego"
 	hintProfPlan = "No tengo la ruta de profesiones: activa SkillUpForever en el addon y escribe /compa sync en el juego"
 	hintHealth   = "El addon todavía no ha informado de su estado: escribe /compa sync en el juego"
 
 	maxRouteSteps = 5 // recipes per profession, as the addon exports them
 	maxRouteItems = 20
 	maxTrainers   = 3 // trainers listed by que_entrenar
-	maxGuideText  = 160
 )
 
 // addonBlock returns the block `key` of the active character when it is present and
@@ -263,70 +261,6 @@ func spellLabel(sp spellRow) string {
 		return sp.name
 	}
 	return fmt.Sprintf("%s (%s)", sp.name, sp.rank)
-}
-
-// ---- RXPGuides: current step -------------------------------------------------
-
-// Guide returns the RXPGuides step the player is on, with its place and the mark commands.
-func (g *Service) Guide() (any, error) {
-	blk, at, unav := g.addonBlock("guide", hintGuide)
-	if blk == nil {
-		return unav, nil
-	}
-	out := map[string]any{
-		"guia":      str(blk["guideName"]),
-		"grupo":     str(blk["group"]),
-		"paso":      int(numberOf(blk["stepIndex"])),
-		"idPaso":    str(blk["stepId"]),
-		"marcaGuia": "/compa marca guia",
-	}
-	if txt := str(blk["stepText"]); txt != "" {
-		out["texto"] = txt
-	}
-	pos := g.playerPosition()
-	mapID, x, y, ok := readPoint(map[string]any{"mapID": blk["stepMapID"], "x": blk["stepX"], "y": blk["stepY"]})
-	if !ok {
-		out["nota"] = "El paso no trae coordenadas: sigue el texto del paso o mira la guía en el juego."
-		return available("savedvariables", at, out), nil
-	}
-	sp := spawn{MapID: mapID, X: x, Y: y}
-	out["mapId"] = mapID
-	if _, sv, okc := g.activeCharacter(); okc {
-		if zona, err := g.zoneName(mapID, sv); err == nil && zona != "" {
-			out["zona"] = zona
-		}
-	}
-	out["x"], out["y"] = round1(x*100), round1(y*100)
-	out["coords"] = coordsText(x, y)
-	n, _ := nearest([]spawn{sp}, pos)
-	out["mismoMapa"] = n.SameMap
-	if n.SameMap {
-		out["distancia"] = n.Distance
-	}
-	out["marca"] = markCommandFor(sp, pos)
-	return available("savedvariables", at, out), nil
-}
-
-// markCommandFor is /compa marca with x and y only when the player is on the spawn's map,
-// and with the map id otherwise, so that the mark lands on the right map.
-func markCommandFor(s spawn, pos position) string {
-	if pos.OK && pos.MapID == s.MapID {
-		return fmt.Sprintf("/compa marca %.1f %.1f", s.X*100, s.Y*100)
-	}
-	return fmt.Sprintf("/compa marca %d %.1f %.1f", s.MapID, s.X*100, s.Y*100)
-}
-
-// guideSummary is the compact view of the guide for the player context.
-func guideSummary(g *Service) map[string]any {
-	blk, _, _ := g.addonBlock("guide", hintGuide)
-	if blk == nil {
-		return nil
-	}
-	out := map[string]any{"guia": str(blk["guideName"]), "paso": int(numberOf(blk["stepIndex"])), "marcaGuia": "/compa marca guia"}
-	if txt := str(blk["stepText"]); txt != "" {
-		out["texto"] = trimText(txt, maxGuideText)
-	}
-	return out
 }
 
 // ---- SkillUpForever: profession routes ----------------------------------------

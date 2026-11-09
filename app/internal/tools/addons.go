@@ -10,7 +10,7 @@ import (
 )
 
 // Tools that answer from the blocks the addon exports from other addons (WhatsTraining,
-// RXPGuides, SkillUpForever) and from the app's own session tracker.
+// SkillUpForever) and from the app's own session tracker.
 
 // Aliases of the profession arguments, canonical name first.
 var (
@@ -30,24 +30,6 @@ func queEntrenar(g *gamedata.Service) Def {
 			v, err := g.TrainingPlan()
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude preparar el entrenamiento: %v", err)
-			}
-			return jsonResult(v)
-		},
-	}
-}
-
-func pasoGuia(g *gamedata.Service) Def {
-	return Def{
-		Name:        "paso_guia",
-		Description: descPasoGuia,
-		InputSchema: schema(nil),
-		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
-			if g == nil {
-				return Result{}, errNoGame
-			}
-			v, err := g.Guide()
-			if err != nil {
-				return Result{}, fmt.Errorf("no pude leer el paso de la guía: %v", err)
 			}
 			return jsonResult(v)
 		},

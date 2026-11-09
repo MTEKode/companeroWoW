@@ -17,16 +17,6 @@ func TestQueEntrenarAnswersWithSpellsAndTrainer(t *testing.T) {
 	}
 }
 
-func TestPasoGuiaAnswersWithStepAndMark(t *testing.T) {
-	reg := tools.Build(fixtureService(t), nil)
-	text := textOf(t, call(t, reg, "paso_guia", ""))
-	for _, want := range []string{"Orgrimmar 35-40", "Acepta The Warchief's Orders", "/compa marca 51.3 38.5", "/compa marca guia"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("paso_guia misses %q:\n%s", want, text)
-		}
-	}
-}
-
 func TestRutaProfesionAcceptsNameAndSkillLineAliases(t *testing.T) {
 	reg := tools.Build(fixtureService(t), nil)
 	byName := textOf(t, call(t, reg, "ruta_profesion", `{"profesion":"Sastrería"}`))
