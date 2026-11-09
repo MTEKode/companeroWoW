@@ -49,6 +49,10 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(infoMazmorra(g))
 	r.Add(buscarObjeto(g))
 	r.Add(resumenSesion(g))
+	r.Add(analizarRotacion(g))
+	r.Add(revisarCombates(g))
+	r.Add(consejoBarras(g))
+	r.Add(generarComandoBarras(g))
 	r.Add(capturarPantalla())
 
 	getters := []struct {

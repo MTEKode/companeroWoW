@@ -168,10 +168,10 @@ func (s *settingsWin) createControls() {
 	s.hotkey = s.edit(200, 13, 220, 24, 0)
 	setCueBanner(s.hotkey, "Ctrl+Shift+Space")
 
-	s.label("Opacidad (60–100 %)", 16, 48, 180, 20)
+	s.label("Opacidad (60-100 %)", 16, 48, 180, 20)
 	s.opacity = s.edit(200, 45, 80, 24, esNumber)
 
-	s.label("Tamaño de letra (9–14 pt)", 16, 80, 180, 20)
+	s.label("Tamaño de letra (9-14 pt)", 16, 80, 180, 20)
 	s.font = s.edit(200, 77, 80, 24, 0)
 
 	s.label("Orden de proveedores", 16, 112, 180, 20)

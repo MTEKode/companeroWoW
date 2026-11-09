@@ -66,6 +66,15 @@ type Question struct {
 	// Item names an item that the player asks about. When the tool output holds it, the answer
 	// must name it; when it does not, the answer must say it has no data. It never invents one.
 	Item string
+	// List means the answer is a short list (rotation priorities, combat fixes, a layout table),
+	// so the length limit is wider.
+	List bool
+	// Spells means the answer must name at least two spells of the player's spellbook, as the tools
+	// gave them.
+	Spells bool
+	// Command means the answer must give a "/compa barras aplicar" command that the game accepts:
+	// known spell ids, slots from 1 to 120, at most 40 pairs and at most 255 characters.
+	Command bool
 }
 
 // webTools are the tools that search or read the web: a question that uses them gets the
@@ -90,6 +99,10 @@ var Questions = []Question{
 	{ID: "q14", Text: "¿Qué misiones puedo hacer ya?", Location: true, Tools: []string{"misiones_disponibles", "contexto_jugador"}},
 	{ID: "q15", Text: "¿Qué mazmorra me conviene y qué saco de ella?", Location: true, Tools: []string{"info_mazmorra", "analizar_equipo"}},
 	{ID: "q16", Text: "¿Dónde consigo la Capucha de Hilo Sagrada?", Item: "Capucha de Hilo Sagrada", Tools: []string{"buscar_objeto", "analizar_equipo"}},
+	{ID: "q17", Text: "Revisa mi rotación", List: true, Spells: true, Tools: []string{"analizar_rotacion"}},
+	{ID: "q18", Text: "¿Qué estoy haciendo mal en los combates?", List: true, Tools: []string{"revisar_combates"}},
+	{ID: "q19", Text: "¿Por qué he muerto?", List: true, Tools: []string{"revisar_combates"}},
+	{ID: "q20", Text: "Colócame las barras", List: true, Command: true, Tools: []string{"consejo_barras"}},
 }
 
 // Asker answers one question as the first of a conversation (the assistant's Answer).
@@ -273,7 +286,7 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 	lines := nonEmptyLines(trimmed)
 	if !q.Detail {
 		maxLines, maxChars := maxAnswerLines, maxAnswerChars
-		if q.Gear {
+		if q.Gear || q.List {
 			maxLines, maxChars = maxGearLines, maxGearChars
 		}
 		chars := len([]rune(trimmed))
@@ -306,6 +319,12 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 	if q.Item != "" {
 		out = append(out, itemCheck(q.Item, answer, ev))
 	}
+	if q.Spells {
+		out = append(out, spellsCheck(trimmed, ev))
+	}
+	if q.Command {
+		out = append(out, barCommandCheck(answer, ev))
+	}
 	out = append(out, quotedNamesCheck(answer, ev))
 	out = append(out, groundingCheck(answer, ev))
 	return out
@@ -337,6 +356,101 @@ func itemCheck(item, answer string, ev Evidence) Check {
 	}
 	return Check{Name: "objeto", OK: containsAny(low, noDataPhrases),
 		Detail: fmt.Sprintf("«%s» no está en las herramientas: la respuesta debe decir que no tiene datos", item)}
+}
+
+// spellNamesOf returns the spell names of the "hechizos" list that analizar_rotacion returns. The
+// keys are sorted in that output, so the list ends before "instrucciones".
+func spellNamesOf(text string) []string {
+	i := strings.Index(text, `"hechizos"`)
+	if i < 0 {
+		return nil
+	}
+	seg := text[i:]
+	if j := strings.Index(seg, `"instrucciones"`); j > 0 {
+		seg = seg[:j]
+	}
+	var out []string
+	for _, m := range spellNameRE.FindAllStringSubmatch(seg, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+var spellNameRE = regexp.MustCompile(`"nombre":\s*"([^"]+)"`)
+
+// spellsCheck fails when a rotation answer names fewer than two spells of the spellbook the tools
+// gave: the rotation must be built from those spells, not from memory.
+func spellsCheck(answer string, ev Evidence) Check {
+	// The names are read from the raw output: "Shadow Word: Pain" keeps its space.
+	names := spellNamesOf(ev.text())
+	low := strings.ToLower(answer)
+	named := 0
+	for _, n := range names {
+		if strings.Contains(low, strings.ToLower(n)) {
+			named++
+		}
+	}
+	return Check{Name: "hechizos", OK: named >= 2 && named <= len(names),
+		Detail: fmt.Sprintf("debe nombrar al menos 2 hechizos de su libro (%d nombrados de %d conocidos)", named, len(names))}
+}
+
+const barsApply = "/compa barras aplicar"
+
+var barPairRE = regexp.MustCompile(`^(\d{1,3}):(\d+)$`)
+
+// barCommandCheck fails when the answer's /compa barras aplicar commands would not work in the game:
+// each pair is slot:spellID with the slot from 1 to 120 and a spell id the tools gave, the commands
+// hold at most 40 pairs in total and each one fits in 255 characters.
+func barCommandCheck(answer string, ev Evidence) Check {
+	var cmds []string
+	for _, line := range strings.Split(strings.ReplaceAll(answer, "\r\n", "\n"), "\n") {
+		if i := strings.Index(line, barsApply); i >= 0 {
+			cmds = append(cmds, strings.TrimSpace(line[i:]))
+		}
+	}
+	if len(cmds) == 0 {
+		return Check{Name: "comando_barras", OK: false, Detail: "debe dar al menos un comando «/compa barras aplicar»"}
+	}
+	evidence := strings.NewReplacer(": ", ":").Replace(ev.text())
+	var problems []string
+	pairs := 0
+	for _, c := range cmds {
+		if n := len([]rune(c)); n > 255 {
+			problems = append(problems, fmt.Sprintf("comando de %d caracteres (máximo 255)", n))
+		}
+		args := strings.TrimSpace(strings.TrimPrefix(c, barsApply))
+		if args == "" {
+			problems = append(problems, "comando sin pares")
+			continue
+		}
+		for _, p := range strings.Split(args, ",") {
+			m := barPairRE.FindStringSubmatch(strings.TrimSpace(p))
+			if m == nil {
+				problems = append(problems, "par mal formado: "+strings.TrimSpace(p))
+				continue
+			}
+			pairs++
+			if slot, _ := strconv.Atoi(m[1]); slot < 1 || slot > 120 {
+				problems = append(problems, "ranura fuera de 1 a 120: "+m[1])
+			}
+			if !spellIDRE(m[2]).MatchString(evidence) {
+				problems = append(problems, "hechizo "+m[2]+" no está en las herramientas")
+			}
+		}
+	}
+	if pairs > 40 {
+		problems = append(problems, fmt.Sprintf("%d pares (máximo 40)", pairs))
+	}
+	if len(problems) > 0 {
+		return Check{Name: "comando_barras", OK: false, Detail: strings.Join(problems, "; ")}
+	}
+	return Check{Name: "comando_barras", OK: true,
+		Detail: fmt.Sprintf("%d comando(s) válidos, %d pares con hechizos de las herramientas", len(cmds), pairs)}
+}
+
+// spellIDRE matches a spell id in normalised tool output ("id":585 followed by a delimiter).
+func spellIDRE(id string) *regexp.Regexp {
+	return regexp.MustCompile(`"id":` + regexp.QuoteMeta(id) + `\D`)
 }
 
 // quotedNamesCheck fails when a name the answer quotes (between «» ) is not in the data the
