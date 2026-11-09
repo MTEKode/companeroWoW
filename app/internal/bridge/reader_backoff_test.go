@@ -102,26 +102,46 @@ func TestReaderResetsToPollIntervalOnSuccess(t *testing.T) {
 	}
 }
 
-func TestReaderWindowFallbackRunsAtMostEvery2s(t *testing.T) {
+func TestReaderWindowFallbackRunsAtPollRate(t *testing.T) {
 	f := newFakeReader(t)
-	for i := 0; i < 8; i++ { // 8 polls, all within 2 s of each other
-		f.r.step()
+	f.window = validStrip(3) // the screen copy is covered; WoW's own render decodes
+	for i := 0; i < 8; i++ {
+		if got := f.r.step(); got != f.r.pollEvery {
+			t.Fatalf("poll %d while covered: wait %v, want %v", i, got, f.r.pollEvery)
+		}
+		f.clock.advance(f.r.pollEvery)
 	}
-	if f.windowCalls != 1 {
-		t.Fatalf("window fallback ran %d times in one burst, want 1", f.windowCalls)
+	if f.windowCalls != 8 {
+		t.Fatalf("window fallback ran %d times over 8 covered polls, want 8", f.windowCalls)
 	}
-	f.clock.advance(windowGrabEvery - time.Millisecond)
+	if f.screenCalls != 1 {
+		t.Fatalf("screen copy tried %d times in 2 s while on the window path, want 1 (the first poll)", f.screenCalls)
+	}
+	if got := f.r.channel.Source(); got != SourceWindow {
+		t.Fatalf("source %q, want %q", got, SourceWindow)
+	}
+}
+
+func TestReaderReturnsToScreenAfterRetry(t *testing.T) {
+	f := newFakeReader(t)
+	f.window = validStrip(4)
+	f.r.step() // covered: the screen copy fails, WoW's render decodes
+	f.clock.advance(screenRetryEvery - time.Millisecond)
 	f.r.step()
-	if f.windowCalls != 1 {
-		t.Fatalf("window fallback ran %d times before 2 s, want 1", f.windowCalls)
+	if f.screenCalls != 1 {
+		t.Fatalf("screen copy retried before %v: %d calls", screenRetryEvery, f.screenCalls)
 	}
-	f.clock.advance(2 * time.Millisecond)
+	f.clock.advance(time.Millisecond)
+	f.screen = validStrip(5) // the cover is gone
 	f.r.step()
+	if f.screenCalls != 2 {
+		t.Fatalf("screen copy calls = %d after %v, want 2", f.screenCalls, screenRetryEvery)
+	}
+	if got := f.r.channel.Source(); got != SourceScreen {
+		t.Fatalf("source %q after the screen decoded, want %q", got, SourceScreen)
+	}
 	if f.windowCalls != 2 {
-		t.Fatalf("window fallback ran %d times after 2 s, want 2", f.windowCalls)
-	}
-	if f.screenCalls != 10 {
-		t.Fatalf("screen strip read %d times, want 10 (every poll)", f.screenCalls)
+		t.Fatalf("window calls = %d, want 2 (none after the switch back)", f.windowCalls)
 	}
 }
 

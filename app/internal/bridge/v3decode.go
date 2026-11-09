@@ -121,20 +121,43 @@ func (s *v3Image) headerAt(p float64) (int, error) {
 		return 0, fmt.Errorf("%w: got %d, want %d", ErrBadVersion, hdr[0], ProtocolV3)
 	}
 	n := int(hdr[2]) | int(hdr[3])<<8
-	if n <= calibrationBlocks || n > MaxBlocksV3 || n > s.blocksFit(p) {
-		return 0, fmt.Errorf("%w: header names %d blocks, the row holds %d", ErrBadLength, n, s.blocksFit(p))
+	// The addon sizes the row as floor(clientWidth/4) blocks, so a header naming more than
+	// that is not a frame of this window. A header naming more blocks than are on screen is
+	// fine: the window's right edge may cut the row (see readAt).
+	if n <= calibrationBlocks || n > MaxBlocksV3 || n > s.w/BlockPx+1 {
+		return 0, fmt.Errorf("%w: header names %d blocks, the %d px row holds at most %d", ErrBadLength, n, s.w, s.w/BlockPx+1)
 	}
 	return n, nil
 }
 
-// readAt decodes the whole frame of n blocks at pitch p. The CRCs decide whether it is right.
+// visibleBlocks is how many blocks of the row at pitch p have their centre inside the row.
+// A window whose right part is covered, or a row wider than the screen, shows only these.
+func (s *v3Image) visibleBlocks(p float64) int {
+	n := int(math.Ceil(float64(s.w)/p - 0.5))
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// readAt decodes the frame of n blocks at pitch p from the blocks that are on screen. When
+// the row is cut short (n*p beyond the row), the frame's CRC-16 covers bytes that are not
+// there: only a chunk that ends inside the visible part decodes, and bigger ones fail with
+// ErrBadLength. The CRCs decide whether the frame is right.
 func (s *v3Image) readAt(p float64, n int) (FrameV3, error) {
 	cal, _, err := s.calibrateAt(p)
 	if err != nil {
 		return FrameV3{}, err
 	}
 	y := rowFor(p)
-	all := make([][3]byte, n-calibrationBlocks)
+	last := n
+	if vis := s.visibleBlocks(p); vis < last {
+		last = vis
+	}
+	if last <= calibrationBlocks {
+		return FrameV3{}, fmt.Errorf("%w: only %d blocks of the frame are on screen", ErrBadLength, last)
+	}
+	all := make([][3]byte, last-calibrationBlocks)
 	for i := range all {
 		all[i] = s.sample(calibrationBlocks+i, p, y)
 	}

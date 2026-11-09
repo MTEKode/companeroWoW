@@ -47,13 +47,14 @@ type bitmapInfoHeader struct {
 	ClrImportant  uint32
 }
 
-// windowGrabber holds the GDI objects of the PrintWindow fallback between calls. The
-// full-window bitmap is kept while the client size is unchanged, and the strip is
-// cropped into a bitmap of the strip's size that is read back, so each call copies only
-// the strip (the client width x StripHeightV3) to Go memory. The zero value is ready to use.
+// windowGrabber holds the GDI objects of the PrintWindow fallback between calls. The render
+// bitmap is kept while the client width is unchanged. It has the strip's size, not the
+// client's: PrintWindow draws the window from its top-left corner and keeps only what fits
+// the bitmap, so each call renders the top StripHeightV3 rows and copies just those to Go
+// memory. The zero value is ready to use.
 type windowGrabber struct {
-	w, h    int     // size of the full-window bitmap
-	memFull uintptr // DC holding the full-window bitmap
+	w, h    int     // size of the render bitmap (the client width x StripHeightV3)
+	memFull uintptr // DC holding the render bitmap
 	bmpFull uintptr
 	cw, ch  int     // size of the crop bitmap
 	memCrop uintptr // DC holding the strip-sized bitmap
@@ -73,7 +74,7 @@ func (g *windowGrabber) grab(hwnd uintptr, rect image.Rectangle) (*image.RGBA, e
 	if hwnd == 0 || w < 8*BlockPx || h < ch {
 		return nil, fmt.Errorf("bridge: window %#x client %dx%d too small for the strip", hwnd, w, h)
 	}
-	if err := g.ensure(w, h); err != nil {
+	if err := g.ensure(w, ch); err != nil {
 		return nil, err
 	}
 	if err := g.ensureCrop(cw, ch); err != nil {
@@ -84,8 +85,8 @@ func (g *windowGrabber) grab(hwnd uintptr, rect image.Rectangle) (*image.RGBA, e
 		return nil, errors.New("bridge: PrintWindow failed")
 	}
 
-	// Crop: select the strip-sized bitmap, copy the top-left region into it, deselect it
-	// (GetDIBits needs the bitmap unselected).
+	// Copy the rendered strip into the crop bitmap, then deselect it (GetDIBits needs the
+	// bitmap unselected).
 	if old, _, _ := procSelObj.Call(g.memCrop, g.bmpCrop); old == 0 {
 		return nil, errors.New("bridge: SelectObject failed")
 	}
@@ -122,7 +123,7 @@ func (g *windowGrabber) grab(hwnd uintptr, rect image.Rectangle) (*image.RGBA, e
 	return img, nil
 }
 
-// ensure makes sure the full-window bitmap is w x h.
+// ensure makes sure the render bitmap is w x h.
 func (g *windowGrabber) ensure(w, h int) error {
 	if g.memFull != 0 && g.w == w && g.h == h {
 		return nil

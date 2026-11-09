@@ -161,7 +161,7 @@ func TestChannelFeedsRateStatusAndFreshness(t *testing.T) {
 	}
 	at := now.Add(2 * time.Second)
 	s, ok := c.Status(at)
-	if !ok || !strings.HasPrefix(s, "Canal en vivo: OK (") || !strings.HasSuffix(s, "KB/s)") {
+	if !ok || s != "Canal en vivo: OK (pantalla)" {
 		t.Fatalf("status %q ok %v", s, ok)
 	}
 	if _, ok := c.Status(at.Add(10 * time.Second)); ok {

@@ -13,10 +13,11 @@ const diagChannelWait = 2500 * time.Millisecond
 // channelDiag is the live channel part of --diag: the status line and, per message type,
 // how old the latest message is.
 type channelDiag struct {
-	Status string      `json:"status"`
-	Live   bool        `json:"live"`
-	KBps   float64     `json:"kbPerSec"`
-	Frames int64       `json:"frames"`
+	Status string     `json:"status"`
+	Source string     `json:"source"`
+	Live   bool       `json:"live"`
+	KBps   float64    `json:"kbPerSec"`
+	Frames int64      `json:"frames"`
 	Types  []typeDiag `json:"types"`
 }
 
@@ -41,6 +42,7 @@ func diagChannel(wait time.Duration) *channelDiag {
 	text, live := ch.Status(now)
 	out := &channelDiag{
 		Status: text,
+		Source: ch.Source(),
 		Live:   live,
 		KBps:   ch.Data.Rate(now) / 1024,
 		Frames: ch.Data.Frames(),

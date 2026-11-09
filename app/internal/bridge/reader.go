@@ -22,8 +22,10 @@ const (
 	retryEvery     = 2 * time.Second
 	slowRetryEvery = 5 * time.Second
 	slowAfterFails = 5
-	// windowGrabEvery bounds the PrintWindow fallback, which renders the whole client.
-	windowGrabEvery = 2 * time.Second
+	// screenRetryEvery is how often the screen copy is tried again while the strip is read
+	// from WoW's own render (a window covers WoW). The reader switches back as soon as the
+	// screen copy decodes.
+	screenRetryEvery = 5 * time.Second
 )
 
 // FindWoWWindow returns the WoW window handle and its client-area rectangle in
@@ -49,9 +51,10 @@ type Reader struct {
 	subs    []func(LiveState) // see Subscribe; guarded by mu
 
 	// Poll-loop state, used only by the run goroutine (step).
-	failStreak     int
-	pitch          float64   // pitch of the last successful decode; 0 when unknown
-	lastWindowGrab time.Time // when the PrintWindow fallback last ran
+	failStreak    int
+	pitch         float64   // pitch of the last successful decode; 0 when unknown
+	onWindow      bool      // the last good read came from WoW's own render (PrintWindow)
+	lastScreenTry time.Time // when the screen copy was last tried
 
 	// channel receives the v3 frames: messages reassembled into LiveData. Set once in NewReader.
 	channel *Channel
@@ -164,35 +167,59 @@ func (r *Reader) pollOnce() error {
 
 // readStrip decodes the strip at the top-left of WoW's client area rect: the top
 // StripHeightV3 rows at the client's full width (v3 spans the width; v2 uses its
-// left 464 px). It first copies the strip from the screen, which is cheap. If that does
-// not decode, a window on top of WoW (the companion app, a browser) is probably covering
-// the strip, so it asks WoW to render its own content instead. That fallback runs at
-// most once per windowGrabEvery.
+// left 464 px).
+//
+// It copies the strip from the screen first, which is cheap. When that does not decode,
+// a window on top of WoW (the companion app, a browser) is probably covering the strip,
+// so the strip is read from WoW's own render (PrintWindow) instead, at the poll rate, for
+// as long as that decodes. While it does, the screen copy is retried every
+// screenRetryEvery, and the reader switches back to the screen as soon as it decodes.
 func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) {
+	now := r.now()
+	var screenErr error
+	if !r.onWindow || now.Sub(r.lastScreenTry) >= screenRetryEvery {
+		r.lastScreenTry = now
+		dec, err := r.decodeScreen(rect)
+		if err == nil {
+			r.onWindow = false
+			r.channel.SetSource(SourceScreen)
+			return dec, nil
+		}
+		screenErr = err
+	}
+	own, err := r.grabWindow(hwnd, rect)
+	if err != nil {
+		if screenErr != nil {
+			return Decoded{}, screenErr
+		}
+		return Decoded{}, err
+	}
+	dec, err := DecodeAny(own, r.pitch)
+	if err != nil {
+		if screenErr != nil {
+			return Decoded{}, screenErr
+		}
+		return Decoded{}, err
+	}
+	r.pitch = dec.Pitch
+	r.onWindow = true
+	r.channel.SetSource(SourceWindow)
+	return dec, nil
+}
+
+// decodeScreen copies the strip from the screen and decodes it.
+func (r *Reader) decodeScreen(rect image.Rectangle) (Decoded, error) {
 	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+rect.Dx(), rect.Min.Y+StripHeightV3)
 	img, err := r.grabScreen(strip)
 	if err != nil {
 		return Decoded{}, fmt.Errorf("grab pixel strip: %w", err)
 	}
 	dec, err := DecodeAny(img, r.pitch)
-	if err == nil {
-		r.pitch = dec.Pitch
-		return dec, nil
-	}
-	now := r.now()
-	if !r.lastWindowGrab.IsZero() && now.Sub(r.lastWindowGrab) < windowGrabEvery {
+	if err != nil {
 		return Decoded{}, err
 	}
-	r.lastWindowGrab = now
-	own, gerr := r.grabWindow(hwnd, rect)
-	if gerr != nil {
-		return Decoded{}, err
-	}
-	if dec2, err2 := DecodeAny(own, r.pitch); err2 == nil {
-		r.pitch = dec2.Pitch
-		return dec2, nil
-	}
-	return Decoded{}, err
+	r.pitch = dec.Pitch
+	return dec, nil
 }
 
 // lost is called when WoW is not visible. The next valid read starts a new
