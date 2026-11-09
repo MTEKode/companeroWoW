@@ -279,15 +279,15 @@ func executableDir() string {
 	return filepath.Dir(exe)
 }
 
-// avoidStrip returns the WoW pixel strip at the top-left of the client area. The bridge
-// reads it from the screen, so the overlay must never cover it. The bridge's strip
-// (StripWidth x StripHeight) is larger than the minimum the overlay needs, so it is used.
+// avoidStrip returns the protected band of the WoW client: the top StripHeightV3 rows over the
+// whole client width, where the pixel channel is drawn (protocol v3 spans the width). The
+// bridge reads it from the screen, so the overlay must never cover it.
 func avoidStrip() (ui.Rect, bool) {
 	_, rect, err := bridge.FindWoWWindow()
 	if err != nil {
 		return ui.Rect{}, false
 	}
-	return ui.Rect{X: rect.Min.X, Y: rect.Min.Y, W: bridge.StripWidth, H: bridge.StripHeight}, true
+	return ui.Rect{X: rect.Min.X, Y: rect.Min.Y, W: rect.Dx(), H: bridge.StripHeightV3}, true
 }
 
 // buildStatus gathers what the status bar shows. It is called by the UI every two seconds.
@@ -311,6 +311,10 @@ func buildStatus(g *gamedata.Service, providers []string, sv *bridge.SVWatcher, 
 				s.Zone = zone
 			}
 		}
+	}
+
+	if text, _, _ := g.ChannelFreshness(time.Now()); text != "" {
+		s.Channel = text
 	}
 
 	ageKnown := false
@@ -417,6 +421,7 @@ type diagReport struct {
 	Proactive           bool           `json:"proactive"`
 	SkillVersion        string         `json:"skillVersion"`
 	SkillInstalled      bool           `json:"skillInstalled"`
+	Channel             *channelDiag   `json:"channel,omitempty"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -451,6 +456,9 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		} else {
 			rep.SavedVariablesError = err.Error()
 		}
+	}
+	if rep.WoWDetected {
+		rep.Channel = diagChannel(diagChannelWait)
 	}
 	rep.Providers = providerReport(cfg, dir)
 	rep.AvailableProviders = availableProviders(rep.Providers)

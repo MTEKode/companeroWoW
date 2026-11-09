@@ -1,28 +1,50 @@
--- Bridge.lua: franja de pixeles (addon -> app), protocolo v2 (robusto a escalado y desplazamiento de color).
--- BuildPayload, EncodeBlocks y ComputePixelSize son funciones puras (testeables offline).
--- GameWindowHeight consulta la API (C_VideoOptions, CVar, GetPhysicalScreenSize) y se prueba con stubs.
--- Los arrays son 1-based: byte k (0-based del contrato) = payload[k + 1].
+-- Bridge.lua: franja de pixeles (addon -> app).
+-- Protocolo v3 (activo): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo ancho de
+-- la ventana: N = min(floor(anchoFisico / 4), 1024) bloques. Bloques 1..5 = magia y calibracion
+-- (igual que v2); bloques 6..N = flujo de nibbles (3 por bloque). El contenido del flujo lo
+-- construye Channel.lua (cabecera, estado, trozo de mensaje y CRC-16).
+-- Protocolo v2 (solo codificador de referencia para tests; el addon ya no lo emite).
+-- BuildPayload, EncodeBlocks, EncodeFrameColors, BlockCount y ComputePixelSize son funciones
+-- puras (testeables offline). GameWindowSize consulta la API y se prueba con stubs.
+-- Los arrays son 1-based: byte k (0-based del contrato) = array[k + 1].
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
 local Call, Clean, Num = ns.Call, ns.Clean, ns.Num
 local floor = math.floor
+local min, max = math.min, math.max
 
 local PAYLOAD_LEN = 32
-local PROTOCOL_VERSION = 2
-local BLOCK_COUNT = 29          -- 5 de magia/calibracion + 24 de datos
+local PROTOCOL_V2 = 2
+local PROTOCOL_V3 = 3
+local BLOCK_COUNT_V2 = 29       -- v2: 5 de magia/calibracion + 24 de datos
 local BLOCK_PX = 4              -- lado nominal de cada bloque, en pixeles fisicos
+local MAX_BLOCKS = 1024         -- tope de bloques de la fila (v3)
+local DEFAULT_BLOCKS = 256      -- ancho desconocido: fila de 1024 px fisicos
+local CALIB_BLOCKS = 5          -- bloques 1..5 fijos (magia y calibracion)
 local REFRESH_SEC = 0.2
 local REFERENCE_UNITS = 768     -- fallback: 1 pixel fisico = 768 / altura fisica unidades de UI
 local NIBBLE_STEP = 17          -- nibble n se codifica como n * 17 (0..255)
 
+-- Colores de los bloques 1..5 (v2 y v3): magia, magia, calibracion x3.
+local CAL_COLORS = {
+    { 255, 0, 255 }, { 0, 255, 255 },
+    { 5 * NIBBLE_STEP, 10 * NIBBLE_STEP, 0 },
+    { 10 * NIBBLE_STEP, 5 * NIBBLE_STEP, 5 * NIBBLE_STEP },
+    { 0, 15 * NIBBLE_STEP, 10 * NIBBLE_STEP },
+}
+
 ns.bridge = ns.bridge or {}
 local B = ns.bridge
-B.seq = B.seq or 0            -- uint8, sube cuando cambia el payload
-B.payload = B.payload or nil  -- ultimo payload pintado
+B.seq = B.seq or 0            -- uint8, sube cuando cambia el contenido de la trama
+B.bytes = B.bytes or nil      -- ultima trama (array de bytes, 1-based)
+B.payload = B.payload or nil  -- ultimo estado (32 bytes) pintado
 B.acc = B.acc or 0            -- acumulador del throttle de OnUpdate
 B.pixel = B.pixel or (REFERENCE_UNITS / 1080)
+B.blocks = B.blocks or 0      -- N bloques de la fila (v3)
 B.tex = B.tex or {}
+B.colors = B.colors or {}     -- colores calculados en este refresco (codigo r*65536+g*256+b)
+B.painted = B.painted or {}   -- colores ya pintados
 B.lastEventCode = B.lastEventCode or 0
 B.eventSeq = B.eventSeq or 0
 B.eventArg = B.eventArg or 0
@@ -63,6 +85,7 @@ local function flagsOf(s)
 end
 
 -- state (tabla) -> array de 32 bytes (1-based) con CRC-8 en la posicion 32.
+-- Estado de la trama v3 y v2 (identico): ver docs/README "Protocolo".
 function ns.BuildPayload(s)
     s = s or {}
     local p = {}
@@ -86,17 +109,59 @@ function ns.BuildPayload(s)
     return p
 end
 
--- payload (32 bytes) + seq -> 29 bloques {r, g, b} (protocolo v2).
+-- Numero de bloques de la fila v3 para un ancho fisico: min(floor(ancho / 4), 1024).
+-- Ancho desconocido -> DEFAULT_BLOCKS. Nunca menos de CALIB_BLOCKS + 1.
+function ns.BlockCount(widthPx)
+    local w = tonumber(widthPx)
+    if not w or w <= 0 then return DEFAULT_BLOCKS end
+    return max(CALIB_BLOCKS + 1, min(floor(w / BLOCK_PX), MAX_BLOCKS))
+end
+
+-- Codigo de color (r*65536 + g*256 + b) de un bloque, y su inverso para pintar.
+local function colorCode(r, g, b)
+    return r * 65536 + g * 256 + b
+end
+
+-- Nibble k (0-based) de la trama: byte k/2 (1-based j = floor(k/2)+1), nibble alto si k es par.
+local function nibbleAt(frame, nbytes, k)
+    local j = floor(k / 2) + 1
+    if j > nbytes then return 0 end
+    local byte = frame[j]
+    if k % 2 == 0 then return floor(byte / 16) end
+    return byte % 16
+end
+
+-- Trama v3 (bytes, 1-based) -> colores de los N bloques (codigo r*65536+g*256+b).
+-- Escribe en out (reutilizable) y lo devuelve. Bloques 1..5 fijos; 6..N = nibbles.
+-- Nibbles mas alla de la trama valen 0.
+function ns.EncodeFrameColors(frame, N, out)
+    out = out or {}
+    for i = 1, CALIB_BLOCKS do
+        local c = CAL_COLORS[i]
+        out[i] = colorCode(c[1], c[2], c[3])
+    end
+    local nbytes = #frame
+    for b = CALIB_BLOCKS + 1, N do
+        local k = (b - CALIB_BLOCKS - 1) * 3 -- nibble del canal R (0-based)
+        local r = nibbleAt(frame, nbytes, k) * NIBBLE_STEP
+        local g = nibbleAt(frame, nbytes, k + 1) * NIBBLE_STEP
+        local bl = nibbleAt(frame, nbytes, k + 2) * NIBBLE_STEP
+        out[b] = colorCode(r, g, bl)
+    end
+    for i = N + 1, #out do out[i] = nil end
+    return out
+end
+
+-- payload (32 bytes) + seq -> 29 bloques {r, g, b} (protocolo v2, solo referencia).
 -- Bloques (1-based): 1 = magia (255,0,255); 2 = magia (0,255,255);
 -- 3 = calibracion (85,170,0); 4 = calibracion (170,85,85); 5 = calibracion (0,255,170);
 -- 6..29 = datos: 72 nibbles (3 por bloque, orden R,G,B).
--- Los bloques 1..5 dan a cada canal los niveles 0, 85, 170 y 255.
 -- Flujo de bytes: [version=2, seq, 32] ++ payload[32] = 35 bytes = 70 nibbles,
 -- cada byte con el nibble alto primero, y 2 nibbles de relleno a 0.
 -- Cada nibble n se codifica como n * 17.
 function ns.EncodeBlocks(payload, seq)
     local sq = floor(tonumber(seq) or 0) % 256
-    local stream = { PROTOCOL_VERSION, sq, PAYLOAD_LEN }
+    local stream = { PROTOCOL_V2, sq, PAYLOAD_LEN }
     for k = 1, PAYLOAD_LEN do
         stream[3 + k] = payload[k] or 0
     end
@@ -109,12 +174,11 @@ function ns.EncodeBlocks(payload, seq)
     nib[72] = 0 -- relleno
 
     local blocks = {}
-    blocks[1] = { 255, 0, 255 }
-    blocks[2] = { 0, 255, 255 }
-    blocks[3] = { 5 * NIBBLE_STEP, 10 * NIBBLE_STEP, 0 }
-    blocks[4] = { 10 * NIBBLE_STEP, 5 * NIBBLE_STEP, 5 * NIBBLE_STEP }
-    blocks[5] = { 0, 15 * NIBBLE_STEP, 10 * NIBBLE_STEP }
-    for b = 6, BLOCK_COUNT do
+    for i = 1, CALIB_BLOCKS do
+        local c = CAL_COLORS[i]
+        blocks[i] = { c[1], c[2], c[3] }
+    end
+    for b = 6, BLOCK_COUNT_V2 do
         local triple = {}
         for c = 1, 3 do
             triple[c] = nib[(b - 6) * 3 + c] * NIBBLE_STEP
@@ -142,42 +206,50 @@ local function cvarText(name)
     return ns.Str(ns.Call("C_CVar.GetCVar", name)) or ns.Str(ns.Call("GetCVar", name))
 end
 
--- Altura en pixeles de una resolucion "3440x1440". nil si no tiene ese formato.
-local function resolutionHeight(text)
-    if not text then return nil end
-    local _, h = string.match(text, "^(%d+)x(%d+)$")
-    return tonumber(h)
+-- Ancho y alto en pixeles de una resolucion "3440x1440". nil si no tiene ese formato.
+local function resolutionSize(text)
+    if not text then return nil, nil end
+    local w, h = string.match(text, "^(%d+)x(%d+)$")
+    return tonumber(w), tonumber(h)
 end
 
--- Altura fisica real de la ventana de juego y de donde sale. Orden:
+-- Tamano fisico real de la ventana de juego y de donde sale. Orden:
 -- 1) C_VideoOptions.GetCurrentGameWindowSize (vector x,y);
 -- 2) CVar gxFullscreenResolution o gxWindowedResolution ("3440x1440"), segun gxWindow
 --    (1 = ventana: la ventana, si no el monitor);
 -- 3) GetPhysicalScreenSize (con DPI de Windows puede venir escalado: 1080 en un 1440).
--- Devuelve la altura (o nil) y el nombre de la fuente.
-function ns.GameWindowHeight()
+-- Devuelve ancho, alto (o nil) y el nombre de la fuente.
+function ns.GameWindowSize()
     local v = ns.Call("C_VideoOptions.GetCurrentGameWindowSize")
-    local h
+    local w, h
     if type(v) == "table" then
-        h = ns.Num(v.y)
+        w, h = ns.Num(v.x), ns.Num(v.y)
     end
-    if not h and v ~= nil then
-        local _, y = ns.Method(v, "GetXY")
-        h = ns.Num(y)
+    if (not h or not w) and v ~= nil then
+        local x, y = ns.Method(v, "GetXY")
+        w = w or ns.Num(x)
+        h = h or ns.Num(y)
     end
-    if h and h > 0 then return h, "C_VideoOptions" end
+    if w and h and w > 0 and h > 0 then return w, h, "C_VideoOptions" end
 
     local windowed = cvarText("gxWindow") == "1"
     local first, second = "gxFullscreenResolution", "gxWindowedResolution"
     if windowed then first, second = second, first end
-    h = resolutionHeight(cvarText(first))
-    if h and h > 0 then return h, "CVar " .. first end
-    h = resolutionHeight(cvarText(second))
-    if h and h > 0 then return h, "CVar " .. second end
+    local cw, ch = resolutionSize(cvarText(first))
+    if ch and ch > 0 then return cw, ch, "CVar " .. first end
+    cw, ch = resolutionSize(cvarText(second))
+    if ch and ch > 0 then return cw, ch, "CVar " .. second end
 
-    local _, physH = ns.Call("GetPhysicalScreenSize")
-    h = ns.Num(physH)
-    if h and h > 0 then return h, "GetPhysicalScreenSize" end
+    local pw, ph = ns.Call("GetPhysicalScreenSize")
+    w, h = ns.Num(pw), ns.Num(ph)
+    if h and h > 0 then return w, h, "GetPhysicalScreenSize" end
+    return nil, nil, "ninguna"
+end
+
+-- Altura fisica (compatibilidad con v2 y pruebas): altura y fuente.
+function ns.GameWindowHeight()
+    local _, h, source = ns.GameWindowSize()
+    if h and h > 0 then return h, source end
     return nil, "ninguna"
 end
 
@@ -239,33 +311,65 @@ function ns.IsStripOn()
     return not (type(db) == "table" and type(db.settings) == "table" and db.settings.strip == false)
 end
 
--- Lineas de diagnostico para /compa estado: altura fisica usada y su fuente, y el pixel.
+-- Lineas de diagnostico para /compa estado: altura y ancho fisicos, fuente, pixel y bloques.
 function ns.BridgeDebugLines()
     local h = B.physH
     local hText = h and string.format("%d px (%s)", h, B.physSource or "?") or "desconocida"
+    local w = B.physW
+    local wText = w and string.format("%d px", w) or "desconocido"
     return {
-        string.format("Altura fisica de la ventana: %s", hText),
+        string.format("Ventana fisica: %s de alto, %s de ancho", hText, wText),
         string.format("UIParent: %s unidades de altura", B.uiH and string.format("%.0f", B.uiH) or "?"),
         string.format("Pixel fisico: %.4f unidades de marco; bloque de %dx%d px = %.3f unidades",
             B.pixel or 0, BLOCK_PX, BLOCK_PX, BLOCK_PX * (B.pixel or 0)),
+        string.format("Franja v%d: %d bloques de %dx%d px (%d px de ancho)",
+            PROTOCOL_V3, B.blocks or 0, BLOCK_PX, BLOCK_PX, (B.blocks or 0) * BLOCK_PX),
     }
 end
 
--- Recalcula el tamano del bloque segun la altura fisica de la ventana y UIParent.
+-- Crea o ajusta las texturas hasta n (las sobrantes se ocultan). Resetea lo pintado.
+local function ensureTextures(n)
+    local f = B.frame
+    for i = 1, max(n, #B.tex) do
+        local t = B.tex[i]
+        if i <= n then
+            if not t and f then
+                t = ns.Method(f, "CreateTexture", nil, "OVERLAY")
+                if t then
+                    ns.Method(t, "SetSnapToPixelGrid", false)
+                    ns.Method(t, "SetTexelSnappingBias", 0)
+                    ns.Method(t, "SetColorTexture", 0, 0, 0, 1)
+                end
+                B.tex[i] = t
+            end
+            if t then ns.Method(t, "Show") end
+        elseif t then
+            ns.Method(t, "Hide")
+        end
+    end
+    B.painted = {} -- texturas nuevas u ocultas: el siguiente refresco pinta todo
+end
+
+-- Recalcula el tamano del bloque y N segun la ventana fisica y UIParent.
 local function recomputeScale()
-    local h, source = ns.GameWindowHeight()
+    local w, h, source = ns.GameWindowSize()
     local uiH
     local ui = _G.UIParent
     if ui then uiH = ns.Num(ns.Method(ui, "GetHeight")) end
     local px = ns.ComputePixelSize(h, uiH)
     if not px or px <= 0 then px = REFERENCE_UNITS / 1080 end
     B.pixel = px
-    B.physH, B.physSource, B.uiH = h, source, uiH
+    B.physW, B.physH, B.physSource, B.uiH = w, h, source, uiH
+    local n = ns.BlockCount(w)
     local block = BLOCK_PX * px
-    if B.frame then
-        ns.Method(B.frame, "SetSize", BLOCK_COUNT * block, block)
+    if n ~= B.blocks or not B.frame then
+        B.blocks = n
+        ensureTextures(n)
     end
-    for i = 1, BLOCK_COUNT do
+    if B.frame then
+        ns.Method(B.frame, "SetSize", n * block, block)
+    end
+    for i = 1, n do
         local t = B.tex[i]
         if t then
             ns.Method(t, "SetSize", block, block)
@@ -274,45 +378,55 @@ local function recomputeScale()
     end
 end
 
-local function samePayload(a, b)
-    if not a or not b then return false end
-    for i = 1, PAYLOAD_LEN do
+local function sameBytes(a, b)
+    if not a or not b or #a ~= #b then return false end
+    for i = 1, #a do
         if a[i] ~= b[i] then return false end
     end
     return true
 end
 
--- Igual que EncodeBlocks: los bloques ya pintados (nil = nada pintado todavia).
-local function sameBlocks(a, b)
-    if not a or not b then return false end
-    for i = 1, BLOCK_COUNT do
-        local x, y = a[i], b[i]
-        if not x or not y or x[1] ~= y[1] or x[2] ~= y[2] or x[3] ~= y[3] then return false end
-    end
-    return true
-end
-
-local function paint(blocks)
-    for i = 1, BLOCK_COUNT do
-        local c, t = blocks[i], B.tex[i]
-        if c and t then
-            ns.Method(t, "SetColorTexture", c[1] / 255, c[2] / 255, c[3] / 255, 1)
+-- Pinta solo los bloques cuyo color cambio desde el ultimo pintado.
+local function paint(colors, n)
+    local painted = B.painted
+    for i = 1, n do
+        local c = colors[i]
+        if c ~= painted[i] then
+            local t = B.tex[i]
+            if t then
+                local r = floor(c / 65536)
+                local g = floor(c / 256) % 256
+                local bl = c % 256
+                ns.Method(t, "SetColorTexture", r / 255, g / 255, bl / 255, 1)
+            end
+            painted[i] = c
         end
     end
 end
 
--- Un refresco: recalcula payload, sube seq solo si cambia, y repinta solo si cambian los bytes.
+local function nowSec()
+    local t = ns.Num(ns.Call("GetTime"))
+    if t then return t end
+    return ns.Now()
+end
+
+-- Un refresco (cada REFRESH_SEC): recalcula el estado, toma el siguiente trozo del canal,
+-- compone la trama, sube seq solo si cambia el contenido y pinta lo que cambio.
 function ns.BridgeRefresh()
     if not B.frame or not ns.IsStripOn() then return end
+    local n = B.blocks
+    if n <= CALIB_BLOCKS then return end
     local payload = ns.BuildPayload(ns.ReadLiveState())
-    if not samePayload(payload, B.payload) then
+    B.payload = payload
+    local chunk = ns.Channel and ns.Channel.Tick(nowSec(), n) or nil
+    local frame = ns.Channel.BuildFrame(payload, B.seq, n, chunk)
+    if not sameBytes(frame, B.bytes) then
         B.seq = (B.seq + 1) % 256
-        B.payload = payload
+        frame = ns.Channel.BuildFrame(payload, B.seq, n, chunk)
+        B.bytes = frame
     end
-    local blocks = ns.EncodeBlocks(B.payload, B.seq)
-    if sameBlocks(blocks, B.painted) then return end
-    paint(blocks)
-    B.painted = blocks
+    B.colors = ns.EncodeFrameColors(frame, n, B.colors)
+    paint(B.colors, n)
 end
 
 -- Activa o desactiva la franja y guarda la preferencia (settings.strip).
@@ -341,7 +455,7 @@ function ns.InitBridge()
     end
     if not f then return nil end
     B.frame = f
-    B.painted = nil -- texturas nuevas: el siguiente refresco debe pintar
+    B.painted = {} -- texturas nuevas: el siguiente refresco debe pintar
     ns.Method(f, "SetFrameStrata", "TOOLTIP")
     ns.Method(f, "SetFrameLevel", 1000)
     ns.Method(f, "SetIgnoreParentScale", true)
@@ -350,15 +464,6 @@ function ns.InitBridge()
         ns.Method(f, "SetPoint", "TOPLEFT", _G.UIParent, "TOPLEFT", 0, 0)
     else
         ns.Method(f, "SetPoint", "TOPLEFT", 0, 0)
-    end
-    for i = 1, BLOCK_COUNT do
-        local t = ns.Method(f, "CreateTexture", nil, "OVERLAY")
-        if t then
-            ns.Method(t, "SetSnapToPixelGrid", false)
-            ns.Method(t, "SetTexelSnappingBias", 0)
-            ns.Method(t, "SetColorTexture", 0, 0, 0, 1)
-        end
-        B.tex[i] = t
     end
     recomputeScale()
     ns.Method(f, "RegisterEvent", "UI_SCALE_CHANGED")

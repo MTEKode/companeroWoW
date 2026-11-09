@@ -53,6 +53,9 @@ type Reader struct {
 	pitch          float64   // pitch of the last successful decode; 0 when unknown
 	lastWindowGrab time.Time // when the PrintWindow fallback last ran
 
+	// channel receives the v3 frames: messages reassembled into LiveData. Set once in NewReader.
+	channel *Channel
+
 	// Seams for tests; NewReader wires the real Windows calls.
 	find       func() (uintptr, image.Rectangle, error)
 	grabScreen func(image.Rectangle) (*image.RGBA, error)
@@ -72,6 +75,7 @@ func NewReader(pollEvery time.Duration) *Reader {
 		find:       FindWoWWindow,
 		grabScreen: capture.GrabScreen,
 		now:        time.Now,
+		channel:    NewChannel(),
 	}
 	r.grabWindow = r.win.grab
 	return r
@@ -83,6 +87,11 @@ func (r *Reader) Start(ctx context.Context) {
 	r.startOnce.Do(func() {
 		go r.run(ctx)
 	})
+}
+
+// Channel returns the live data channel (v3 messages). Its store is safe to read from any goroutine.
+func (r *Reader) Channel() *Channel {
+	return r.channel
 }
 
 // Latest returns the last valid state. ok is false if there is none, or if it is
@@ -140,45 +149,50 @@ func (r *Reader) pollOnce() error {
 	if err != nil {
 		return fmt.Errorf("locate WoW: %w", err)
 	}
-	st, err := r.readStrip(hwnd, rect)
+	dec, err := r.readStrip(hwnd, rect)
 	if err != nil {
 		return err
 	}
-	st.ReadAt = r.now()
-	r.publish(st)
+	now := r.now()
+	dec.Live.ReadAt = now
+	if dec.Frame != nil {
+		r.channel.Feed(*dec.Frame, now)
+	}
+	r.publish(dec.Live)
 	return nil
 }
 
-// readStrip decodes the strip at the top-left of WoW's client area rect. It first
-// copies the strip from the screen, which is cheap. If that does not decode, a
-// window on top of WoW (the companion app, a browser) is probably covering the
-// strip, so it asks WoW to render its own content instead. That fallback runs at
+// readStrip decodes the strip at the top-left of WoW's client area rect: the top
+// StripHeightV3 rows at the client's full width (v3 spans the width; v2 uses its
+// left 464 px). It first copies the strip from the screen, which is cheap. If that does
+// not decode, a window on top of WoW (the companion app, a browser) is probably covering
+// the strip, so it asks WoW to render its own content instead. That fallback runs at
 // most once per windowGrabEvery.
-func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (LiveState, error) {
-	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+StripWidth, rect.Min.Y+StripHeight)
+func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) {
+	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+rect.Dx(), rect.Min.Y+StripHeightV3)
 	img, err := r.grabScreen(strip)
 	if err != nil {
-		return LiveState{}, fmt.Errorf("grab pixel strip: %w", err)
+		return Decoded{}, fmt.Errorf("grab pixel strip: %w", err)
 	}
-	st, pitch, err := decodeStrip(img, r.pitch)
+	dec, err := DecodeAny(img, r.pitch)
 	if err == nil {
-		r.pitch = pitch
-		return st, nil
+		r.pitch = dec.Pitch
+		return dec, nil
 	}
 	now := r.now()
 	if !r.lastWindowGrab.IsZero() && now.Sub(r.lastWindowGrab) < windowGrabEvery {
-		return LiveState{}, err
+		return Decoded{}, err
 	}
 	r.lastWindowGrab = now
 	own, gerr := r.grabWindow(hwnd, rect)
 	if gerr != nil {
-		return LiveState{}, err
+		return Decoded{}, err
 	}
-	if st2, p2, err2 := decodeStrip(own, r.pitch); err2 == nil {
-		r.pitch = p2
-		return st2, nil
+	if dec2, err2 := DecodeAny(own, r.pitch); err2 == nil {
+		r.pitch = dec2.Pitch
+		return dec2, nil
 	}
-	return LiveState{}, err
+	return Decoded{}, err
 }
 
 // lost is called when WoW is not visible. The next valid read starts a new

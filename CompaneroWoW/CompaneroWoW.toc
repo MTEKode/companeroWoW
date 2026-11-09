@@ -7,6 +7,7 @@
 ## OptionalDeps: Questie, WhatsTraining, SkillUpForever, ForeverDungeonJournal
 
 Util.lua
+Json.lua
 Core.lua
 Collectors.lua
 Knowledge.lua
@@ -16,6 +17,7 @@ Gear.lua
 Integrations.lua
 Marks.lua
 Bridge.lua
+Channel.lua
 Events.lua
 Combat.lua
 Bars.lua

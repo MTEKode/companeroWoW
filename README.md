@@ -200,9 +200,17 @@ Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las l�
 
 ## Comandos del addon
 
-- `/compa sync`: guarda en SavedVariables los datos detallados (misiones, personaje, profesiones, etc.). Hazlo tras cambios importantes; la app lo recuerda si los datos son antiguos.
-- `/compa strip on|off`: activa o desactiva la franja de píxeles.
-- `/compa estado`: muestra el estado actual del addon.
+- `/compa sync`: fuerza el reenvío completo por el canal en vivo y guarda en SavedVariables los datos detallados (misiones, personaje, profesiones, etc.), con recarga de la interfaz. Con el canal en vivo ya no hace falta cada día: úsalo la primera vez, o si algo parece desactualizado en la app (por ejemplo, tras un cambio que la app no refleja). Lo que se ve en vivo lo sirve el canal; el archivo SavedVariables solo se escribe al recargar o al salir.
+- `/compa strip on|off`: activa o desactiva la franja de píxeles (el canal en vivo).
+- `/compa estado`: muestra el estado actual del addon, incluido el del canal en vivo.
+
+## Canal en vivo (franja superior)
+
+El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo: el envío refresca cada 0,2 s, y cada mensaje se reenvía cada minuto para que una app que arranque tarde se ponga al día.
+
+- En la barra de estado, `Canal en vivo: OK (x KB/s)` indica que llegan datos. `--diag` muestra la antigüedad de cada tipo de mensaje.
+- Solo se pide `/compa sync` la primera vez o si algo parece desactualizado. Los datos que no viajan por el canal (por ejemplo, un personaje que nunca has sincronizado) siguen dependiendo de SavedVariables.
+- La franja ocupa la parte superior de la ventana de WoW: la ventana de la app no la tapa.
 
 ## Atajos de herramientas (MCP)
 
