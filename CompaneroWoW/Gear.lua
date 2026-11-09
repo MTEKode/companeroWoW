@@ -1,7 +1,7 @@
 -- Gear.lua: equipo, proficiencias, candidatos de equipo, mazmorras y ventana de misiones
 -- (contrato GEAR / QUEST-WINDOW / DUNGEONS). Escribe en CompaneroWoWDB.characters[key]:
 --   gear, proficiencies, completedQuests, questWindow, gearCandidates, dungeons.
--- Solo LEE APIs oficiales y los datos instalados (QuestieDB, ForeverDungeonJournal). Cada parte
+-- Solo LEE APIs oficiales y los datos instalados (QuestieDB y ForeverDungeonJournal, opcionales). Cada parte
 -- va protegida: un fallo deja {available=false, reason} y nunca un error de Lua.
 --
 -- Trabajo: una coroutine (pipeline) que cede cada pocos elementos. Cada tick avanza hasta 4 ms,
@@ -28,7 +28,7 @@ local MAX_CANDIDATES = 300
 local DUNGEON_BELOW = 3      -- rango de mazmorra: se solapa con [nivel-3, nivel+5]
 local DUNGEON_ABOVE = 5
 local DUNGEON_MAX_BYTES = 30 * 1024
-local CANDIDATE_MAX_BYTES = 80 * 1024
+local CANDIDATE_MAX_BYTES = 100 * 1024 -- 80 KB + origen por elemento
 local DUAL_WIELD_SPELL = 674
 
 local SLOT_NAMES = {
@@ -337,6 +337,7 @@ function G.CandidatesWork(env, sourceMap)
         return a.itemID < b.itemID
     end)
     local items, count, bytes = {}, 0, 0
+    local srcSet = {}
     for _, e in ipairs(found) do
         if count >= MAX_CANDIDATES then break end
         local size = QW.ApproxBytes(e) + 8
@@ -344,8 +345,9 @@ function G.CandidatesWork(env, sourceMap)
         bytes = bytes + size
         count = count + 1
         items[e.itemID] = e
+        for _, src in ipairs(e.sources or {}) do srcSet[src.source or "questie"] = true end
     end
-    local block = { available = true, exportedAt = ns.Now(), items = items }
+    local block = { available = true, exportedAt = ns.Now(), items = items, sources = ns.Native.SourceSummary(srcSet) }
     if pending > 0 then block.pending = pending end
     return block
 end
@@ -355,10 +357,30 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Bloque dungeons: mazmorras cuyo rango de nivel se solapa con [nivel-3, nivel+5], las mas cercanas primero.
+-- Mazmorras sin ForeverDungeonJournal: lista del Encounter Journal de Blizzard (fuente "juego").
+-- Sin rango de nivel ni botin (el Encounter Journal no los da): levelsKnown = false.
+function G.BuildJournalDungeons()
+    local list = ns.Native.JournalInstances()
+    if list == nil then
+        return {
+            available = false, reason = "ForeverDungeonJournal no está instalado (opcional) y el juego no expone el diario de mazmorras",
+            sources = ns.Native.SourceSummary({}),
+        }
+    end
+    local out = {}
+    for _, d in ipairs(list) do
+        out[#out + 1] = {
+            key = G.Slug(d.name), name = d.name, instanceID = d.instanceID, source = "juego",
+            levelsKnown = false, quests = {}, bosses = {},
+        }
+    end
+    return { available = true, exportedAt = ns.Now(), list = out, sources = ns.Native.SourceSummary({ juego = true }) }
+end
+
 function G.BuildDungeons(level)
     local fdj = _G.ForeverDungeonJournal_NS
     local db = type(fdj) == "table" and fdj.DB or nil
-    if type(db) ~= "table" then return unavailable("ForeverDungeonJournal no está cargado") end
+    if type(db) ~= "table" then return G.BuildJournalDungeons() end
     local order = {}
     if type(fdj.ORDER) == "table" then
         for _, name in ipairs(fdj.ORDER) do order[#order + 1] = name end
@@ -386,6 +408,7 @@ function G.BuildDungeons(level)
         local d = p.d
         local e = {
             key = G.Slug(p.name), name = p.name, minLevel = p.minL, maxLevel = p.maxL, zone = d.location,
+            source = "fdj", levelsKnown = true,
             quests = {}, bosses = {},
         }
         if type(d.entrance) == "table" then
@@ -408,7 +431,7 @@ function G.BuildDungeons(level)
         bytes = bytes + size
         list[#list + 1] = e
     end
-    return { available = true, exportedAt = ns.Now(), list = list }
+    return { available = true, exportedAt = ns.Now(), list = list, sources = ns.Native.SourceSummary({ fdj = true }) }
 end
 
 -- ---------------------------------------------------------------------------
@@ -427,13 +450,13 @@ local function sourcesOf(rewardItems, dungeons)
         list[#list + 1] = src
     end
     for _, r in ipairs(rewardItems or {}) do
-        add(r.itemID, { kind = "quest", questID = r.questID, choice = r.choice or nil })
+        add(r.itemID, { kind = "quest", questID = r.questID, choice = r.choice or nil, source = r.source or "questie" })
     end
     if dungeons and dungeons.available == true then
         for _, d in ipairs(dungeons.list) do
             for _, b in ipairs(d.bosses) do
                 for _, id in ipairs(b.loot) do
-                    add(id, { kind = "dungeon", dungeonKey = d.key, boss = b.name })
+                    add(id, { kind = "dungeon", dungeonKey = d.key, boss = b.name, source = d.source or "fdj" })
                 end
             end
         end

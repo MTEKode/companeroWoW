@@ -1025,4 +1025,105 @@ function M.uninstallBars()
     M.BARS = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- APIs nativas de misiones (Native.lua, QuestWindow.lua, Gear.lua): C_QuestLine, C_QuestLog de Blizzard,
+-- C_Map.GetMapInfo con padres, servicios de entrenador y Encounter Journal (opcional).
+-- Opt-in: M.installNative(opts). Sin llamarla, las APIs no existen (caso "juego incompleto").
+-- opts (todas opcionales): lines[mapID] = QuestLineInfo[], waypoints[qid] = {mapID,x,y},
+-- pois[mapID] = QuestPOIMapInfo[], levels[qid], titles[qid], parents[mapID], mapNames[mapID],
+-- rewards[qid] = {choice = {itemID...}, fixed = {itemID...}} (solo para misiones en el registro),
+-- services = { {name, rank, category}, ... }, journal = { {instanceID, name}, ... } (nil = sin Encounter Journal).
+-- ---------------------------------------------------------------------------
+function M.installNative(opts)
+    opts = opts or {}
+    local S = M.state
+    local nat = {
+        lines = opts.lines or {}, waypoints = opts.waypoints or {}, pois = opts.pois or {},
+        levels = opts.levels or {}, titles = opts.titles or {}, parents = opts.parents or {},
+        mapNames = opts.mapNames or {}, rewards = opts.rewards or {}, services = opts.services or {},
+        journal = opts.journal,
+    }
+    S.native = nat
+    M._saved = { mapInfo = _G.C_Map.GetMapInfo }
+    _G.C_Map.GetMapInfo = function(id)
+        local base = M._saved.mapInfo and M._saved.mapInfo(id) or nil
+        if nat.mapNames[id] then
+            base = base or {}
+            base.name = nat.mapNames[id]
+        end
+        if base then
+            base.mapID = id
+            base.parentMapID = nat.parents[id] or 0
+        end
+        return base
+    end
+    _G.C_QuestLine = {
+        GetAvailableQuestLines = function(m)
+            rec("C_QuestLine.GetAvailableQuestLines", m)
+            return nat.lines[m] or {}
+        end,
+    }
+    local L = _G.C_QuestLog
+    L.GetNextWaypoint = function(qid)
+        local wp = nat.waypoints[qid]
+        if wp then return wp.mapID, wp.x, wp.y end
+        return nil
+    end
+    L.GetQuestsOnMap = function(m) return nat.pois[m] or {} end
+    L.GetQuestDifficultyLevel = function(qid) return nat.levels[qid] end
+    L.GetTitleForQuestID = function(qid) return nat.titles[qid] end
+    _G.GetNumQuestLogChoices = function(qid)
+        local r = nat.rewards[qid]
+        return r and #r.choice or 0
+    end
+    _G.GetQuestLogChoiceInfo = function(i, qid)
+        local r = nat.rewards[qid]
+        local id = r and r.choice[i]
+        return "Choice" .. tostring(i), nil, 1, 3, true, id
+    end
+    _G.GetNumQuestLogRewards = function(qid)
+        local r = nat.rewards[qid]
+        return r and #r.fixed or 0
+    end
+    _G.GetQuestLogRewardInfo = function(i, qid)
+        local r = nat.rewards[qid]
+        local id = r and r.fixed[i]
+        return "Reward" .. tostring(i), nil, 1, 1, true, id
+    end
+    _G.GetNumTrainerServices = function() return #nat.services end
+    _G.GetTrainerServiceInfo = function(i)
+        local s = nat.services[i]
+        if not s then return nil end
+        return s.name, s.rank or "", s.category
+    end
+    if opts.journal then
+        _G.EJ_GetInstanceByIndex = function(i)
+            local j = nat.journal[i]
+            if j then return j.instanceID, j.name end
+            return nil
+        end
+    else
+        _G.EJ_GetInstanceByIndex = nil
+    end
+end
+
+function M.uninstallNative()
+    if M._saved then
+        _G.C_Map.GetMapInfo = M._saved.mapInfo
+        M._saved = nil
+    end
+    _G.C_QuestLine = nil
+    if _G.C_QuestLog then
+        for _, k in ipairs({ "GetNextWaypoint", "GetQuestsOnMap", "GetQuestDifficultyLevel", "GetTitleForQuestID" }) do
+            _G.C_QuestLog[k] = nil
+        end
+    end
+    for _, k in ipairs({ "GetNumQuestLogChoices", "GetQuestLogChoiceInfo", "GetNumQuestLogRewards",
+                         "GetQuestLogRewardInfo", "GetNumTrainerServices", "GetTrainerServiceInfo",
+                         "EJ_GetInstanceByIndex" }) do
+        _G[k] = nil
+    end
+    M.state.native = nil
+end
+
 return M

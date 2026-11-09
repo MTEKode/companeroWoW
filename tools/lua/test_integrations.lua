@@ -28,6 +28,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
+load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Questie.lua")

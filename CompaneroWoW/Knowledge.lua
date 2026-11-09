@@ -95,6 +95,10 @@ local function upsertNPC(npcID, info)
     if info.isQuestGiver then rec.isQuestGiver = true end
     if info.isVendor then rec.isVendor = true end
     if info.isTrainer then rec.isTrainer = true end
+    if info.availableCount ~= nil then
+        rec.availableCount = info.availableCount
+        rec.services = info.services
+    end
     rec.lastSeen = now
 end
 
@@ -225,13 +229,30 @@ local function onMerchant()
     })
 end
 
+-- Servicios de entrenador que el jugador puede aprender ahora: contador y hasta 30 nombres.
+local function trainerServices()
+    local n = Num(Call("GetNumTrainerServices")) or 0
+    local names, count = {}, 0
+    for i = 1, math.min(n, 200) do
+        local name, _, category = Call("GetTrainerServiceInfo", i)
+        if Clean(category) == "available" then
+            count = count + 1
+            if #names < 30 and Str(name) then names[#names + 1] = Str(name) end
+        end
+    end
+    return count, names
+end
+
 local function onTrainer()
     local npc = unitNPC("npc")
     if not npc then return end
+    local count, names = trainerServices()
     upsertNPC(npc.npcID, {
         name = npc.name, mapID = npc.mapID, x = npc.x, y = npc.y,
         reaction = Num(Call("UnitReaction", "npc")),
         isTrainer = true,
+        availableCount = count,
+        services = names,
     })
 end
 
@@ -260,7 +281,23 @@ local handlers = {
     PLAYER_TARGET_CHANGED = onTargetChanged,
 }
 
+-- Mision que el juego ofrece ahora (Native.lua): nombre, nivel y posicion del PNJ en el mapa.
+-- Solo anade lo que se sabe; nunca borra datos previos.
+local function noteOffered(qid, info)
+    local q = questRec(qid)
+    if not q then return end
+    setIf(q, "title", info.name)
+    setIf(q, "level", info.level)
+    if info.mapID and info.x and info.y then
+        q.offeredAt = { mapID = info.mapID, x = info.x, y = info.y }
+    end
+    q.offeredSource = "juego"
+    q.lastOffered = ns.Now()
+    q.lastSeen = ns.Now()
+end
+
 ns.Knowledge = {
+    NoteOffered = noteOffered,
     OnEvent = function(event, ...)
         local h = handlers[event]
         if h then h(...) end

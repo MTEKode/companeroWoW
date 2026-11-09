@@ -1,6 +1,7 @@
 -- Marks.lua: /compa marca. Pone una marca en el mapa con la API oficial de Blizzard
 -- (C_Map.SetUserWaypoint + C_SuperTrack, que muestra la flecha 3D y el pin de Blizzard)
 -- y un pin propio "Compañero" en el mapa del mundo (MapCanvas, opcional).
+-- Sin argumentos usa las APIs de Blizzard primero y Questie solo si esta instalado (Native.lua).
 -- La app NUNCA dispara esto: solo el usuario lo escribe en el chat.
 local ADDON_NAME, ns = ...
 ns = ns or {}
@@ -245,39 +246,18 @@ local function pickQuest(entries)
     return nil
 end
 
--- Sin argumentos: siguiente paso de la mision segun Questie y el registro en vivo.
--- Todos los objetivos completos -> PNJ/objeto de entrega mas cercano; si no, el objetivo pendiente mas cercano.
-function M.MarkAuto()
-    local data = ns.BuildQuestieExport()
-    if data.available ~= true then
-        say("Questie no está disponible. Usa /compa marca <x> <y> [texto].")
-        return false
-    end
-    local entries = ns.Questie.QuestLogEntries()
-    local qid = pickQuest(entries)
-    if not qid then
-        say("No tienes misiones en el registro.")
-        return false
-    end
+-- Sin argumentos: siguiente paso de la mision, en este orden:
+--   1) Blizzard: C_QuestLog.GetNextWaypoint (objetivo o entrega)            -> "según el juego"
+--   2) Blizzard: area de objetivo en el mapa (C_QuestLog.GetQuestsOnMap)    -> "según el juego"
+--   3) Questie, solo si esta instalado (opcional): objetivos o finalizadores -> "según Questie"
+-- Sin nada de lo anterior avisa y sugiere /compa marca <x> <y> [texto].
+local function markFromQuestie(data, qid, title, objs, firstOpen, mapID, px, py)
     local quest = type(data.quests) == "table" and data.quests[qid] or nil
-    if type(quest) ~= "table" then
-        say("Questie no tiene datos de esa misión. Prueba /compa sync y vuelve a intentarlo.")
-        return false
-    end
-
-    local objs = Clean(Call("C_QuestLog.GetQuestObjectives", qid))
-    if type(objs) ~= "table" then objs = {} end
-    local firstOpen = nil
-    for i, o in ipairs(objs) do
-        if type(o) == "table" and Clean(o.finished) ~= true and firstOpen == nil then firstOpen = i end
-    end
-
-    local px, py, mapID = nil, nil, nil
-    mapID, px, py = ns.GetPlayerPosition()
-    local candidates, label = {}, nil
+    if type(quest) ~= "table" then return false end
+    local suffix = " · según Questie"
     if firstOpen == nil then
         -- Entrega: todos los finalizadores con su nombre.
-        label = "Entregar"
+        local candidates = {}
         for _, f in ipairs(quest.finishers or {}) do
             for _, s in ipairs(f.spawns or {}) do
                 candidates[#candidates + 1] = { mapID = s.mapID, x = s.x, y = s.y, name = f.name }
@@ -285,32 +265,77 @@ function M.MarkAuto()
         end
         candidates = ns.Questie.NearestFirst(candidates, mapID, px, py)
         local best = candidates[1]
-        if not best then
-            say("Questie no conoce dónde entregar «" .. (quest.name or tostring(qid)) .. "».")
-            return false
-        end
-        M.Set(best.mapID, best.x, best.y, "Entregar a " .. (best.name or "PNJ") .. " (" .. (quest.name or tostring(qid)) .. ")")
+        if not best then return false end
+        M.Set(best.mapID, best.x, best.y, "Entregar a " .. (best.name or "PNJ") .. " (" .. title .. ")" .. suffix)
         return true
     end
-
     local expo = quest.objectives or {}
-    if #expo ~= #objs then
-        say("No puedo emparejar los objetivos de Questie con tu registro. Usa /compa marca <x> <y> [texto].")
-        return false
-    end
+    if #expo ~= #objs then return false end
     local o = expo[firstOpen]
+    local candidates = {}
     for _, s in ipairs((o and o.spawns) or {}) do
         candidates[#candidates + 1] = { mapID = s.mapID, x = s.x, y = s.y }
     end
     candidates = ns.Questie.NearestFirst(candidates, mapID, px, py)
     local best = candidates[1]
-    local what = (o and o.name) or "objetivo"
-    if not best then
-        say("Questie no conoce una posición para «" .. what .. "».")
+    if not best then return false end
+    M.Set(best.mapID, best.x, best.y, ((o and o.name) or "objetivo") .. " (" .. title .. ")" .. suffix)
+    return true
+end
+
+function M.MarkAuto()
+    local qid, info = pickQuest(ns.Native.LogEntries())
+    if not qid then
+        say("No tienes misiones en el registro.")
         return false
     end
-    M.Set(best.mapID, best.x, best.y, what .. " (" .. (quest.name or tostring(qid)) .. ")")
-    return true
+    local title = (info and Str(info.title)) or tostring(qid)
+    local objs = Clean(Call("C_QuestLog.GetQuestObjectives", qid))
+    if type(objs) ~= "table" then objs = {} end
+    local firstOpen = nil
+    for i, o in ipairs(objs) do
+        if type(o) == "table" and Clean(o.finished) ~= true and firstOpen == nil then firstOpen = i end
+    end
+    local label = "Entregar"
+    if firstOpen then
+        label = Str(objs[firstOpen].text) or "Objetivo"
+    end
+    local tag = label .. " (" .. title .. ")"
+
+    local mapID, px, py = ns.GetPlayerPosition()
+    local wp = ns.Native.Waypoint(qid)
+    if wp then
+        M.Set(wp.mapID, wp.x, wp.y, tag .. " · según el juego")
+        return true
+    end
+    if mapID and firstOpen then
+        local best, bestD = nil, math.huge
+        for _, p in ipairs(ns.Native.QuestPOIs(mapID)) do
+            if p.questID == qid then
+                local d = (px and py) and math.sqrt((p.x - px) ^ 2 + (p.y - py) ^ 2) or math.huge
+                if best == nil or d < bestD then best, bestD = p, d end
+            end
+        end
+        if best then
+            M.Set(best.mapID, best.x, best.y, tag .. " · según el juego")
+            return true
+        end
+    end
+
+    if ns.QuestieInstalled() then
+        local data = ns.BuildQuestieExport()
+        local quest = data.available == true and type(data.quests) == "table" and data.quests[qid] or nil
+        if type(quest) == "table" and firstOpen and #(quest.objectives or {}) ~= #objs then
+            say("No puedo emparejar los objetivos de Questie con tu registro. Usa /compa marca <x> <y> [texto].")
+            return false
+        end
+        if type(quest) == "table" and markFromQuestie(data, qid, title, objs, firstOpen, mapID, px, py) then
+            return true
+        end
+    end
+    local hint = ns.QuestieInstalled() and "" or " Questie no está instalado (es opcional)."
+    say("No sé dónde está el siguiente paso de «" .. title .. "»." .. hint .. " Usa /compa marca <x> <y> [texto].")
+    return false
 end
 
 -- Despacho de "/compa marca ...". rest = texto original (con mayusculas) tras "marca".

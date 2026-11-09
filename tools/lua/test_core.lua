@@ -53,6 +53,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
+load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Core.lua")
 local coreFrame
 for _, f in ipairs(frames) do

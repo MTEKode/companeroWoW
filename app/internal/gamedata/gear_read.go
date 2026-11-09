@@ -17,9 +17,9 @@ const (
 	hintCompleted   = "No tengo las misiones completadas del personaje: escribe /compa sync en el juego"
 	hintProficiency = "No tengo las armas y armaduras que puede usar: escribe /compa sync en el juego"
 	hintGear        = "No tengo el equipo puesto: escribe /compa sync en el juego"
-	hintQuestWindow = "No tengo las misiones accesibles para tu nivel: escribe /compa sync en el juego (hace falta Questie)"
-	hintCandidates  = "No tengo objetos candidatos para el equipo: escribe /compa sync en el juego (hacen falta Questie y las recompensas)"
-	hintDungeons    = "No tengo datos de mazmorras: escribe /compa sync en el juego (hace falta ForeverDungeonJournal)"
+	hintQuestWindow = "No tengo las misiones accesibles para tu nivel: escribe /compa sync en el juego (Questie es opcional y mejora el detalle)"
+	hintCandidates  = "No tengo objetos candidatos para el equipo: escribe /compa sync en el juego (hacen falta las recompensas de tus misiones)"
+	hintDungeons    = "No tengo datos de mazmorras: escribe /compa sync en el juego (ForeverDungeonJournal es opcional; el diario del juego también sirve)"
 
 	gearMaxSlot      = 19 // inventory slot ids 1..19
 	gearMaxQuests    = 400
@@ -49,12 +49,13 @@ type gearItem struct {
 
 // npcPoint is a quest giver, quest taker, dungeon entrance or other place with coordinates.
 type npcPoint struct {
-	Kind  string
-	ID    int64
-	Name  string
-	MapID int
-	X, Y  float64
-	OK    bool
+	Kind   string
+	ID     int64
+	Name   string
+	MapID  int
+	X, Y   float64
+	OK     bool
+	Source string // srcJuego, srcQuestie or srcAprendido ("" when unknown)
 }
 
 // windowQuest is one quest accessible to the character (questWindow).
@@ -70,6 +71,8 @@ type windowQuest struct {
 	Finisher      npcPoint
 	RewardChoice  []int64
 	RewardFixed   []int64
+	Source        string // where the quest comes from (srcJuego, srcQuestie or srcAprendido)
+	InLog         bool   // the character has it in the log now
 }
 
 // itemSource says where a candidate comes from: a quest reward or a dungeon boss.
@@ -79,6 +82,7 @@ type itemSource struct {
 	Choice     bool // the player picks it among the rewards
 	DungeonKey string
 	Boss       string
+	Source     string // srcJuego, srcQuestie, srcFDJ or srcAprendido
 }
 
 // gearCandidate is an equippable item that the addon found as a reward or as loot.
@@ -94,13 +98,15 @@ type dungeonBoss struct {
 
 // dungeonInfo is one dungeon of the level range, from ForeverDungeonJournal.
 type dungeonInfo struct {
-	Key      string
-	Name     string
-	Zone     string
-	Min, Max int
-	Entrance npcPoint
-	Quests   []int64
-	Bosses   []dungeonBoss
+	Key         string
+	Name        string
+	Zone        string
+	Min, Max    int
+	Entrance    npcPoint
+	Quests      []int64
+	Bosses      []dungeonBoss
+	Source      string // srcFDJ, or srcJuego for the Encounter Journal (no level range)
+	LevelsKnown bool   // false: the source gives no level range (Min and Max are 0)
 }
 
 // gearData is what the gear answers read from the active character, with the flags that say
@@ -132,6 +138,12 @@ type gearData struct {
 	// gave one. reasons holds that reason by block key ("gear", "questWindow", ...).
 	Notes   []string
 	reasons map[string]string
+
+	// Native data and the source summaries of the blocks (see native.go).
+	Native           nativeExport
+	QuestSources     sourceSet
+	CandidateSources sourceSet
+	DungeonSources   sourceSet
 }
 
 // loadGearData reads the active character's gear blocks. ok is false when there is no
@@ -161,6 +173,7 @@ func (g *Service) loadGearData() (gearData, bool) {
 		}
 	}
 
+	gd.Native = readNative(ch.data)
 	gd.readCompleted(ch.data)
 	gd.readProficiencies(ch.data)
 	gd.readGear(ch.data)
@@ -268,6 +281,7 @@ func (gd *gearData) readQuestWindow(data map[string]any) {
 		return
 	}
 	gd.QuestsKnown = true
+	gd.QuestSources = readSourceSet(qw["sources"])
 	for _, e := range entriesOf(qw["quests"]) {
 		if len(gd.Quests) >= gearMaxQuests {
 			break
@@ -290,6 +304,7 @@ func (gd *gearData) readCandidates(data map[string]any) {
 		return
 	}
 	gd.CandidatesKnown = true
+	gd.CandidateSources = readSourceSet(cw["sources"])
 	for _, e := range entriesOf(cw["items"]) {
 		if len(gd.Candidates) >= gearMaxItems {
 			break
@@ -314,6 +329,7 @@ func (gd *gearData) readCandidates(data map[string]any) {
 				Choice:     truthy(sm["choice"]),
 				DungeonKey: str(sm["dungeonKey"]),
 				Boss:       str(sm["boss"]),
+				Source:     str(sm["source"]),
 			})
 		}
 		gd.Candidates[it.ItemID] = c
@@ -328,6 +344,7 @@ func (gd *gearData) readDungeons(data map[string]any) {
 		return
 	}
 	gd.DungeonsKnown = true
+	gd.DungeonSources = readSourceSet(dj["sources"])
 	for _, item := range listOf(dj["list"]) {
 		if len(gd.Dungeons) >= gearMaxDungeons {
 			break
@@ -337,12 +354,14 @@ func (gd *gearData) readDungeons(data map[string]any) {
 			continue
 		}
 		d := dungeonInfo{
-			Key:    str(m["key"]),
-			Name:   str(m["name"]),
-			Zone:   str(m["zone"]),
-			Min:    int(numberOf(m["minLevel"])),
-			Max:    int(numberOf(m["maxLevel"])),
-			Quests: int64List(m["quests"]),
+			Key:         str(m["key"]),
+			Name:        str(m["name"]),
+			Zone:        str(m["zone"]),
+			Min:         int(numberOf(m["minLevel"])),
+			Max:         int(numberOf(m["maxLevel"])),
+			Quests:      int64List(m["quests"]),
+			Source:      str(m["source"]),
+			LevelsKnown: m["levelsKnown"] != false,
 		}
 		if d.Key == "" {
 			d.Key = d.Name
@@ -398,6 +417,8 @@ func parseWindowQuest(m map[string]any, id int64) windowQuest {
 		RequiredLevel: int(numberOf(m["requiredLevel"])),
 		Zone:          str(m["zone"]),
 		Accessible:    truthy(m["accessibleNow"]),
+		Source:        str(m["source"]),
+		InLog:         truthy(m["inLog"]),
 		Missing:       int64List(m["missingPrereqs"]),
 		Starter:       readNPCPoint(asMap(m["starter"])),
 		Finisher:      readNPCPoint(asMap(m["finisher"])),
@@ -413,13 +434,14 @@ func readNPCPoint(m map[string]any) npcPoint {
 	}
 	mapID, x, y, ok := readPoint(m)
 	return npcPoint{
-		Kind:  str(m["kind"]),
-		ID:    int64(numberOf(m["id"])),
-		Name:  str(m["name"]),
-		MapID: mapID,
-		X:     x,
-		Y:     y,
-		OK:    ok,
+		Kind:   str(m["kind"]),
+		ID:     int64(numberOf(m["id"])),
+		Name:   str(m["name"]),
+		MapID:  mapID,
+		X:      x,
+		Y:      y,
+		OK:     ok,
+		Source: str(m["source"]),
 	}
 }
 

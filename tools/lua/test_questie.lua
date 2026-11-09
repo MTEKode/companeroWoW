@@ -27,6 +27,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
+load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Questie.lua")
@@ -118,12 +119,12 @@ local absent = ns.BuildQuestieExport()
 eq("sin Questie: available = false", absent.available, false)
 local nKeys = 0
 for _ in pairs(absent) do nKeys = nKeys + 1 end
-eq("sin Questie: solo la clave available", nKeys, 1)
+eq("sin Questie: sin quests ni zonas (claves: available, reason, sources)", nKeys, 3)
 local okAbsent = pcall(ns.ExportQuestieNow)
 check("ExportQuestieNow sin Questie no lanza error", okAbsent)
 local stored = CompaneroWoWDB.characters["Tester-Ravencrest"]
 eq("sin Questie: se guarda questie.available=false", stored and stored.questie and stored.questie.available, false)
-check("estado sin Questie: texto 'no disponible'", string.find(ns.QuestieStatusLine(), "no disponible", 1, true) ~= nil)
+check("estado sin Questie: texto 'no instalado (opcional)'", string.find(ns.QuestieStatusLine(), "no instalado (opcional", 1, true) ~= nil)
 
 -- ---------------------------------------------------------------------------
 outln("(b) exportacion con Questie: forma del contrato")
@@ -514,7 +515,8 @@ W.uninstallQuestie()
 W.calls = {}
 SlashCmdList.COMPA("marca")
 eq("sin Questie: no marca", #W.callsNamed("C_Map.SetUserWaypoint"), 0)
-check("sin Questie: avisa", anyPrinted("Questie no está disponible"), lastPrinted())
+check("sin Questie: avisa sin exigir Questie", anyPrinted("No sé dónde está el siguiente paso"), lastPrinted())
+check("sin Questie: avisa que es opcional", anyPrinted("Questie no está instalado (es opcional)"), lastPrinted())
 
 -- Registro desincronizado con Questie -> no marca a ciegas.
 scenario()
