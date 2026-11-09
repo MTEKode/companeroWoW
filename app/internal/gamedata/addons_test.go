@@ -100,62 +100,12 @@ func TestMissingAndUnavailableAddonBlocksGiveHints(t *testing.T) {
 	if m["available"] != false || !strings.Contains(m["hint"].(string), "WhatsTraining") {
 		t.Fatalf("missing training block = %#v", m)
 	}
-	if objOf(t, missing.Guide)["available"] != false {
-		t.Error("missing guide block must be unavailable")
-	}
 
 	off := svService(t, charLua(`["character"] = { ["class"] = "Shaman" },
 		["profPlan"] = { ["available"] = false, ["reason"] = "SkillUpForever no cargado" }`))
 	got := objOf(t, func() (any, error) { return off.ProfessionRoute("", 0) })
 	if got["available"] != false || got["motivo"] != "SkillUpForever no cargado" {
 		t.Fatalf("addon's own reason must be passed on: %#v", got)
-	}
-}
-
-func TestGuideStepWithCoordinatesAndMarks(t *testing.T) {
-	svc, _ := fixtureService(t)
-	m := objOf(t, svc.Guide)
-	if m["available"] != true || m["guia"] != "Orgrimmar 35-40" || m["paso"] != 12 {
-		t.Fatalf("guide = %#v", m)
-	}
-	if m["texto"] == nil || m["zona"] != "Orgrimmar" || m["mapId"] != 85 {
-		t.Errorf("text/zone/map = %#v", m)
-	}
-	if m["x"] != 51.3 || m["y"] != 38.5 || m["coords"] != "(51.3, 38.5)" {
-		t.Errorf("coordinates = %v %v %v", m["x"], m["y"], m["coords"])
-	}
-	// The player stands on the same map (85), so the mark needs no map id.
-	if m["marca"] != "/compa marca 51.3 38.5" || m["marcaGuia"] != "/compa marca guia" {
-		t.Errorf("marks = %v / %v", m["marca"], m["marcaGuia"])
-	}
-	if m["mismoMapa"] != true {
-		t.Errorf("mismoMapa = %v", m["mismoMapa"])
-	}
-}
-
-func TestGuideMarkCarriesMapWhenOtherMap(t *testing.T) {
-	svc := svService(t, charLua(`["character"] = { ["class"] = "Shaman" },
-		["location"] = { ["mapID"] = 1, ["x"] = 0.1, ["y"] = 0.1 },
-		["guide"] = { ["available"] = true, ["guideName"] = "G", ["stepIndex"] = 1,
-			["stepMapID"] = 85, ["stepX"] = 0.5, ["stepY"] = 0.25 }`))
-	m := objOf(t, svc.Guide)
-	if m["marca"] != "/compa marca 85 50.0 25.0" {
-		t.Errorf("other map must carry the map id: %v", m["marca"])
-	}
-	if m["mismoMapa"] != false {
-		t.Errorf("mismoMapa = %v", m["mismoMapa"])
-	}
-}
-
-func TestGuideWithoutCoordinatesSaysSo(t *testing.T) {
-	svc := svService(t, charLua(`["character"] = { ["class"] = "Shaman" },
-		["guide"] = { ["available"] = true, ["guideName"] = "G", ["stepIndex"] = 3, ["stepText"] = "Habla con X" }`))
-	m := objOf(t, svc.Guide)
-	if m["texto"] != "Habla con X" || m["x"] != nil {
-		t.Fatalf("guide without coordinates = %#v", m)
-	}
-	if note, _ := m["nota"].(string); note == "" {
-		t.Error("a step without coordinates must say so")
 	}
 }
 
@@ -219,10 +169,6 @@ func TestPlanProfesionesFoldsRouteSummary(t *testing.T) {
 func TestPlayerContextCarriesCompactAddonSummaries(t *testing.T) {
 	svc, _ := fixtureService(t)
 	m := objOf(t, svc.PlayerContext)
-	guia, ok := m["guia"].(map[string]any)
-	if !ok || guia["guia"] != "Orgrimmar 35-40" || guia["marcaGuia"] != "/compa marca guia" {
-		t.Errorf("guia summary = %#v", m["guia"])
-	}
 	ent, ok := m["entrenamiento"].(map[string]any)
 	if !ok || ent["ahora"] != 2 || ent["top"] != "Frost Shock (Rango 2)" || ent["proximoNivel"] != 40 {
 		t.Errorf("entrenamiento summary = %#v", m["entrenamiento"])

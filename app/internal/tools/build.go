@@ -43,8 +43,11 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(guiaMision(g))
 	r.Add(planProfesiones(g))
 	r.Add(queEntrenar(g))
-	r.Add(pasoGuia(g))
 	r.Add(rutaProfesion(g))
+	r.Add(analizarEquipo(g))
+	r.Add(misionesDisponibles(g))
+	r.Add(infoMazmorra(g))
+	r.Add(buscarObjeto(g))
 	r.Add(resumenSesion(g))
 	r.Add(capturarPantalla())
 

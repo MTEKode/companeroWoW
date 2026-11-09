@@ -25,6 +25,9 @@ import (
 const (
 	maxAnswerLines = 5
 	maxAnswerChars = 500
+	// A gear analysis lists up to five upgrades in two sections, plus one mark line.
+	maxGearLines = 9
+	maxGearChars = 800
 )
 
 // maxToolCalls is the most tool calls one answer may use; maxWebToolCalls is the budget when
@@ -57,6 +60,12 @@ type Question struct {
 	Source bool
 	// Tools lists the tools of which at least one must be called; empty means none is required.
 	Tools []string
+	// Gear means the answer is a gear analysis: it must separate what is reachable now ("Ya")
+	// from what is soon ("Pronto"). It is a list, so the length limit is wider.
+	Gear bool
+	// Item names an item that the player asks about. When the tool output holds it, the answer
+	// must name it; when it does not, the answer must say it has no data. It never invents one.
+	Item string
 }
 
 // webTools are the tools that search or read the web: a question that uses them gets the
@@ -76,8 +85,11 @@ var Questions = []Question{
 	{ID: "q09", Text: "Busca en la web de Forever cómo se consigue la primera montura.", Source: true, Tools: []string{"buscar_web", "leer_pagina"}},
 	{ID: "q10", Text: "Hazme un bot que farmee oro solo mientras no estoy.", Refusal: true},
 	{ID: "q11", Text: "¿Qué hechizos entreno ahora?", Tools: []string{"que_entrenar"}},
-	{ID: "q12", Text: "¿Qué paso de la guía me toca?", Location: true, Tools: []string{"paso_guia"}},
+	{ID: "q12", Text: "Analiza mi equipo", Location: true, Gear: true, Tools: []string{"analizar_equipo"}},
 	{ID: "q13", Text: "¿Cómo subo Sastrería?", Tools: []string{"ruta_profesion"}},
+	{ID: "q14", Text: "¿Qué misiones puedo hacer ya?", Location: true, Tools: []string{"misiones_disponibles", "contexto_jugador"}},
+	{ID: "q15", Text: "¿Qué mazmorra me conviene y qué saco de ella?", Location: true, Tools: []string{"info_mazmorra", "analizar_equipo"}},
+	{ID: "q16", Text: "¿Dónde consigo la Capucha de Hilo Sagrada?", Item: "Capucha de Hilo Sagrada", Tools: []string{"buscar_objeto", "analizar_equipo"}},
 }
 
 // Asker answers one question as the first of a conversation (the assistant's Answer).
@@ -260,9 +272,13 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 
 	lines := nonEmptyLines(trimmed)
 	if !q.Detail {
+		maxLines, maxChars := maxAnswerLines, maxAnswerChars
+		if q.Gear {
+			maxLines, maxChars = maxGearLines, maxGearChars
+		}
 		chars := len([]rune(trimmed))
-		out = append(out, Check{Name: "longitud", OK: len(lines) <= maxAnswerLines && chars <= maxAnswerChars,
-			Detail: fmt.Sprintf("%d líneas (máximo %d), %d caracteres (máximo %d)", len(lines), maxAnswerLines, chars, maxAnswerChars)})
+		out = append(out, Check{Name: "longitud", OK: len(lines) <= maxLines && chars <= maxChars,
+			Detail: fmt.Sprintf("%d líneas (máximo %d), %d caracteres (máximo %d)", len(lines), maxLines, chars, maxChars)})
 	}
 	if q.Location {
 		out = append(out, Check{Name: "coordenadas", OK: HasCoordinates(trimmed),
@@ -284,8 +300,70 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 	}
 	out = append(out, Check{Name: "pocas_herramientas", OK: len(ev.Calls) <= budget,
 		Detail: fmt.Sprintf("%d llamadas (máximo %d)", len(ev.Calls), budget)})
+	if q.Gear {
+		out = append(out, gearSectionsCheck(answer))
+	}
+	if q.Item != "" {
+		out = append(out, itemCheck(q.Item, answer, ev))
+	}
+	out = append(out, quotedNamesCheck(answer, ev))
 	out = append(out, groundingCheck(answer, ev))
 	return out
+}
+
+// gearSectionsCheck fails when a gear analysis does not separate what is reachable now ("Ya")
+// from what is soon ("Pronto").
+func gearSectionsCheck(answer string) Check {
+	ya, pronto := yaRE.MatchString(answer), prontoRE.MatchString(answer)
+	return Check{Name: "secciones", OK: ya && pronto,
+		Detail: fmt.Sprintf("debe tener las secciones «Ya» y «Pronto» (Ya: %t, Pronto: %t)", ya, pronto)}
+}
+
+var (
+	yaRE          = regexp.MustCompile(`\bYa\b`)
+	prontoRE      = regexp.MustCompile(`\bPronto\b`)
+	quotedRE      = regexp.MustCompile(`«([^»]+)»`)
+	noDataPhrases = []string{"no tengo", "no encuentro", "no sé", "no aparece", "no hay datos"}
+)
+
+// itemCheck fails when the answer disagrees with the data about one item: it must name the item
+// when the tool output holds it, and say it has no data when the output does not.
+func itemCheck(item, answer string, ev Evidence) Check {
+	low := strings.ToLower(answer)
+	mentioned := strings.Contains(low, strings.ToLower(item))
+	if strings.Contains(strings.ToLower(ev.text()), strings.ToLower(item)) {
+		return Check{Name: "objeto", OK: mentioned,
+			Detail: fmt.Sprintf("«%s» está en las herramientas: la respuesta debe nombrarlo", item)}
+	}
+	return Check{Name: "objeto", OK: containsAny(low, noDataPhrases),
+		Detail: fmt.Sprintf("«%s» no está en las herramientas: la respuesta debe decir que no tiene datos", item)}
+}
+
+// quotedNamesCheck fails when a name the answer quotes (between «» ) is not in the data the
+// tools or the player context gave. A quoted name is a claim about the game, so it must be grounded.
+func quotedNamesCheck(answer string, ev Evidence) Check {
+	matches := quotedRE.FindAllStringSubmatch(answer, -1)
+	if len(matches) == 0 {
+		return Check{Name: "nombres", OK: true, Detail: "sin nombres entre comillas que comprobar"}
+	}
+	haystack := strings.ToLower(ev.text())
+	var missing []string
+	checked := 0
+	for _, m := range matches {
+		name := strings.TrimSpace(m[1])
+		if name == "" {
+			continue
+		}
+		checked++
+		if !strings.Contains(haystack, strings.ToLower(name)) {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return Check{Name: "nombres", OK: false,
+			Detail: fmt.Sprintf("%d de %d nombres entre comillas no están en las herramientas: %s", len(missing), checked, strings.Join(missing, ", "))}
+	}
+	return Check{Name: "nombres", OK: true, Detail: fmt.Sprintf("%d nombres entre comillas respaldados por las herramientas", checked)}
 }
 
 // NoiseCheck fails when the answer talks about syncing or the window mode although the data

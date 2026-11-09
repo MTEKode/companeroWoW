@@ -143,14 +143,15 @@ func (g *Service) PlayerContext() (any, error) {
 		}
 	}
 	// The addon routes: counts and the top item of each, so that the answer stays short.
-	if gd := guideSummary(g); gd != nil {
-		out["guia"] = gd
-	}
 	if tr := trainingSummary(g); tr != nil {
 		out["entrenamiento"] = tr
 	}
 	if rt := routeOverview(g); rt != nil {
 		out["rutaProfesiones"] = rt
+	}
+	// Gear and quests: counts only, the detail comes from analizar_equipo and misiones_disponibles.
+	if eq := gearSummary(g); eq != nil {
+		out["equipo"] = eq
 	}
 	out["datos"] = fresh
 	if !pos.OK && !bridge {
