@@ -332,7 +332,8 @@ W.calls = {}
 ns.BridgeRefresh()
 local first = setColorCount()
 eq("franja: primer refresco pinta todos los bloques", first, ns.bridge.blocks)
-eq("franja: 1920 px de ancho = 480 bloques", ns.bridge.blocks, 480)
+-- 1920 px / 4 = 480 bloques, menos 1 de margen (N en unidades del marco, ver Bridge.lua StripBlocks).
+eq("franja: 1920 px de ancho = 479 bloques (480 menos 1 de margen)", ns.bridge.blocks, 479)
 W.calls = {}
 ns.BridgeRefresh()
 ns.BridgeRefresh()

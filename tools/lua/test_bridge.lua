@@ -281,10 +281,136 @@ local B = ns.bridge
 near("InitBridge: bloque 4 px fisicos (4 * (1440/768) * unidades por pixel)", 4 * B.pixel * (B.physH / B.uiH), 4, 1e-9)
 eq("InitBridge: fuente registrada", B.physSource, "C_VideoOptions")
 local lines = table.concat(ns.BridgeDebugLines(), "\n")
-check("estado: muestra altura y fuente", string.find(lines, "1440 px %(C_VideoOptions%)") ~= nil, lines)
-check("estado: muestra el pixel", string.find(lines, "Pixel fisico") ~= nil, lines)
+check("estado: muestra la fuente", string.find(lines, "Fuente del tamano: C_VideoOptions", 1, true) ~= nil, lines)
+check("estado: muestra la ventana fisica", string.find(lines, "Ventana fisica: 3440x1440 px", 1, true) ~= nil, lines)
+check("estado: muestra el pitch esperado", string.find(lines, "Pitch esperado: 4.00 px", 1, true) ~= nil, lines)
 
 -- Limpieza de stubs para no afectar a otras pruebas.
+clearSources()
+_G.UIParent = nil
+setPhysical(function() return 1920, 1080 end)
+
+-- ---------------------------------------------------------------------------
+print("(h) Fuente de la altura: CVar antes que C_VideoOptions si este va escalado por DPI")
+clearSources()
+_G.C_VideoOptions = { GetCurrentGameWindowSize = function() return { x = 2580, y = 1080 } end }
+setCVars({ gxWindow = "0", gxMaximize = "0", gxFullscreenResolution = "3440x1440", gxWindowedResolution = "2560x1080" })
+setPhysical(function() return 2580, 1080 end)
+h, src = ns.GameWindowHeight()
+eq("video escalado (1080) + CVar real (1440): altura 1440", h, 1440)
+eq("video escalado: fuente CVar con aviso", src, "CVar gxFullscreenResolution (C_VideoOptions escalado)")
+clearSources()
+_G.C_VideoOptions = { GetCurrentGameWindowSize = function() return { x = 3440, y = 1440 } end }
+setCVars({ gxWindow = "0", gxFullscreenResolution = "3440x1440" })
+h, src = ns.GameWindowHeight()
+eq("video real y CVar iguales: fuente C_VideoOptions", src, "C_VideoOptions")
+clearSources()
+setCVars({ gxWindow = "1", gxMaximize = "1", gxFullscreenResolution = "3440x1440", gxWindowedResolution = "2560x1080" })
+h, src = ns.GameWindowHeight()
+eq("ventana maximizada: gxFullscreenResolution (1440)", h, 1440)
+eq("ventana maximizada: fuente", src, "CVar gxFullscreenResolution")
+clearSources()
+setPhysical(function() return 2580, 1080 end)
+h, src = ns.GameWindowHeight()
+eq("sin C_VideoOptions ni CVar: GetPhysicalScreenSize (ultimo recurso)", src, "GetPhysicalScreenSize")
+
+-- ---------------------------------------------------------------------------
+print("(i) Ancho de la franja en pantalla: N en unidades del marco (modelo de pantalla propio)")
+-- Modelo independiente del addon: pantalla de SCREEN_W x TRUE_H px reales; UIParent de UI_H
+-- unidades (su ancho sale de la proporcion) con escala efectiva uiS. El marco tiene escala fs:
+-- sus unidades miden fs * TRUE_H / (UI_H * uiS) px de pantalla cada una.
+local SCREEN_W, TRUE_H, UI_H = 3440, 1440, 768
+local origCreateFrame = _G.CreateFrame
+
+local function fakeTexture()
+    local t = {}
+    t.SetSize = function(self, w, h) self.w, self.h = w, h end
+    t.SetPoint = function() end
+    t.SetColorTexture = function() end
+    t.Show = function() end
+    t.Hide = function() end
+    t.SetSnapToPixelGrid = function() end
+    t.SetTexelSnappingBias = function() end
+    return t
+end
+
+local function fakeFrame(fs)
+    local f = {}
+    f.SetSize = function(self, w, h) self.w, self.h = w, h end
+    f.GetEffectiveScale = function() return fs end
+    f.CreateTexture = function() return fakeTexture() end
+    setmetatable(f, { __index = function() return function(self) return self end end })
+    return f
+end
+
+-- Monta la franja con esa pantalla. Devuelve N, ancho en px de pantalla, pitch en px y fuente.
+local function runScreen(o)
+    clearSources()
+    B.frame, B.tex, B.blocks, B.painted = nil, {}, 0, {}
+    _G.UIParent = {
+        GetWidth = function() return SCREEN_W * UI_H / TRUE_H end,
+        GetHeight = function() return UI_H end,
+        GetEffectiveScale = function() return o.uiS end,
+    }
+    _G.CreateFrame = function() return fakeFrame(o.fs) end
+    if o.video then _G.C_VideoOptions = { GetCurrentGameWindowSize = function() return o.video end } end
+    if o.cvars then setCVars(o.cvars) end
+    setPhysical(function() return o.physical[1], o.physical[2] end)
+    ns.InitBridge()
+    local pxPerUnit = o.fs * TRUE_H / (UI_H * o.uiS)
+    return {
+        n = B.blocks,
+        stripPx = B.frame.w * pxPerUnit,
+        pitch = B.tex[1].w * pxPerUnit,
+        source = B.physSource,
+        physH = B.physH,
+        lines = table.concat(ns.BridgeDebugLines(), "\n"),
+    }
+end
+
+local DPI_PHYS = { 2580, 1080 }   -- GetPhysicalScreenSize con Windows al 133 %
+local DPI_VIDEO = { x = 2580, y = 1080 }
+local REAL_VIDEO = { x = 3440, y = 1440 }
+local CVARS = { gxWindow = "0", gxMaximize = "0", gxFullscreenResolution = "3440x1440", gxWindowedResolution = "2560x1080" }
+
+for _, us in ipairs({ 0.948, 1.0, 1.406, 1.875 }) do
+    for _, fs in ipairs({ 1.0, 0.5 }) do
+        local tag = string.format("uiS %.3f, marco %.1f", us, fs)
+        local r = runScreen({ uiS = us, fs = fs, video = DPI_VIDEO, cvars = CVARS, physical = DPI_PHYS })
+        check(tag .. ": franja dentro de la pantalla (" .. string.format("%.1f", r.stripPx) .. " px)",
+            r.stripPx <= SCREEN_W + 1e-6, string.format("%.3f > %d", r.stripPx, SCREEN_W))
+        check(tag .. ": N >= 600 (" .. r.n .. ")", r.n >= 600)
+        near(tag .. ": bloque de 4 px fisicos", r.pitch, 4, 1e-6)
+        eq(tag .. ": altura fisica desde la CVar", r.physH, 1440)
+    end
+end
+
+-- Escala del bloque en unidades: 4 * 768 * uiS / (1440 * fs) (la correccion del 1.055 medido).
+local r948 = runScreen({ uiS = 0.948, fs = 1.0, video = DPI_VIDEO, cvars = CVARS, physical = DPI_PHYS })
+near("uiS 0.948: bloque 2.0210 unidades", ns.bridge.block, 4 * 768 * 0.948 / 1440, 1e-9)
+eq("uiS 0.948: N = 859", r948.n, 859)
+check("estado: fuente, ventana, UIParent, marco, bloque, N y pitch en una linea cada una",
+    select(2, string.gsub(r948.lines, "\n", "")) == 6 and string.find(r948.lines, "Pitch esperado: 4.00 px", 1, true) ~= nil, r948.lines)
+
+-- Sin CVar ni C_VideoOptions: la altura DPI (1080) da bloques de 5.33 px, pero la franja
+-- sigue dentro de la pantalla: el ajuste no depende de la altura fisica.
+local rDpi = runScreen({ uiS = 0.948, fs = 1.0, physical = DPI_PHYS })
+check("solo GetPhysicalScreenSize (1080): franja dentro de la pantalla (" .. string.format("%.1f", rDpi.stripPx) .. " px)",
+    rDpi.stripPx <= SCREEN_W + 1e-6, string.format("%.3f", rDpi.stripPx))
+near("solo GetPhysicalScreenSize: pitch 5.33 px (sin CVar, la altura es la de DPI)", rDpi.pitch, 4 * 1440 / 1080, 1e-6)
+check("solo GetPhysicalScreenSize: N >= 600 (" .. rDpi.n .. ")", rDpi.n >= 600)
+
+-- Video real: bloques de 4 px.
+local rReal = runScreen({ uiS = 0.948, fs = 1.0, video = REAL_VIDEO, cvars = CVARS, physical = DPI_PHYS })
+near("video real 3440x1440: pitch 4 px", rReal.pitch, 4, 1e-6)
+eq("video real: fuente C_VideoOptions", rReal.source, "C_VideoOptions")
+
+-- Anchura de la pantalla 3440: el hueco dejado es el margen de 1 bloque (<= 4 px fisicos, en el caso 4 px).
+check("margen: la franja deja al menos un bloque libre", rReal.stripPx <= SCREEN_W - 4 + 1e-6, string.format("%.3f", rReal.stripPx))
+
+-- Limpieza.
+_G.CreateFrame = origCreateFrame
+B.frame, B.tex, B.blocks, B.painted = nil, {}, 0, {}
 clearSources()
 _G.UIParent = nil
 setPhysical(function() return 1920, 1080 end)

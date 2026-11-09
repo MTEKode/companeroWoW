@@ -1,10 +1,11 @@
 -- Bridge.lua: franja de pixeles (addon -> app).
 -- Protocolo v3 (activo): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo ancho de
--- la ventana: N = min(floor(anchoFisico / 4), 1024) bloques. Bloques 1..5 = magia y calibracion
+-- la pantalla: N = min(floor(anchoDisponible / bloque) - 1, 1024) bloques, medidos en unidades
+-- del propio marco (no en pixeles fisicos estimados). Bloques 1..5 = magia y calibracion
 -- (igual que v2); bloques 6..N = flujo de nibbles (3 por bloque). El contenido del flujo lo
 -- construye Channel.lua (cabecera, estado, trozo de mensaje y CRC-16).
 -- Protocolo v2 (solo codificador de referencia para tests; el addon ya no lo emite).
--- BuildPayload, EncodeBlocks, EncodeFrameColors, BlockCount y ComputePixelSize son funciones
+-- BuildPayload, EncodeBlocks, EncodeFrameColors, StripBlocks y ComputePixelSize son funciones
 -- puras (testeables offline). GameWindowSize consulta la API y se prueba con stubs.
 -- Los arrays son 1-based: byte k (0-based del contrato) = array[k + 1].
 local ADDON_NAME, ns = ...
@@ -109,12 +110,16 @@ function ns.BuildPayload(s)
     return p
 end
 
--- Numero de bloques de la fila v3 para un ancho fisico: min(floor(ancho / 4), 1024).
--- Ancho desconocido -> DEFAULT_BLOCKS. Nunca menos de CALIB_BLOCKS + 1.
-function ns.BlockCount(widthPx)
-    local w = tonumber(widthPx)
-    if not w or w <= 0 then return DEFAULT_BLOCKS end
-    return max(CALIB_BLOCKS + 1, min(floor(w / BLOCK_PX), MAX_BLOCKS))
+-- Numero de bloques de la fila v3: los que caben en availUnits (ancho disponible, en unidades
+-- del marco) con bloques de blockUnits unidades, menos 1 de margen; tope MAX_BLOCKS.
+-- Garantia: N * blockUnits <= availUnits - blockUnits, aunque el tamano fisico estimado este mal.
+-- Ancho desconocido -> DEFAULT_BLOCKS. Si no caben CALIB_BLOCKS + 1 bloques -> 0 (sin franja).
+function ns.StripBlocks(availUnits, blockUnits)
+    local a, b = tonumber(availUnits), tonumber(blockUnits)
+    if not a or a <= 0 or not b or b <= 0 then return DEFAULT_BLOCKS end
+    local n = min(floor(a / b) - 1, MAX_BLOCKS)
+    if n <= CALIB_BLOCKS then return 0 end
+    return n
 end
 
 -- Codigo de color (r*65536 + g*256 + b) de un bloque, y su inverso para pintar.
@@ -188,17 +193,23 @@ function ns.EncodeBlocks(payload, seq)
     return blocks
 end
 
--- Unidades de marco por pixel fisico. uiHeight: altura de UIParent en unidades (768 en
+-- Unidades del marco por pixel fisico. uiHeight: altura de UIParent en sus unidades (768 en
 -- un cliente normal). physH: altura real de la ventana de juego en pixeles fisicos.
--- La franja usa el marco sin escala propia, cuyas unidades son las de UIParent: un
--- bloque de BLOCK_PX pixeles fisicos mide BLOCK_PX * uiHeight / physH unidades.
--- Con 1440 px fisicos y UIParent de 768 unidades: 1 unidad = 1.875 px, bloque = 4 px.
-function ns.ComputePixelSize(physH, uiHeight)
+-- uiScale / frameScale: escala efectiva de UIParent y del marco de la franja (1 si se ignoran).
+-- Un pixel fisico mide (uiHeight / physH) unidades de UIParent, y una unidad de UIParent son
+-- uiScale / frameScale unidades del marco. El marco de la franja no hereda la escala de
+-- UIParent (SetIgnoreParentScale), asi que el cociente de escalas no es 1 en general.
+-- Ej.: 1440 px, UIParent 768 y escala 0.948 con marco a 1: 1 px = 0.5056 unidades (bloque 4 px = 2.02).
+function ns.ComputePixelSize(physH, uiHeight, uiScale, frameScale)
     physH = tonumber(physH)
     if not physH or physH <= 0 then return nil end
     uiHeight = tonumber(uiHeight)
     if not uiHeight or uiHeight <= 0 then uiHeight = REFERENCE_UNITS end
-    return uiHeight / physH
+    local su = tonumber(uiScale)
+    if not su or su <= 0 then su = 1 end
+    local sf = tonumber(frameScale)
+    if not sf or sf <= 0 then sf = 1 end
+    return uiHeight / physH * su / sf
 end
 
 -- Lee un CVar como cadena limpia o nil.
@@ -213,13 +224,23 @@ local function resolutionSize(text)
     return tonumber(w), tonumber(h)
 end
 
--- Tamano fisico real de la ventana de juego y de donde sale. Orden:
--- 1) C_VideoOptions.GetCurrentGameWindowSize (vector x,y);
--- 2) CVar gxFullscreenResolution o gxWindowedResolution ("3440x1440"), segun gxWindow
---    (1 = ventana: la ventana, si no el monitor);
--- 3) GetPhysicalScreenSize (con DPI de Windows puede venir escalado: 1080 en un 1440).
--- Devuelve ancho, alto (o nil) y el nombre de la fuente.
-function ns.GameWindowSize()
+-- Tamano de la ventana segun las CVar, respetando gxWindow y gxMaximize: con ventana sin
+-- maximizar, gxWindowedResolution; si no, gxFullscreenResolution (maximizada = el monitor).
+-- Si falta, prueba la otra. Devuelve ancho, alto y el nombre de la CVar (o nil).
+local function cvarWindowSize()
+    local windowed = cvarText("gxWindow") == "1"
+    local maximized = cvarText("gxMaximize") == "1"
+    local first, second = "gxFullscreenResolution", "gxWindowedResolution"
+    if windowed and not maximized then first, second = second, first end
+    local cw, ch = resolutionSize(cvarText(first))
+    if ch and ch > 0 then return cw, ch, "CVar " .. first end
+    cw, ch = resolutionSize(cvarText(second))
+    if ch and ch > 0 then return cw, ch, "CVar " .. second end
+    return nil, nil, nil
+end
+
+-- Tamano de C_VideoOptions.GetCurrentGameWindowSize (vector x,y). nil si no hay.
+local function videoOptionsSize()
     local v = ns.Call("C_VideoOptions.GetCurrentGameWindowSize")
     local w, h
     if type(v) == "table" then
@@ -230,18 +251,42 @@ function ns.GameWindowSize()
         w = w or ns.Num(x)
         h = h or ns.Num(y)
     end
-    if w and h and w > 0 and h > 0 then return w, h, "C_VideoOptions" end
+    if w and h and w > 0 and h > 0 then return w, h end
+    return nil, nil
+end
 
-    local windowed = cvarText("gxWindow") == "1"
-    local first, second = "gxFullscreenResolution", "gxWindowedResolution"
-    if windowed then first, second = second, first end
-    local cw, ch = resolutionSize(cvarText(first))
-    if ch and ch > 0 then return cw, ch, "CVar " .. first end
-    cw, ch = resolutionSize(cvarText(second))
-    if ch and ch > 0 then return cw, ch, "CVar " .. second end
+-- Escalas de DPI de Windows habituales (125 %, 133 %, 150 %).
+local DPI_RATIOS = { 1.25, 4 / 3, 1.5 }
+
+-- true si bigH / smallH es una de esas escalas (1 % de tolerancia): smallH es la ventana
+-- escalada por DPI (p. ej. 1080) y bigH la real (1440).
+local function isDpiScaled(smallH, bigH)
+    if not smallH or not bigH or smallH <= 0 then return false end
+    local r = bigH / smallH
+    for _, k in ipairs(DPI_RATIOS) do
+        if math.abs(r - k) <= k * 0.01 then return true end
+    end
+    return false
+end
+
+-- Tamano fisico real de la ventana de juego y de donde sale. Orden:
+-- 1) CVar (gxWindowedResolution / gxFullscreenResolution, ver cvarWindowSize). Si
+--    C_VideoOptions.GetCurrentGameWindowSize devuelve la altura escalada por DPI (la CVar es
+--    esa altura x 1.25/1.333/1.5), gana la CVar;
+-- 2) C_VideoOptions.GetCurrentGameWindowSize;
+-- 3) GetPhysicalScreenSize (con DPI de Windows puede venir escalado: 1080 en un 1440). Ultimo recurso.
+-- Devuelve ancho, alto (o nil) y el nombre de la fuente.
+function ns.GameWindowSize()
+    local vw, vh = videoOptionsSize()
+    local cw, ch, csource = cvarWindowSize()
+    if vh and ch and isDpiScaled(vh, ch) then
+        return cw, ch, csource .. " (C_VideoOptions escalado)"
+    end
+    if vh then return vw, vh, "C_VideoOptions" end
+    if ch then return cw, ch, csource end
 
     local pw, ph = ns.Call("GetPhysicalScreenSize")
-    w, h = ns.Num(pw), ns.Num(ph)
+    local w, h = ns.Num(pw), ns.Num(ph)
     if h and h > 0 then return w, h, "GetPhysicalScreenSize" end
     return nil, nil, "ninguna"
 end
@@ -311,20 +356,25 @@ function ns.IsStripOn()
     return not (type(db) == "table" and type(db.settings) == "table" and db.settings.strip == false)
 end
 
--- Lineas de diagnostico para /compa estado: altura y ancho fisicos, fuente, pixel y bloques.
+-- Lineas de diagnostico para /compa estado (una linea por dato): fuente del tamano, ventana
+-- fisica, UIParent en unidades, escala del marco, bloque en unidades, N y pitch esperado.
 function ns.BridgeDebugLines()
-    local h = B.physH
-    local hText = h and string.format("%d px (%s)", h, B.physSource or "?") or "desconocida"
-    local w = B.physW
-    local wText = w and string.format("%d px", w) or "desconocido"
-    return {
-        string.format("Ventana fisica: %s de alto, %s de ancho", hText, wText),
-        string.format("UIParent: %s unidades de altura", B.uiH and string.format("%.0f", B.uiH) or "?"),
-        string.format("Pixel fisico: %.4f unidades de marco; bloque de %dx%d px = %.3f unidades",
-            B.pixel or 0, BLOCK_PX, BLOCK_PX, BLOCK_PX * (B.pixel or 0)),
-        string.format("Franja v%d: %d bloques de %dx%d px (%d px de ancho)",
-            PROTOCOL_V3, B.blocks or 0, BLOCK_PX, BLOCK_PX, (B.blocks or 0) * BLOCK_PX),
+    local function num(v, fmt) return v and string.format(fmt, v) or "?" end
+    local pitch = B.pixel and B.pixel > 0 and B.block and B.block / B.pixel or nil
+    local stripPx = pitch and (B.blocks or 0) * pitch
+    local lines = {
+        "Fuente del tamano: " .. (B.physSource or "ninguna"),
+        string.format("Ventana fisica: %sx%s px", num(B.physW, "%d"), num(B.physH, "%d")),
+        string.format("UIParent: %sx%s unidades (escala efectiva %s)",
+            num(B.uiW, "%.1f"), num(B.uiH, "%.0f"), num(B.uiS, "%.4f")),
+        string.format("Marco de la franja: escala efectiva %s; ancho disponible %s unidades",
+            num(B.frS, "%.4f"), num(B.avail, "%.1f")),
+        string.format("Bloque: %s unidades (%d px fisicos nominales)", num(B.block, "%.4f"), BLOCK_PX),
+        string.format("Franja v%d: N = %d bloques (tope %d)", PROTOCOL_V3, B.blocks or 0, MAX_BLOCKS),
+        string.format("Pitch esperado: %s px; franja de %s px%s", num(pitch, "%.2f"), num(stripPx, "%.0f"),
+            B.physW and string.format(" de %d", B.physW) or ""),
     }
+    return lines
 end
 
 -- Crea o ajusta las texturas hasta n (las sobrantes se ocultan). Resetea lo pintado.
@@ -350,18 +400,37 @@ local function ensureTextures(n)
     B.painted = {} -- texturas nuevas u ocultas: el siguiente refresco pinta todo
 end
 
--- Recalcula el tamano del bloque y N segun la ventana fisica y UIParent.
+-- Recalcula el bloque y N. El ancho disponible se mide en unidades del propio marco:
+-- ancho de UIParent * escala de UIParent / escala del marco. N bloques de ese tamano caben
+-- siempre en pantalla aunque la altura fisica estimada este mal; la estimacion solo fija el
+-- pitch (4 px fisicos cuando la altura fisica es la real).
 local function recomputeScale()
     local w, h, source = ns.GameWindowSize()
-    local uiH
     local ui = _G.UIParent
-    if ui then uiH = ns.Num(ns.Method(ui, "GetHeight")) end
-    local px = ns.ComputePixelSize(h, uiH)
+    local uiW, uiH, uiS
+    if ui then
+        uiW = ns.Num(ns.Method(ui, "GetWidth"))
+        uiH = ns.Num(ns.Method(ui, "GetHeight"))
+        uiS = ns.Num(ns.Method(ui, "GetEffectiveScale"))
+    end
+    local frS = B.frame and ns.Num(ns.Method(B.frame, "GetEffectiveScale"))
+    if not uiS or uiS <= 0 then uiS = 1 end
+    if not frS or frS <= 0 then frS = 1 end
+    -- Sin altura fisica: referencia de 1080 px (como antes).
+    local px = ns.ComputePixelSize(h or 1080, uiH, uiS, frS)
     if not px or px <= 0 then px = REFERENCE_UNITS / 1080 end
-    B.pixel = px
-    B.physW, B.physH, B.physSource, B.uiH = w, h, source, uiH
-    local n = ns.BlockCount(w)
     local block = BLOCK_PX * px
+    local avail
+    if uiW and uiW > 0 then
+        avail = uiW * uiS / frS
+    elseif w and w > 0 then
+        avail = w * px -- sin UIParent: ancho fisico convertido a unidades del marco
+    end
+    local n = ns.StripBlocks(avail, block)
+    B.pixel = px
+    B.physW, B.physH, B.physSource = w, h, source
+    B.uiW, B.uiH, B.uiS, B.frS = uiW, uiH, uiS, frS
+    B.avail, B.block = avail, block
     if n ~= B.blocks or not B.frame then
         B.blocks = n
         ensureTextures(n)
