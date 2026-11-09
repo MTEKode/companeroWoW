@@ -140,6 +140,8 @@ local function take(list, n)
 end
 
 ns.Questie.NearestFirst = nearestFirst
+ns.Questie.ConvertSpawns = convertSpawns -- para QuestWindow.lua y Gear.lua
+ns.Questie.Modules = questieModules
 
 -- ---------------------------------------------------------------------------
 -- Starters, finishers y objetivos

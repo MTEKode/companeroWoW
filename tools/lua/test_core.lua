@@ -286,14 +286,14 @@ outln("integraciones y Questie:")
 setupInWorld()
 local c = char()
 c.training = { available = true, source = "WhatsTraining", availableCount = 2, spells = { { spellID = 1 } } }
-c.guide = { available = true, source = "RXPGuides", guideName = "Elwynn 1-10", stepIndex = 12 }
+c.dungeons = { available = true, list = { { key = "mina-prueba" } } }
 c.profPlan = { available = true, source = "SkillUpForever", professions = { { name = "Sastrería" } } }
 c.questie = { available = true, version = "12.6.4", quests = {} }
-local saved = { c.training, c.guide, c.profPlan, c.questie }
+local saved = { c.training, c.dungeons, c.profPlan, c.questie }
 
 fire("PLAYER_LOGOUT")
 eq("logout conserva training", char().training, saved[1])
-eq("logout conserva guide", char().guide, saved[2])
+eq("logout conserva dungeons", char().dungeons, saved[2])
 eq("logout conserva profPlan", char().profPlan, saved[3])
 eq("logout conserva questie", char().questie, saved[4])
 
@@ -309,7 +309,7 @@ W.uninstallAddons()
 ns.ExportIntegrationsNow()
 ns.ExportQuestieNow()
 eq("no disponible no sustituye training", char().training, saved[1])
-eq("no disponible no sustituye guide", char().guide, saved[2])
+eq("no disponible no sustituye dungeons", char().dungeons, saved[2])
 eq("no disponible no sustituye profPlan", char().profPlan, saved[3])
 eq("no disponible no sustituye questie", char().questie, saved[4])
 

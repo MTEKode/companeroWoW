@@ -4,13 +4,15 @@
 ## Author: Marcos
 ## Version: 0.1.0
 ## SavedVariables: CompaneroWoWDB
-## OptionalDeps: Questie, WhatsTraining, RXPGuides, SkillUpForever
+## OptionalDeps: Questie, WhatsTraining, SkillUpForever, ForeverDungeonJournal
 
 Util.lua
 Core.lua
 Collectors.lua
 Knowledge.lua
 Questie.lua
+QuestWindow.lua
+Gear.lua
 Integrations.lua
 Marks.lua
 Bridge.lua
