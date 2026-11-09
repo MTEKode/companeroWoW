@@ -64,7 +64,7 @@ local function headTokens(s, n)
     return heads, trim(string.sub(s, pos))
 end
 
-local USAGE = "Uso: /compa marca [<mapID>] <x> <y> [texto] | /compa marca | /compa marca guia | /compa marca borrar"
+local USAGE = "Uso: /compa marca [<mapID>] <x> <y> [texto] | /compa marca | /compa marca borrar"
 
 -- raw: texto tras "marca". isMap(id) -> bool (opcional) confirma un mapID de 1..100.
 -- Devuelve { kind = "auto" | "clear" | "coords" | "error", mapID?, x?, y? (0..1), text?, message? }.
@@ -73,7 +73,6 @@ function M.ParseArgs(raw, isMap)
     if s == "" then return { kind = "auto" } end
     if string.lower(s) == "borrar" then return { kind = "clear" } end
     local lower = string.lower(s)
-    if lower == "guia" or lower == "guía" then return { kind = "guide" } end
 
     local h3 = headTokens(s, 3)
     local mapN = h3[1] and string.match(h3[1], "^%d+$") and tonumber(h3[1]) or nil
@@ -314,24 +313,10 @@ function M.MarkAuto()
     return true
 end
 
--- /compa marca guia: marca el paso actual de RXPGuides, si Integrations puede leer sus coordenadas.
-function M.MarkGuide()
-    local step, reason = nil, nil
-    if ns.Integrations and type(ns.Integrations.GuideStep) == "function" then
-        step, reason = ns.Integrations.GuideStep()
-    end
-    if type(step) ~= "table" or type(step.mapID) ~= "number" or type(step.x) ~= "number" or type(step.y) ~= "number" then
-        say("No hay coordenadas del paso de RXP" .. (reason and (": " .. reason) or "") .. ". Usa /compa marca <x> <y> [texto].")
-        return false
-    end
-    return M.Set(step.mapID, step.x, step.y, step.text or "")
-end
-
 -- Despacho de "/compa marca ...". rest = texto original (con mayusculas) tras "marca".
 function M.Command(rest)
     local p = M.ParseArgs(rest, validMap)
     if p.kind == "clear" then return M.Clear() end
-    if p.kind == "guide" then return M.MarkGuide() end
     if p.kind == "error" then
         say(p.message)
         return false

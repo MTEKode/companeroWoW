@@ -1,5 +1,5 @@
--- test_integrations.lua: pruebas offline de Integrations.lua (WhatsTraining, RXPGuides, SkillUpForever),
--- /compa estado, /compa marca guia, y de las correcciones de auditoria (repintado de la franja,
+-- test_integrations.lua: pruebas offline de Integrations.lua (WhatsTraining, SkillUpForever),
+-- /compa estado, y de las correcciones de auditoria (repintado de la franja,
 -- throttle de QUEST_LOG_UPDATE, tope de knowledge.npcs, contador de errores silenciados).
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/test_integrations.lua
 package.path = "tools/lua/?.lua;" .. package.path
@@ -72,7 +72,7 @@ local function char() return CompaneroWoWDB.characters[KEY] end
 -- Quita los bloques de integracion del personaje: los escenarios "no disponible" parten de cero.
 local function forgetIntegrations()
     local c = char()
-    if c then c.training, c.guide, c.profPlan = nil, nil, nil end
+    if c then c.training, c.profPlan = nil, nil end
 end
 
 -- Tamano aproximado (cadenas y claves) para comprobar el limite de 20 KB por bloque.
@@ -113,15 +113,7 @@ eq("training: rango en espanol", tr.spells[3].rank, "Rango 2")
 eq("training: nivel", tr.spells[3].level, 18)
 check("training: rango ausente -> nil", tr.spells[1].rank == nil)
 
-local g = c.guide
-eq("guide.available", g.available, true)
-eq("guide.source", g.source, "RXPGuides")
-eq("guide.group", g.group, "Leveling")
-eq("guide.guideName", g.guideName, "Elwynn 1-10")
-eq("guide.stepIndex", g.stepIndex, 12)
-eq("guide.stepId", g.stepId, "s12")
-eq("guide: sin coordenadas si RXP no las expone", g.stepMapID, nil)
-eq("guide: sin stepText si RXP no lo expone", g.stepText, nil)
+check("sin bloque guide (RXPGuides retirado)", c.guide == nil)
 
 local p = c.profPlan
 eq("profPlan.available", p.available, true)
@@ -149,8 +141,7 @@ check("RequiredMaterials llamado con receta y cantidad",
     and W.callsNamed("SkillUpForever.RequiredMaterials")[1].args[2] == 3)
 
 check("health: luaErrors numerico", type(c.health) == "table" and type(c.health.luaErrors) == "number")
-check("bloques < 20 KB", approxBytes(c.training) < 20480 and approxBytes(c.guide) < 20480
-    and approxBytes(c.profPlan) < 20480)
+check("bloques < 20 KB", approxBytes(c.training) < 20480 and approxBytes(c.profPlan) < 20480)
 
 -- ---------------------------------------------------------------------------
 -- 2) Topes
@@ -198,13 +189,12 @@ check("profPlan: pasos como mucho 5", #char().profPlan.professions[1].nextSteps 
 -- 3) Addons ausentes o no listos -> available = false, nunca error
 -- ---------------------------------------------------------------------------
 outln("addons ausentes:")
-reset({ noWT = true, noRXP = true, noSkillUp = true })
+reset({ noWT = true, noSkillUp = true })
 forgetIntegrations()
 ns.ExportIntegrationsNow()
 c = char()
 eq("sin WhatsTraining: available=false", c.training.available, false)
 check("sin WhatsTraining: motivo", type(c.training.reason) == "string" and string.find(c.training.reason, "WhatsTraining", 1, true) ~= nil)
-eq("sin RXPGuides: available=false", c.guide.available, false)
 eq("sin SkillUpForever: available=false", c.profPlan.available, false)
 check("sin addons: sigue habiendo health", type(c.health) == "table")
 
@@ -213,16 +203,6 @@ forgetIntegrations()
 ns.ExportIntegrationsNow()
 eq("WhatsTraining no listo: available=false", char().training.available, false)
 
-reset()
-forgetIntegrations()
-_G.RXPCData = nil
-ns.ExportIntegrationsNow()
-eq("RXPCData ausente: available=false", char().guide.available, false)
-reset()
-forgetIntegrations()
-_G.RXPCData.currentGuideName = nil
-ns.ExportIntegrationsNow()
-eq("sin guia activa: available=false", char().guide.available, false)
 
 reset()
 forgetIntegrations()
@@ -278,7 +258,7 @@ advance(60)
 ns.Integrations.OnEvent("TRAINER_CLOSED")
 eq("TRAINER_CLOSED exporta", A.skillCalls, 3)
 
--- Login: registra callbacks de WhatsTraining, arranca el sondeo de RXP y exporta tras la espera.
+-- Login: registra callbacks de WhatsTraining y exporta tras la espera (sin sondeo de RXP).
 advance(60)
 A.skillCalls = 0
 W.calls = {}
@@ -286,24 +266,14 @@ ns.Integrations.OnEvent("PLAYER_LOGIN")
 check("login: registra Ready y SpellsChanged de WT_API",
     #W.callsNamed("WT_API.RegisterCallback") == 2)
 local tick = W.callsNamed("C_Timer.NewTicker")
-check("login: sondeo de RXP cada 5 s", #tick == 1 and tick[1].args[1] == 5, tick[1] and tostring(tick[1].args[1]) or "sin ticker")
+check("login: sin ticker de sondeo", #tick == 0)
 local esperas = {}
 for _, t in ipairs(W.callsNamed("C_Timer.After")) do esperas[#esperas + 1] = t.args[1] end
 check("login: reintento a los 3 s y a los 15 s", table.concat(esperas, ",") == "3,15", table.concat(esperas, ","))
-eq("login: el sondeo de RXP existe", W.activeTickers(), 1)
+eq("login: ningun ticker activo", W.activeTickers(), 0)
 W.runTimers()
 eq("login: exportacion tras la espera", A.skillCalls, 1)
 
--- Sondeo: sin cambios no exporta; un cambio de paso exporta (throttle respetado).
-advance(60)
-A.skillCalls = 0
-W.tickAll()
-eq("sondeo sin cambios no exporta", A.skillCalls, 0)
-_G.RXPCData.currentStep = 13
-_G.RXPCData.currentStepId = "s13"
-W.tickAll()
-eq("sondeo con cambio de paso exporta", A.skillCalls, 1)
-eq("el paso exportado es el nuevo", char().guide.stepIndex, 13)
 
 advance(60)
 A.skillCalls = 0
@@ -319,46 +289,27 @@ SlashCmdList.COMPA("sync")
 printed = {}
 SlashCmdList.COMPA("estado")
 check("estado: WhatsTraining con hechizos disponibles", anyPrinted("WhatsTraining: 3 hechizos disponibles"))
-check("estado: RXP con guia y paso", anyPrinted("RXP: guía «Elwynn 1-10», paso 12"))
+check("estado: sin linea de RXP", not anyPrinted("RXP:"))
 check("estado: SkillUpForever con profesiones", anyPrinted("SkillUpForever: 1 profesiones"))
 check("estado: errores capturados", anyPrinted("Errores capturados: "))
 
-reset({ noWT = true, noRXP = true, noSkillUp = true })
+reset({ noWT = true, noSkillUp = true })
 forgetIntegrations()
 SlashCmdList.COMPA("sync")
 printed = {}
 SlashCmdList.COMPA("estado")
 check("estado sin addons: indica no disponible", anyPrinted("WhatsTraining: no disponible")
-    and anyPrinted("RXP: no disponible") and anyPrinted("SkillUpForever: no disponible"))
+    and anyPrinted("SkillUpForever: no disponible"))
 
--- Parseo de "guia" y "guía".
-eq("ParseArgs guia", ns.Marks.ParseArgs("guia").kind, "guide")
-eq("ParseArgs guía", ns.Marks.ParseArgs("guía").kind, "guide")
-
--- Sin coordenadas del paso: aviso y ninguna marca.
+-- RXPGuides retirado: "guia" ya no es un modo de /compa marca (es un error de uso).
+eq("ParseArgs guia: error de uso", ns.Marks.ParseArgs("guia").kind, "error")
+eq("ParseArgs guía: error de uso", ns.Marks.ParseArgs("guía").kind, "error")
 reset()
 ns.EnsureDB()
 printed = {}
 SlashCmdList.COMPA("marca guia")
-check("marca guia sin coordenadas: avisa", anyPrinted("No hay coordenadas del paso de RXP"))
-eq("marca guia sin coordenadas: no pone marca", S.userWaypoint, nil)
-eq("marca guia sin coordenadas: no guarda marca", ns.Marks.mark, nil)
-
--- Con coordenadas (fuente simulada): marca con la API de Marks.
-local origStep = ns.Integrations.GuideStep
-ns.Integrations.GuideStep = function() return { mapID = 1429, x = 0.45, y = 0.67, text = "Paso 12" } end
-reset()
-ns.EnsureDB()
-ns.ExportIntegrationsNow()
-eq("guide exporta coordenadas cuando existen", char().guide.stepMapID, 1429)
-eq("guide exporta stepX", char().guide.stepX, 0.45)
-eq("guide exporta stepText", char().guide.stepText, "Paso 12")
-printed = {}
-SlashCmdList.COMPA("marca guia")
-check("marca guia con coordenadas: pone la marca", S.userWaypoint ~= nil)
-eq("marca guia: mapa de la marca", ns.Marks.mark and ns.Marks.mark.mapID, 1429)
-check("marca guia: confirma en el chat", anyPrinted("Marca puesta en Elwynn"))
-ns.Integrations.GuideStep = origStep
+check("marca guia: muestra el uso", anyPrinted("Uso: /compa marca"))
+eq("marca guia: no pone marca", S.userWaypoint, nil)
 
 -- ---------------------------------------------------------------------------
 -- 6) Auditoria: repintado de la franja solo si cambian los bytes

@@ -384,7 +384,7 @@ end
 
 
 -- ---------------------------------------------------------------------------
--- Addons fuente de Integrations.lua: WhatsTraining (WT_API), RXPGuides (RXPCData), SkillUpForever.API.
+-- Addons fuente de Integrations.lua: WhatsTraining (WT_API), SkillUpForever.API.
 -- Son datos de prueba con la forma publica de cada API; se instalan y desinstalan por separado.
 -- ---------------------------------------------------------------------------
 
@@ -421,9 +421,9 @@ function M.manySpells(n)
     return out
 end
 
--- Instala WT_API, RXPGuides/RXPCData y SkillUpForever.API con datos de prueba (en M.state.addons).
+-- Instala WT_API y SkillUpForever.API con datos de prueba (en M.state.addons).
 -- opts.wtReady = false -> WT_API.IsReady() false; opts.wtSpells = lista de hechizos; opts.noSkillUp = true
--- omite SkillUpForever; opts.noRXP = true omite RXPGuides; opts.noWT = true omite WhatsTraining.
+-- omite SkillUpForever; opts.noWT = true omite WhatsTraining.
 function M.installAddons(opts)
     opts = opts or {}
     local S = M.state
@@ -466,14 +466,6 @@ function M.installAddons(opts)
         }
     end
 
-    if not opts.noRXP then
-        _G.RXPGuides = { RegisterGuide = function() end, ImportGuide = function() end }
-        _G.RXPCData = {
-            currentStep = 12, currentStepId = "s12",
-            currentGuideGroup = "Leveling", currentGuideName = "Elwynn 1-10",
-            guideProgress = {},
-        }
-    end
 
     if not opts.noSkillUp then
         _G.SkillUpForever = { API = {
@@ -514,11 +506,9 @@ function M.installAddons(opts)
     _G.C_Item.GetItemNameByID = function(id) return A.names[id] end
 end
 
--- Quita WT_API, RXPGuides, RXPCData, SkillUpForever y C_Item (para probar addons ausentes).
+-- Quita WT_API, SkillUpForever y C_Item (para probar addons ausentes).
 function M.uninstallAddons()
     _G.WT_API = nil
-    _G.RXPGuides = nil
-    _G.RXPCData = nil
     _G.SkillUpForever = nil
     if _G.C_Item then _G.C_Item.GetItemNameByID = nil end
     M.state.addons = nil
@@ -535,6 +525,279 @@ function M.runTimers()
     local pending = M.state.timers
     M.state.timers = {}
     for _, t in ipairs(pending) do t.fn() end
+end
+
+-- ---------------------------------------------------------------------------
+-- Datos de prueba de Gear.lua / QuestWindow.lua: misiones (prerrequisitos, mascaras de raza y clase,
+-- exclusivas, recompensas), objetos (uno sin cargar), ForeverDungeonJournal, habilidades y equipo.
+-- Se instala y desinstala aparte (installGear / uninstallGear); M.GEAR guarda el estado mutable.
+-- ---------------------------------------------------------------------------
+M.RACE_ALLIANCE = 77   -- 1+4+8+64: Humano, Enano, Elfo de la noche, Gnomo
+M.RACE_HORDE = 178     -- 2+16+32+128: Orco, No-muerto, Tauren, Trol
+
+local GEAR_NPC = {
+    [5001] = { name = "Sacerdote Aldo", spawns = { [12] = { { 45, 60 } } } },
+    [5002] = { name = "Capitana Vega", spawns = { [40] = { { 30, 30 } } } },
+}
+M.GEAR_NPC = GEAR_NPC
+
+local SUB_NAMES_ARMOR = { [0] = "Miscellaneous", [1] = "Cloth", [2] = "Leather", [3] = "Mail", [4] = "Plate", [6] = "Shields" }
+local SUB_NAMES_WEAPON = {
+    [0] = "One-Handed Axes", [1] = "Two-Handed Axes", [2] = "Bows", [3] = "Guns", [4] = "One-Handed Maces",
+    [5] = "Two-Handed Maces", [6] = "Polearms", [7] = "One-Handed Swords", [8] = "Two-Handed Swords",
+    [10] = "Staves", [13] = "Fist Weapons", [14] = "Miscellaneous", [15] = "Daggers", [16] = "Thrown",
+    [18] = "Crossbows", [19] = "Wands", [20] = "Fishing Poles",
+}
+
+-- Objeto de prueba. cls 4 = Armadura, 2 = Arma, 0 = consumible (sin hueco de equipo).
+local function gearItem(name, cls, sub, loc, minLevel, ilvl, extra)
+    local it = {
+        name = name, classID = cls, subclassID = sub, equipLoc = loc, minLevel = minLevel, ilvl = ilvl,
+        quality = 2, stats = { ITEM_MOD_STAMINA_SHORT = 2 },
+        className = cls == 4 and "Armor" or (cls == 2 and "Weapon" or "Consumable"),
+        subName = (cls == 4 and SUB_NAMES_ARMOR[sub]) or (cls == 2 and SUB_NAMES_WEAPON[sub]) or "Other",
+    }
+    for k, v in pairs(extra or {}) do it[k] = v end
+    return it
+end
+
+local function gearItems()
+    return {
+        [4101] = gearItem("Túnica de la Sabiduría", 4, 1, "INVTYPE_CHEST", 14, 22, { stats = { ITEM_MOD_INTELLECT_SHORT = 5 } }),
+        [4102] = gearItem("Coraza de placas", 4, 4, "INVTYPE_CHEST", 15, 24),
+        [4103] = gearItem("Varita de fuego", 2, 19, "INVTYPE_RANGEDRIGHT", 12, 18),
+        [4104] = gearItem("Hacha de guerra", 2, 0, "INVTYPE_WEAPONMAINHAND", 12, 18),
+        [4105] = gearItem("Bastón de sabio", 2, 10, "INVTYPE_2HWEAPON", 16, 20, { uncached = true }),
+        [4106] = gearItem("Capa de viajero", 4, 0, "INVTYPE_CLOAK", 5, 8),
+        [4107] = gearItem("Yelmo pesado", 4, 4, "INVTYPE_HEAD", 30, 40),
+        [4108] = gearItem("Pócima de vida", 0, 0, "", 5, 0),
+        [4109] = gearItem("Daga corta", 2, 15, "INVTYPE_WEAPON", 10, 12),
+        [4110] = gearItem("Escudo de madera", 4, 6, "INVTYPE_SHIELD", 12, 14),
+        [4111] = gearItem("Daga de mano izquierda", 2, 15, "INVTYPE_WEAPONOFFHAND", 10, 11),
+        [4112] = gearItem("Maza de guerra", 2, 4, "INVTYPE_WEAPONMAINHAND", 17, 19, { uncached = true }),
+    }
+end
+
+-- Misiones base (Elwynn, area 12). Por defecto: inicio y fin en el PNJ 5001.
+local function baseQuests()
+    local q = {
+        [3001] = { name = "Básica", requiredLevel = 12, questLevel = 15 },
+        [3002] = { name = "Encadenada", requiredLevel = 13, questLevel = 16, preQuestSingle = { 3001 } },
+        [3003] = { name = "Grupo", requiredLevel = 14, questLevel = 17, preQuestGroup = { 3001, 3100 } },
+        [3004] = { name = "Alternativa", requiredLevel = 15, questLevel = 18, preQuestSingle = { 3100, 3101 } },
+        [3005] = { name = "Solo guerreros", requiredLevel = 15, questLevel = 18, requiredClasses = 1 },
+        [3006] = { name = "Solo Alianza", requiredLevel = 15, questLevel = 17, requiredRaces = 77 },
+        [3007] = { name = "Solo Horda", requiredLevel = 15, questLevel = 17, requiredRaces = 178 },
+        [3008] = { name = "Nivel alto", requiredLevel = 30, questLevel = 32 },
+        [3009] = { name = "Muy baja", requiredLevel = 1, questLevel = 2 },
+        [3010] = { name = "Exclusiva", requiredLevel = 15, questLevel = 18, exclusiveTo = { 3011 } },
+        [3011] = { name = "Ya hecha", requiredLevel = 15, questLevel = 18 },
+        [3012] = { name = "Prerrequisito inexistente", requiredLevel = 16, questLevel = 18, preQuestSingle = { 3200 } },
+        [3013] = { name = "Nivel justo", requiredLevel = 22, questLevel = 19 },
+        [3014] = { name = "Sin inicio", requiredLevel = 15, questLevel = 18, startedBy = { {}, {}, {} } },
+    }
+    for id, row in pairs(q) do
+        row.startedBy = row.startedBy or { { 5001 }, {}, {} }
+        row.finishedBy = row.finishedBy or { { 5001 }, {}, {} }
+        row.id = id
+    end
+    return q
+end
+
+-- Estado de los datos de prueba. Se rehace en cada installGear.
+M.GEAR = nil
+
+-- opts: bulkQuests = N misiones extra usables (tope de 400); bulkItems = N objetos de cofre (tope de 300);
+-- bulkDungeons = N mazmorras extra en el rango (tope de 6).
+function M.installGear(opts)
+    opts = opts or {}
+    local S = M.state
+    S.level = 19
+    S.faction = "Alliance"
+    S.inCombat = false
+    local quests = baseQuests()
+    local items = gearItems()
+    local G = {
+        quests = quests, items = items, loaded = {}, requested = {}, infoCalls = {},
+        equipped = { [5] = 4101, [15] = 4106, [16] = 4109 },
+        skills = { { "Armas", true }, { "Cloth", false }, { "Daggers", false }, { "Staves", false },
+                   { "One-Handed Maces", false }, { "Wands", false } },
+        dualWield = false, race = { id = 1, name = "Human" }, class = { id = 5, name = "Priest", token = "PRIEST" },
+    }
+    M.GEAR = G
+    for id, it in pairs(items) do
+        if not it.uncached then G.loaded[id] = true end
+    end
+    -- Misiones masivas usables (nivel 15-19, requisito 10): el tope de 400 debe cortar.
+    for i = 1, (opts.bulkQuests or 0) do
+        quests[6000 + i] = { name = "Relleno " .. i, requiredLevel = 10, questLevel = 15 + (i % 5),
+            startedBy = { { 5001 }, {}, {} }, finishedBy = { { 5001 }, {}, {} } }
+    end
+    -- Objetos masivos de cofre (tope de 300 candidatos).
+    local bulkLoot = {}
+    for i = 1, (opts.bulkItems or 0) do
+        local id = 7000 + i
+        items[id] = gearItem("Tela masiva " .. i, 4, 1, "INVTYPE_CHEST", 10, 15 + (i % 10))
+        G.loaded[id] = true
+        bulkLoot[#bulkLoot + 1] = { id, "Tela masiva " .. i, "Chest, Cloth", 3 }
+    end
+
+    local function loot(list)
+        local out = {}
+        for _, id in ipairs(list) do out[#out + 1] = { id, items[id].name, "x", 3 } end
+        return out
+    end
+
+    local dungeonDB = {
+        ["Mina Prueba"] = {
+            level = "15-24", location = "Bosque de Elwynn", description = "Prueba", icon = "x",
+            entrance = { mapID = 1429, x = 0.3, y = 0.4, label = "Entrada", detail = "d", markerType = "dungeon" },
+            quests = {
+                { id = 3001, name = "Básica", rewardItems = { { 4101, "Túnica", 1 }, { 4102, "Coraza", 1 } }, rewardChoice = true },
+                { id = 3002, name = "Encadenada", rewardItems = { { 4103, "Varita", 1 } } },
+            },
+            bosses = {
+                { name = "Jefe A", loot = loot({ 4105, 4106 }) },
+                { name = "Jefe B", loot = loot({ 4112, 4107, 4104 }) },
+            },
+        },
+        ["Cueva Baja"] = {
+            level = "13-18", location = "Bosque de Elwynn", description = "Prueba", icon = "x",
+            quests = {},
+            bosses = { { name = "Guardián", loot = loot({ 4109, 4110, 4111, 4108 }) } },
+        },
+        ["Cripta Alta"] = {
+            level = "30-40", location = "Lejos", description = "Prueba", icon = "x", quests = {},
+            bosses = { { name = "Lejano", loot = loot({ 4107 }) } },
+        },
+    }
+    local order = { "Mina Prueba", "Cueva Baja", "Cripta Alta" }
+    for i = 1, (opts.bulkDungeons or 0) do
+        local name = "Masiva " .. i
+        dungeonDB[name] = {
+            level = "18-22", location = "Lugar " .. i, description = "Prueba", icon = "x", quests = {},
+            bosses = { { name = "Jefe " .. i, loot = (i == 1) and bulkLoot or {} } },
+        }
+        order[#order + 1] = name
+    end
+    G.dungeonDB, G.order = dungeonDB, order
+    _G.ForeverDungeonJournal_NS = { DB = dungeonDB, ORDER = order }
+
+    -- QuestieDB y ZoneDB de prueba (solo misiones de G.quests).
+    local QDB = { npcFlags = NPC_FLAGS, NPCPointers = {} }
+    QDB.QueryQuestSingle = function(id, key)
+        local q = G.quests[id]
+        if type(q) ~= "table" then return nil end
+        return q[key]
+    end
+    QDB.QueryNPCSingle = function(id, key)
+        local n = GEAR_NPC[id]
+        if type(n) ~= "table" then return nil end
+        return n[key]
+    end
+    QDB.QueryObjectSingle = function() return nil end
+    QDB.QueryItemSingle = function(id, key)
+        local it = G.items[id]
+        if type(it) ~= "table" then return nil end
+        if key == "class" then return it.classID end
+        if key == "subClass" then return it.subclassID end
+        if key == "requiredLevel" then return it.minLevel end
+        if key == "name" then return it.name end
+        return nil
+    end
+    local ZDB = {}
+    ZDB.GetUiMapIdByAreaId = function(_, areaId) return AREA_TO_UI[areaId] end
+    ZDB.GetAreaIdByUiMapId = function(_, uiMapId) return UI_TO_AREA[uiMapId] end
+    ZDB.GetZonesWithQuests = function(yield)
+        assert(yield == false, "GetZonesWithQuests debe llamarse sin yield")
+        local set = {}
+        for id in pairs(G.quests) do set[id] = true end
+        return { [12] = set, [40] = {} }
+    end
+    _G.QuestieLoader = {
+        ImportModule = function(_, name)
+            if name == "QuestieDB" then return QDB end
+            if name == "ZoneDB" then return ZDB end
+            return { private = {} }
+        end,
+    }
+
+    -- Objetos: C_Item con carga asincrona (uncached -> nil hasta M.loadItem).
+    local function idOf(x)
+        if type(x) == "number" then return x end
+        return tonumber(string.match(tostring(x), "item:(%d+)"))
+    end
+    _G.C_Item = _G.C_Item or {}
+    _G.C_Item.GetItemInfo = function(x)
+        local id = idOf(x)
+        if not id then return nil end
+        G.infoCalls[id] = (G.infoCalls[id] or 0) + 1
+        local it = G.items[id]
+        if not it or not G.loaded[id] then return nil end
+        local link = "|cffffffff|Hitem:" .. id .. "|h[" .. it.name .. "]|h|r"
+        return it.name, link, it.quality, it.ilvl, it.minLevel, it.className, it.subName, 1, it.equipLoc, nil, 0,
+            it.classID, it.subclassID
+    end
+    _G.C_Item.GetItemStats = function(link)
+        local id = idOf(link)
+        local it = id and G.items[id]
+        if not it or not G.loaded[id] then return nil end
+        local out = {}
+        for k, v in pairs(it.stats) do out[k] = v end
+        return out
+    end
+    _G.C_Item.RequestLoadItemDataByID = function(id)
+        rec("C_Item.RequestLoadItemDataByID", id)
+        G.requested[id] = true
+    end
+    _G.GetItemSubClassInfo = function(cls, sub)
+        if cls == 4 then return SUB_NAMES_ARMOR[sub] end
+        if cls == 2 then return SUB_NAMES_WEAPON[sub] end
+        return nil
+    end
+    _G.GetNumSkillLines = function() return #G.skills end
+    _G.GetSkillLineInfo = function(i)
+        local s = G.skills[i]
+        if not s then return nil end
+        return s[1], s[2], false, s[2] and 0 or 1
+    end
+    _G.C_SpellBook = { IsSpellKnown = function(id)
+        rec("C_SpellBook.IsSpellKnown", id)
+        return id == 674 and G.dualWield or false
+    end }
+    _G.UnitRace = function() return G.race.name, G.race.name, G.race.id end
+    _G.UnitClass = function() return G.class.name, G.class.token, G.class.id end
+    _G.GetInventoryItemLink = function(_, slot)
+        local id = G.equipped[slot]
+        if not id then return nil end
+        return "|cffffffff|Hitem:" .. id .. "|h[" .. items[id].name .. "]|h|r"
+    end
+    _G.GetInventoryItemID = function(_, slot) return G.equipped[slot] end
+    _G.C_QuestLog.GetAllCompletedQuestIDs = function()
+        local out = {}
+        for id, v in pairs(S.flagged) do
+            if v == true then out[#out + 1] = id end
+        end
+        table.sort(out)
+        return out
+    end
+end
+
+function M.loadItem(id)
+    M.GEAR.loaded[id] = true
+end
+
+function M.uninstallGear()
+    _G.QuestieLoader = nil
+    _G.ForeverDungeonJournal_NS = nil
+    _G.UnitRace, _G.UnitClass = nil, nil
+    _G.GetInventoryItemLink, _G.GetInventoryItemID = nil, nil
+    _G.GetItemSubClassInfo, _G.GetNumSkillLines, _G.GetSkillLineInfo = nil, nil, nil
+    _G.C_SpellBook = nil
+    if _G.C_Item then
+        _G.C_Item.GetItemInfo, _G.C_Item.GetItemStats, _G.C_Item.RequestLoadItemDataByID = nil, nil, nil
+    end
+    M.GEAR = nil
 end
 
 return M

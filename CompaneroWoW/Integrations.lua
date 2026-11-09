@@ -1,7 +1,6 @@
 -- Integrations.lua: exporta a CompaneroWoWDB.characters[key] los datos de otros addons, segun el
 -- ADDON INTEGRATIONS CONTRACT (T17/T18):
 --   training  <- WhatsTraining: WT_API (GetSpells, Status, IsReady, RegisterCallback)
---   guide     <- RXPGuides: RXPCData (currentGuideGroup/Name, currentStep, currentStepId)
 --   profPlan  <- SkillUpForever.API v1 (Professions, RequiredMaterials, ShoppingList)
 -- Solo LEE APIs publicas. Cada bloque va protegido: si la fuente falta o falla queda
 -- {available = false, reason = "..."}; nunca un error de Lua. Exportacion fuera de combate,
@@ -14,7 +13,6 @@ local Call, Num, Str, Clean = ns.Call, ns.Num, ns.Str, ns.Clean
 local EXPORT_THROTTLE = 10     -- segundos entre exportaciones automaticas
 local LOGIN_DELAY = 3          -- espera tras PLAYER_LOGIN a que las addons fuente terminen de cargar
 local LOGIN_RETRY = 15         -- SkillUpForever no avisa de que esta listo: segundo intento de login
-local RXP_POLL_SEC = 5         -- RXPGuides no emite evento de cambio de paso: sondeo barato de RXPCData
 local TRAINING_MAX = 40
 local PROF_MAX = 8
 local STEPS_MAX = 5
@@ -28,8 +26,6 @@ local I = ns.Integrations
 local lastExportAt = nil   -- tiempo (GetTime) de la ultima exportacion
 local exportPending = false
 local combatPending = false
-local rxpStarted = false
-local rxpLastKey = nil
 local wtHooked = false
 local OWNER = "CompaneroWoW" -- dueño de los callbacks de WT_API (RegisterCallback(owner, evento, fn))
 
@@ -135,51 +131,6 @@ local function trainingBlock()
 end
 
 -- ---------------------------------------------------------------------------
--- RXPGuides (RXPCData)
--- ---------------------------------------------------------------------------
-
--- Paso actual de RXP como { mapID, x, y, text } o nil y motivo.
--- RXPGuides no expone la guia cargada: addon.currentGuide vive en el espacio de nombres local del
--- addon y _G.RXPGuides solo ofrece RegisterGuide/ImportGuide/talents. RXPCData guarda indice e id del
--- paso, pero no sus coordenadas. Sin una lectura segura de esas coordenadas, no hay nada que marcar.
-function I.GuideStep()
-    return nil, "RXPGuides no expone las coordenadas del paso"
-end
-
-local function guideBlock()
-    if type(_G.RXPGuides) ~= "table" then return unavailable("RXPGuides no está cargado") end
-    local d = _G.RXPCData
-    if type(d) ~= "table" then return unavailable("RXPGuides no tiene datos de personaje") end
-    local name = Str(d.currentGuideName)
-    if not name then return unavailable("no hay guía activa") end
-    local stepID = Clean(d.currentStepId)
-    local block = {
-        available = true, source = "RXPGuides", exportedAt = ns.Now(),
-        group = Str(d.currentGuideGroup), guideName = name,
-        stepIndex = Num(d.currentStep) or 1,
-        stepId = (type(stepID) == "number" or type(stepID) == "string") and tostring(stepID) or nil,
-    }
-    local step = I.GuideStep()
-    if type(step) == "table" then
-        block.stepText = step.text
-        block.stepMapID = step.mapID
-        block.stepX = step.x
-        block.stepY = step.y
-    end
-    return block
-end
-
--- Clave de lo que RXP guarda del paso: el sondeo exporta solo cuando cambia.
-local function rxpKey()
-    local d = _G.RXPCData
-    if type(d) ~= "table" then return "" end
-    return table.concat({
-        tostring(d.currentStep), tostring(d.currentStepId),
-        tostring(d.currentGuideGroup), tostring(d.currentGuideName),
-    }, "|")
-end
-
--- ---------------------------------------------------------------------------
 -- SkillUpForever (SkillUpForever.API v1)
 -- ---------------------------------------------------------------------------
 
@@ -278,7 +229,6 @@ function ns.ExportIntegrationsNow()
     end
     -- Un bloque no disponible no sustituye a uno disponible anterior (ns.PreferAvailable).
     c.training = ns.PreferAvailable(c.training, fit(safeBlock(trainingBlock)))
-    c.guide = ns.PreferAvailable(c.guide, fit(safeBlock(guideBlock)))
     c.profPlan = ns.PreferAvailable(c.profPlan, fit(safeBlock(profPlanBlock)))
     -- Va al final: los bloques anteriores pueden haber contado errores silenciados.
     c.health = { luaErrors = ns.errorCount or 0, lastError = ns.lastError }
@@ -322,15 +272,6 @@ function ns.IntegrationsStatusLines()
         lines[#lines + 1] = string.format("WhatsTraining: %d hechizos disponibles", t.availableCount or 0)
     end
 
-    local g = c.guide
-    if type(g) ~= "table" then
-        lines[#lines + 1] = "RXP: sin exportar todavía (/compa sync)"
-    elseif g.available ~= true then
-        lines[#lines + 1] = "RXP: no disponible (" .. tostring(g.reason or "?") .. ")"
-    else
-        lines[#lines + 1] = string.format("RXP: guía «%s», paso %s", tostring(g.guideName), tostring(g.stepIndex or "?"))
-    end
-
     local p = c.profPlan
     if type(p) ~= "table" then
         lines[#lines + 1] = "SkillUpForever: sin exportar todavía (/compa sync)"
@@ -343,7 +284,7 @@ function ns.IntegrationsStatusLines()
 end
 
 -- ---------------------------------------------------------------------------
--- Disparadores: login, eventos, callbacks de WhatsTraining y sondeo de RXP
+-- Disparadores: login, eventos y callbacks de WhatsTraining
 -- ---------------------------------------------------------------------------
 
 local function delayed(sec, fn)
@@ -364,26 +305,11 @@ local function hookWhatsTraining()
     wtHooked = true
 end
 
-local function pollRXP()
-    local key = rxpKey()
-    if key == rxpLastKey then return end
-    rxpLastKey = key
-    ns.SafeCall(ns.RequestIntegrationsExport)
-end
-
-local function startRXPPoll()
-    if rxpStarted then return end
-    rxpStarted = true
-    rxpLastKey = rxpKey()
-    ns.Call("C_Timer.NewTicker", RXP_POLL_SEC, function() ns.SafeCall(pollRXP) end)
-end
-
 local function requestNow() ns.SafeCall(ns.RequestIntegrationsExport) end
 
 local handlers = {
     PLAYER_LOGIN = function()
         hookWhatsTraining()
-        startRXPPoll()
         delayed(LOGIN_DELAY, requestNow)
         delayed(LOGIN_RETRY, requestNow)
     end,
