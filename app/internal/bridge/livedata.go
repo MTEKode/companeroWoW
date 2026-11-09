@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -222,15 +221,38 @@ func (d *LiveData) DecodeErrors() (int64, string) {
 	return d.decodeErr, d.lastErr
 }
 
+// Where the strip was read from, as the status line names it.
+const (
+	SourceScreen = "pantalla"
+	SourceWindow = "captura de ventana"
+)
+
 // Channel is the v3 receiver: frames in, complete messages out into LiveData.
 type Channel struct {
 	re   *Reassembler
 	Data *LiveData
+
+	srcMu  sync.RWMutex
+	source string // SourceScreen or SourceWindow; empty until the first read
 }
 
 // NewChannel returns a receiver with an empty store.
 func NewChannel() *Channel {
 	return &Channel{re: NewReassembler(), Data: NewLiveData()}
+}
+
+// SetSource records where the strip is being read from: SourceScreen or SourceWindow.
+func (c *Channel) SetSource(src string) {
+	c.srcMu.Lock()
+	c.source = src
+	c.srcMu.Unlock()
+}
+
+// Source returns where the strip is read from (SourceScreen or SourceWindow), or "".
+func (c *Channel) Source() string {
+	c.srcMu.RLock()
+	defer c.srcMu.RUnlock()
+	return c.source
 }
 
 // Feed takes one decoded v3 frame read at now.
@@ -264,13 +286,17 @@ func (c *Channel) Freshness(now time.Time) []TypeFreshness {
 	return out
 }
 
-// Status is the one-line state for the status bar and --diag: "Canal en vivo: OK (x KB/s)"
-// while frames arrive, otherwise why it is not live. ok is true only when frames are fresh.
+// Status is the one-line state for the status bar: "Canal en vivo: OK (captura de ventana)"
+// or "(pantalla)" while frames arrive, otherwise why it is not live. ok is true only when
+// frames are fresh. The rate is in Rate and --diag.
 func (c *Channel) Status(now time.Time) (string, bool) {
 	last := c.Data.LastFrame()
 	if last.IsZero() || now.Sub(last) > freshAfter {
 		return "Canal en vivo: sin datos (WoW cerrado, sin CompaneroWoW v3 o sin /reload)", false
 	}
-	kbps := c.Data.Rate(now) / 1024
-	return fmt.Sprintf("Canal en vivo: OK (%.1f KB/s)", kbps), true
+	src := c.Source()
+	if src == "" {
+		src = SourceScreen
+	}
+	return "Canal en vivo: OK (" + src + ")", true
 }
