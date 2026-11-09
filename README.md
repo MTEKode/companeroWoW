@@ -21,6 +21,8 @@ Tiene dos piezas:
 >
 > Tampoco se pueden usar las apps web o de escritorio de Gemini o ChatGPT como proveedor: no tienen API oficial y automatizarlas incumple sus condiciones de uso.
 
+- **Opcionales: Questie y ForeverDungeonJournal.** El addon no los necesita. Sin ellos usa los datos del propio juego (misiones que se pueden coger en tu zona, siguiente paso de cada misión, recompensas de tu registro, diario de mazmorras de Blizzard si existe) y lo que aprende mientras juegas (PNJ, entrenadores, misiones vistas). Si los instalas, añaden más detalle: `/compa estado` indica qué fuentes están activas (juego, Questie, ForeverDungeonJournal, aprendido). Las respuestas de la app dicen de dónde viene un dato solo cuando importa.
+
 ## Instalación del addon
 
 1. Copia la carpeta `CompaneroWoW/` de este repositorio en:

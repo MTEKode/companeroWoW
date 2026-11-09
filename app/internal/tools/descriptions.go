@@ -8,7 +8,7 @@ const (
 
 	descPersonaje = "Devuelve la ficha del personaje activo: nombre, clase, raza, nivel, experiencia, salud y estado (en combate, montado, descansando, muerto). Úsala para el contexto general del personaje."
 
-	descMisiones = "Lista las misiones del registro del personaje activo con su estado, objetivos, quién las da y dónde se entregan, e indica cuál está rastreada. Cuando Questie las conoce, incluye dónde se aceptan y entregan con coordenadas. Úsala para saber qué tiene pendiente el jugador o en qué misión está."
+	descMisiones = "Lista las misiones del registro del personaje activo con su estado, objetivos, quién las da y dónde se entregan, e indica cuál está rastreada. Incluye dónde se aceptan y entregan con coordenadas cuando el juego o Questie lo saben; el campo «fuente» dice de dónde sale cada dato. Úsala para saber qué tiene pendiente el jugador o en qué misión está."
 
 	descMision = "Devuelve los detalles de una misión concreta por su número (quest_id): título, nivel, objetivos, descripción, NPC que la da, NPC de entrega y recompensas. Funciona aunque la misión no esté en el registro del jugador. Úsala cuando pregunten por una misión en particular."
 

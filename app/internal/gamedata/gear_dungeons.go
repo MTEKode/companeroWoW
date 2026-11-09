@@ -43,7 +43,18 @@ func (g *Service) DungeonInfo(nombre string) (any, error) {
 }
 
 // dungeonWindow says whether the character can enter the dungeon now, soon, or not yet.
+// levelText is the level range of a dungeon, or "sin dato" when its source gives none.
+func levelText(d dungeonInfo) string {
+	if !d.LevelsKnown {
+		return "sin dato"
+	}
+	return fmt.Sprintf("%d-%d", d.Min, d.Max)
+}
+
 func (gd gearData) dungeonWindow(d dungeonInfo) string {
+	if !d.LevelsKnown {
+		return "sin rango de nivel conocido"
+	}
 	switch {
 	case gd.Level >= d.Min:
 		return winNow
@@ -57,7 +68,7 @@ func (gd gearData) dungeonWindow(d dungeonInfo) string {
 func (gd gearData) dungeonSuggestions(pos position) map[string]any {
 	var fit []dungeonInfo
 	for _, d := range gd.Dungeons {
-		if d.Min <= gd.Level+gearSoonLevels && d.Max >= gd.Level-3 {
+		if d.LevelsKnown && d.Min <= gd.Level+gearSoonLevels && d.Max >= gd.Level-3 {
 			fit = append(fit, d)
 		}
 	}
@@ -93,11 +104,14 @@ func (gd gearData) dungeonSuggestions(pos position) map[string]any {
 	for _, e := range list {
 		m := map[string]any{
 			"nombre": e.d.Name,
-			"nivel":  fmt.Sprintf("%d-%d", e.d.Min, e.d.Max),
+			"nivel":  levelText(e.d),
 			"estado": gd.dungeonWindow(e.d),
 		}
 		if e.d.Zone != "" {
 			m["zona"] = e.d.Zone
+		}
+		if e.d.Source != "" {
+			m["fuente"] = e.d.Source
 		}
 		mergePlace(m, e.d.Entrance, "entrada", e.d.Name)
 		if e.sameMap {
@@ -118,11 +132,14 @@ func (gd gearData) dungeonDetail(d dungeonInfo, pos position) map[string]any {
 	m := map[string]any{
 		"encontrada": true,
 		"nombre":     d.Name,
-		"nivel":      fmt.Sprintf("%d-%d", d.Min, d.Max),
+		"nivel":      levelText(d),
 		"estado":     gd.dungeonWindow(d),
 	}
 	if d.Zone != "" {
 		m["zona"] = d.Zone
+	}
+	if d.Source != "" {
+		m["fuente"] = d.Source
 	}
 	entrance := map[string]any{}
 	mergePlace(entrance, d.Entrance, "", d.Name)

@@ -171,6 +171,8 @@ function ns.SnapshotAll()
         c.updatedAt = ns.Now()
         -- Exportacion de Questie: fuera de combate, con su propio throttle de 10 s (Questie.lua).
         ns.SafeCall(ns.RequestQuestieExport)
+        -- Bloque nativo (misiones del juego, pasos activos, PNJ aprendidos): Native.lua, con throttle propio.
+        ns.SafeCall(ns.RequestNativeExport)
         -- Exportacion de WhatsTraining / SkillUpForever: mismo criterio (Integrations.lua).
         ns.SafeCall(ns.RequestIntegrationsExport)
     end
@@ -286,12 +288,12 @@ end
 
 local function showHelp()
     say("Comandos:")
-    say("  /compa sync - guarda los datos (Questie, WhatsTraining, SkillUpForever, equipo y misiones) y recarga la interfaz (escribe SavedVariables)")
+    say("  /compa sync - guarda los datos (misiones del juego, Questie si está, WhatsTraining, SkillUpForever, equipo) y recarga la interfaz (escribe SavedVariables)")
     say("  /compa strip on|off - activa o desactiva la franja de píxeles")
     say("  /compa estado - muestra el estado actual")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
-    say("  /compa marca - marca el siguiente paso de tu misión (con Questie)")
+    say("  /compa marca - marca el siguiente paso de tu misión (con las guías del juego; Questie si está instalado)")
     say("  /compa marca borrar - quita la marca de Compañero")
     say("  /compa barras - resumen de tus barras de acción")
     say("  /compa barras aplicar <slot>:<spellID>,... - coloca hechizos conocidos (fuera de combate, con copia de seguridad)")
@@ -317,6 +319,7 @@ local function showStatus()
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     say("Franja de píxeles: " .. (ns.IsStripOn() and "activa" or "inactiva"))
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
+    if ns.Native and ns.Native.SourcesStatusLine then say(ns.Native.SourcesStatusLine()) end
     if ns.GearStatusLines then
         for _, line in ipairs(ns.GearStatusLines()) do say(line) end
     end
@@ -344,6 +347,7 @@ local function handleSlash(msg)
             say("No se puede sincronizar en combate. Inténtalo al salir de combate.")
             return
         end
+        if ns.ExportNativeNow then ns.ExportNativeNow() end -- misiones del juego (Native.lua)
         if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita, antes de recargar
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)

@@ -1,5 +1,5 @@
 -- QuestWindow.lua: ventana de misiones del personaje (questWindow del contrato GEAR / QUEST-WINDOW).
--- Solo LEE QuestieDB / ZoneDB (Forever) y ForeverDungeonJournal (recompensas). Nunca modifica nada.
+-- Lee QuestieDB / ZoneDB y ForeverDungeonJournal (ambos opcionales) y las APIs nativas (Native.lua). Nunca modifica nada.
 --
 -- Reglas (calculadas con el estado real del personaje, no con datos fijos):
 --   - Raza: mascara requiredRaces con el bit de la raza (LibQuestieDB.Enum.raceMaskById, 2^bit).
@@ -25,7 +25,7 @@ ns.QuestWindow = QW
 QW.MAX_QUESTS = 400
 QW.BELOW = 5          -- questLevel >= nivel - BELOW
 QW.ABOVE = 3          -- requiredLevel <= nivel + ABOVE
-QW.MAX_BYTES = 130 * 1024 -- tope aproximado del bloque en SavedVariables
+QW.MAX_BYTES = 150 * 1024 -- tope aproximado del bloque en SavedVariables (130 KB + origen por elemento)
 local CHECK_EVERY = 25    -- elementos entre dos cesiones de la coroutine
 
 -- Bits de raza de respaldo (los de QuestieDB/src/corrections/enum/expansions.lua, id de raza -> bit).
@@ -358,101 +358,241 @@ local function buildEntry(env, f)
         accessibleNow = f.ev.accessibleNow,
         missingPrereqs = f.ev.missing,
     }
+    e.source = "questie"
     e.starter = firstGiver(db, zone, questField(db, qid, "startedBy"), env.mapID, env.px, env.py)
     e.finisher = firstGiver(db, zone, questField(db, qid, "finishedBy"), env.mapID, env.px, env.py)
     e.rewards = rewardsFor(env.rewardIdx, qid, env.reverse, env.me.level)
     return e
 end
 
--- Trabajo de la ventana (coroutine). env = { db, zone, me, rewardIdx, mapID, px, py }.
+-- ---------------------------------------------------------------------------
+-- Sin Questie (o junto a ella): lo que el juego ofrece ahora y lo que el addon aprendio jugando.
+-- ---------------------------------------------------------------------------
+
+-- Nombre del mapa (cacheado en env.zoneNames con clave de uiMapID).
+local function mapNameOf(env, mapID)
+    if not mapID then return nil end
+    local key = "m" .. tostring(mapID)
+    local cached = env.zoneNames[key]
+    if cached ~= nil then return cached or nil end
+    local name = ns.Native.MapName(mapID)
+    env.zoneNames[key] = name or false
+    return name
+end
+
+-- Recompensas de una mision: del registro (API de Blizzard) o aprendidas (QUEST_DETAIL / QUEST_COMPLETE).
+-- Devuelve { rewards = {choice, fixed, source}, items = { {itemID, questID, choice, source} } } o nil.
+local function nativeRewards(qid, inLog, rec)
+    if inLog then
+        local r = ns.Native.Rewards(qid)
+        if r then
+            local items = {}
+            for _, id in ipairs(r.choice) do items[#items + 1] = { itemID = id, questID = qid, choice = true, source = "juego" } end
+            for _, id in ipairs(r.fixed) do items[#items + 1] = { itemID = id, questID = qid, source = "juego" } end
+            return { rewards = { choice = copyList(r.choice), fixed = copyList(r.fixed), source = "juego" }, items = items }
+        end
+    end
+    local learned = rec and rec.rewards and rec.rewards.items
+    if type(learned) ~= "table" then return nil end
+    local choice, fixed, items = {}, {}, {}
+    for _, it in ipairs(learned) do
+        local id = type(it) == "table" and Num(it.itemID) or nil
+        if id then
+            if it.choice == true then
+                choice[#choice + 1] = id
+                items[#items + 1] = { itemID = id, questID = qid, choice = true, source = "aprendido" }
+            else
+                fixed[#fixed + 1] = id
+                items[#items + 1] = { itemID = id, questID = qid, source = "aprendido" }
+            end
+        end
+    end
+    if #items == 0 then return nil end
+    return { rewards = { choice = choice, fixed = fixed, source = "aprendido" }, items = items }
+end
+
+-- Anade a `quests` (misiones ya calculadas por Questie, si las hay) lo que el juego ofrece ahora en el
+-- mapa y lo aprendido. Reglas:
+--   - Una mision que Questie ya trae y el juego ofrece ahora pasa a accessibleNow = true (manda el juego).
+--   - Una mision nueva ofrecida ahora: source "juego", accessibleNow = true, nivel si Blizzard lo da.
+--   - Una mision aprendida que no se ofrece ahora: source "aprendido", accessibleNow = false ("pronto").
+--     Sin nivel conocido no entra (no se puede filtrar por la ventana).
+--   - Prerrequisitos: solo los da Questie; sin Questie missingPrereqs queda vacio.
+--   - Recompensas de las misiones del registro (API) o aprendidas; las de Questie no se tocan.
+-- Entradas nuevas no pasan de QW.MAX_QUESTS. Devuelve el uso de fuentes { juego, aprendido }.
+function QW.MergeNative(env, quests, rewardItems)
+    local level = (env.me and env.me.level) or 1
+    local used = { juego = false, aprendido = false }
+    local learned = type(CompaneroWoWDB) == "table" and type(CompaneroWoWDB.knowledge) == "table"
+        and CompaneroWoWDB.knowledge.quests or {}
+    if type(learned) ~= "table" then learned = {} end
+
+    local offered = {}
+    for _, o in ipairs(ns.Native.AvailableQuests(env.mapID)) do offered[o.questID] = o end
+    local inLog = {}
+    for _, e in ipairs(ns.Native.LogEntries()) do inLog[e.questID] = true end
+
+    local ids, seen, count = {}, {}, 0
+    for qid in pairs(offered) do if not seen[qid] then seen[qid] = true; ids[#ids + 1] = qid end end
+    for qid in pairs(learned) do if not seen[qid] then seen[qid] = true; ids[#ids + 1] = qid end end
+    for qid in pairs(inLog) do if not seen[qid] then seen[qid] = true; ids[#ids + 1] = qid end end
+    for _ in pairs(quests) do count = count + 1 end
+    table.sort(ids)
+
+    for i, qid in ipairs(ids) do
+        local o = offered[qid]
+        local rec = type(learned[qid]) == "table" and learned[qid] or nil
+        local e = quests[qid]
+        local lg = inLog[qid] == true
+        if e then
+            if o then e.accessibleNow = true end
+        elseif count < QW.MAX_QUESTS then
+            -- Sin requisito de nivel en la API: el nivel de la mision hace de requisito (un nivel 20 no entra a nivel 9).
+            local lvl = nil
+            if o or lg then lvl = ns.Native.QuestLevel(qid) end
+            if not lvl and rec then lvl = Num(rec.level) end
+            local keep
+            if lvl then keep = QW.InWindow(lvl, lvl, level) else keep = (o ~= nil) or lg end
+            -- La llamada a la API de completadas va al final: solo para las que pasarian la ventana.
+            if keep and (o or lg or rec) and not ns.Native.Completed(qid) then
+                local source = (o or lg) and "juego" or "aprendido"
+                local entry = {
+                    questID = qid,
+                    name = (o and o.name) or (rec and Str(rec.title)) or Str(Call("C_QuestLog.GetTitleForQuestID", qid)),
+                    level = lvl,
+                    zone = mapNameOf(env, (o and o.mapID) or (rec and rec.offeredAt and rec.offeredAt.mapID)),
+                    accessibleNow = (o ~= nil) or lg,
+                    missingPrereqs = {},
+                    source = source,
+                    inLog = lg or nil,
+                }
+                if rec and rec.giverX and rec.giverY then
+                    entry.starter = { kind = "npc", name = Str(rec.giverName), mapID = rec.giverMapID,
+                        x = rec.giverX, y = rec.giverY, source = "aprendido" }
+                elseif o and o.x and o.y then
+                    entry.starter = { kind = "zone", mapID = o.mapID, x = o.x, y = o.y, source = "juego" }
+                end
+                quests[qid] = entry
+                count = count + 1
+                used[source] = true
+                local r = nativeRewards(qid, inLog[qid] == true, rec)
+                if r then
+                    entry.rewards = r.rewards
+                    for _, it in ipairs(r.items) do rewardItems[#rewardItems + 1] = it end
+                end
+            end
+        end
+        if i % CHECK_EVERY == 0 then coroutine.yield(1) end
+    end
+    -- Recompensas de misiones de Questie que no las traen: las del registro de Blizzard.
+    for qid, e in pairs(quests) do
+        if not e.rewards and inLog[qid] then
+            local r = nativeRewards(qid, true, nil)
+            if r then
+                e.rewards = r.rewards
+                for _, it in ipairs(r.items) do rewardItems[#rewardItems + 1] = it end
+                used.juego = true
+            end
+        end
+    end
+    return used
+end
+
+-- Trabajo de la ventana (coroutine). env = { db, zone, me, rewardIdx, reverse, mapID, px, py, zoneNames }.
+-- db y zone (Questie) son OPCIONALES: sin ellos la ventana sale de lo que ofrece el juego y de lo aprendido.
 -- me = estado del personaje (ver QW.Evaluate). Deja en res.block la ventana y en res.rewardItems
--- la lista { {itemID, questID, choice} } de recompensas de las misiones incluidas.
+-- la lista { {itemID, questID, choice, source} } de recompensas de las misiones incluidas.
 function QW.Work(env, res)
     local db, zone = env.db, env.zone
     local me = env.me
     local level = me.level or 1
-    if not db or not zone then
-        res.block = { available = false, reason = "Questie no está cargado" }
-        res.rewardItems = {}
-        return
-    end
-    local map = ns.SafeCall(zone.GetZonesWithQuests, false)
-    if type(map) ~= "table" then
-        res.block = { available = false, reason = "Questie no tiene zonas de misiones" }
-        res.rewardItems = {}
-        return
-    end
-
-    -- 1) Todas las misiones de las zonas de Questie (la primera zona en orden de areaId).
-    local areas = {}
-    for areaId in pairs(map) do
-        if type(areaId) == "number" then areas[#areas + 1] = areaId end
-    end
-    table.sort(areas)
-    local areaOf, n = {}, 0
-    for _, areaId in ipairs(areas) do
-        local set = map[areaId]
-        if type(set) == "table" then
-            for qid in pairs(set) do
-                if type(qid) == "number" and areaOf[qid] == nil then areaOf[qid] = areaId end
-                n = n + 1
-                if n % CHECK_EVERY == 0 then coroutine.yield(1) end
-            end
-        end
-    end
-    local qids = {}
-    for qid in pairs(areaOf) do qids[#qids + 1] = qid end
-    table.sort(qids)
-    coroutine.yield(1)
-
-    -- 2) Filtro: no completada, ventana de nivel, permitida para el personaje.
-    local found = {}
-    for i, qid in ipairs(qids) do
-        if not me.completed[qid] then
-            local req = Num(questField(db, qid, "requiredLevel"))
-            local lvl = Num(questField(db, qid, "questLevel"))
-            if lvl == nil or lvl <= 0 then lvl = req end
-            if QW.InWindow(lvl, req, level) then
-                local ev = QW.Evaluate(questRules(db, qid, req), me)
-                if ev.allowed then found[#found + 1] = { qid = qid, lvl = lvl, req = req, ev = ev } end
-            end
-        end
-        if i % CHECK_EVERY == 0 then coroutine.yield(1) end
-    end
-
-    -- 3) Mas cercanas al nivel primero; tope de 400 y de tamano.
-    table.sort(found, function(a, b)
-        local da, dbb = math.abs(a.lvl - level), math.abs(b.lvl - level)
-        if da ~= dbb then return da < dbb end
-        return a.qid < b.qid
-    end)
-    env.areaOf = areaOf
-    env.zoneNames = env.zoneNames or {}
     local quests, rewardItems, bytes = {}, {}, 0
-    local limit = math.min(#found, QW.MAX_QUESTS)
-    for i = 1, limit do
-        local f = found[i]
-        local e = buildEntry(env, f)
-        local size = QW.ApproxBytes(e) + 8
-        if bytes + size > QW.MAX_BYTES then break end
-        bytes = bytes + size
-        quests[f.qid] = e
-        if e.rewards then
-            -- choice = true solo si la eleccion viene de ForeverDungeonJournal (no del indice de Questie).
-            local known = e.rewards.rewardsKnownAs == nil
-            for _, itemID in ipairs(e.rewards.choice) do
-                rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid, choice = known or nil }
-            end
-            for _, itemID in ipairs(e.rewards.fixed) do
-                rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid }
+    env.zoneNames = env.zoneNames or {}
+    local usedQuestie = false
+
+    local map = db and zone and ns.SafeCall(zone.GetZonesWithQuests, false) or nil
+    if type(map) == "table" then
+        usedQuestie = true
+        -- 1) Todas las misiones de las zonas de Questie (la primera zona en orden de areaId).
+        local areas = {}
+        for areaId in pairs(map) do
+            if type(areaId) == "number" then areas[#areas + 1] = areaId end
+        end
+        table.sort(areas)
+        local areaOf, n = {}, 0
+        for _, areaId in ipairs(areas) do
+            local set = map[areaId]
+            if type(set) == "table" then
+                for qid in pairs(set) do
+                    if type(qid) == "number" and areaOf[qid] == nil then areaOf[qid] = areaId end
+                    n = n + 1
+                    if n % CHECK_EVERY == 0 then coroutine.yield(1) end
+                end
             end
         end
-        if i % CHECK_EVERY == 0 then coroutine.yield(1) end
+        local qids = {}
+        for qid in pairs(areaOf) do qids[#qids + 1] = qid end
+        table.sort(qids)
+        coroutine.yield(1)
+
+        -- 2) Filtro: no completada, ventana de nivel, permitida para el personaje.
+        local found = {}
+        for i, qid in ipairs(qids) do
+            if not me.completed[qid] then
+                local req = Num(questField(db, qid, "requiredLevel"))
+                local lvl = Num(questField(db, qid, "questLevel"))
+                if lvl == nil or lvl <= 0 then lvl = req end
+                if QW.InWindow(lvl, req, level) then
+                    local ev = QW.Evaluate(questRules(db, qid, req), me)
+                    if ev.allowed then found[#found + 1] = { qid = qid, lvl = lvl, req = req, ev = ev } end
+                end
+            end
+            if i % CHECK_EVERY == 0 then coroutine.yield(1) end
+        end
+
+        -- 3) Mas cercanas al nivel primero; tope de 400 y de tamano.
+        table.sort(found, function(a, b)
+            local da, dbb = math.abs(a.lvl - level), math.abs(b.lvl - level)
+            if da ~= dbb then return da < dbb end
+            return a.qid < b.qid
+        end)
+        env.areaOf = areaOf
+        local limit = math.min(#found, QW.MAX_QUESTS)
+        for i = 1, limit do
+            local f = found[i]
+            local e = buildEntry(env, f)
+            local size = QW.ApproxBytes(e) + 8
+            if bytes + size > QW.MAX_BYTES then break end
+            bytes = bytes + size
+            quests[f.qid] = e
+            if e.rewards then
+                -- choice = true solo si la eleccion viene de ForeverDungeonJournal (no del indice de Questie).
+                local fromFdj = e.rewards.rewardsKnownAs == nil
+                local src = fromFdj and "fdj" or "questie"
+                for _, itemID in ipairs(e.rewards.choice) do
+                    rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid, choice = fromFdj or nil, source = src }
+                end
+                for _, itemID in ipairs(e.rewards.fixed) do
+                    rewardItems[#rewardItems + 1] = { itemID = itemID, questID = f.qid, source = src }
+                end
+            end
+            if i % CHECK_EVERY == 0 then coroutine.yield(1) end
+        end
+    end
+
+    -- 4) Lo nativo: lo que el juego ofrece ahora y lo aprendido (con o sin Questie).
+    local nat = QW.MergeNative(env, quests, rewardItems)
+    local usedFdj = false
+    for _, r in ipairs(rewardItems) do
+        if r.source == "fdj" then usedFdj = true end
     end
 
     res.block = {
         available = true, exportedAt = ns.Now(), level = level,
         minLevel = level - QW.BELOW, maxLevel = level + QW.ABOVE, quests = quests,
+        sources = ns.Native.SourceSummary({
+            juego = nat.juego, questie = usedQuestie, fdj = usedFdj, aprendido = nat.aprendido,
+        }),
     }
     res.rewardItems = rewardItems
 end
