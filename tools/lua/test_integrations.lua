@@ -29,6 +29,7 @@ end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Channel.lua")
 load("CompaneroWoW/Core.lua")

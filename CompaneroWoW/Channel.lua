@@ -248,7 +248,8 @@ C.TYPES = {
         name = "quests", period = 15, minGap = 1,
         events = { "QUEST_LOG_UPDATE", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_TURNED_IN", "ZONE_CHANGED_NEW_AREA" },
         build = function(c)
-            return { quests = c.quests, location = c.location }
+            -- native: misiones del juego y sus fuentes (Native.lua), en el mismo bloque que las misiones
+            return { quests = c.quests, location = c.location, native = c.native }
         end,
     },
     [3] = {

@@ -210,7 +210,11 @@ func guideTime(g *Service) time.Time {
 func (g *Service) guideFor(id int64, pos position) (map[string]any, bool) {
 	var logEntry map[string]any
 	var qx questieExport
+	var nat nativeExport
+	var win windowQuest
+	inWindow := false
 	if ch, _, ok := g.activeCharacter(); ok {
+		win, inWindow = windowEntry(ch.data, id)
 		for _, e := range entriesOf(ch.data["quests"]) {
 			if qm := asMap(e.value); qm != nil && questIDOf(qm, e.key) == id {
 				logEntry = copyMap(qm)
@@ -218,6 +222,7 @@ func (g *Service) guideFor(id int64, pos position) (map[string]any, bool) {
 			}
 		}
 		qx = readQuestie(ch.data)
+		nat = readNative(ch.data)
 	}
 	var k *store.KQuest
 	if g.store != nil {
@@ -226,7 +231,9 @@ func (g *Service) guideFor(id int64, pos position) (map[string]any, bool) {
 		}
 	}
 	qq, hasQ := qx.quest(id)
-	if logEntry == nil && k == nil && !hasQ {
+	_, natSpot := nat.spotFor(id, logEntry != nil)
+	_, natActive := nat.Active[id]
+	if logEntry == nil && k == nil && !hasQ && !natSpot && !natActive && !inWindow {
 		return nil, false
 	}
 
@@ -276,65 +283,92 @@ func (g *Service) guideFor(id int64, pos position) (map[string]any, bool) {
 		out["entrega"] = sourcesView(qq.Finishers, pos)
 		out["objetivosQuestie"] = objectivesView(qq.Objectives, pos)
 	}
-	out["nextStep"] = nextStep(title, logEntry != nil, complete, nextObjective, objectives, qq, hasQ, k, pos)
+	out["nextStep"] = nextStep(id, title, logEntry != nil, complete, nextObjective, objectives, qq, hasQ, k, nat, win, pos)
 	return out, true
 }
 
+// windowEntry is the questWindow entry of a quest, when the addon exported it.
+func windowEntry(data map[string]any, id int64) (windowQuest, bool) {
+	for _, e := range entriesOf(asMap(data["questWindow"])["quests"]) {
+		if m := asMap(e.value); m != nil && questIDOf(m, e.key) == id {
+			return parseWindowQuest(m, id), true
+		}
+	}
+	return windowQuest{}, false
+}
+
 // nextStep is the single thing to do now, with its place and mark command when known.
-// Order: deliver when complete, else the first unfinished objective, else accept.
-func nextStep(title string, inLog, complete bool, nextObj int, objectives []map[string]any,
-	qq questieQuest, hasQ bool, k *store.KQuest, pos position) map[string]any {
-	switch {
-	case inLog && complete:
-		var spawns []spawn
-		label := ""
+// Order: deliver when complete, else the first unfinished objective, else accept. The place is
+// the first one known of: Questie (when installed), the knowledge database (learned while playing),
+// then the game itself (the next waypoint, or where the game offers the quest). "fuente" says which.
+func nextStep(id int64, title string, inLog, complete bool, nextObj int, objectives []map[string]any,
+	qq questieQuest, hasQ bool, k *store.KQuest, nat nativeExport, win windowQuest, pos position) map[string]any {
+	if inLog && !complete && nextObj < 0 {
+		return map[string]any{"tipo": stepUnknown, "texto": "Todos los objetivos están hechos; entrega la misión cuando puedas."}
+	}
+	var spawns []spawn
+	label, source := "", ""
+	use := func(list []spawn, lbl, src string) {
+		if len(spawns) == 0 && len(list) > 0 {
+			spawns, label, source = list, lbl, src
+		}
+	}
+	questieSpawns := func(list []questieSource) ([]spawn, string) {
+		var out []spawn
+		lbl := ""
 		if hasQ {
-			for _, f := range qq.Finishers {
-				spawns = append(spawns, f.Spawns...)
-				if label == "" {
-					label = f.Name
+			for _, s := range list {
+				out = append(out, s.Spawns...)
+				if lbl == "" {
+					lbl = s.Name
 				}
 			}
 		}
-		if len(spawns) == 0 && k != nil && k.TurnInMapID > 0 && (k.TurnInX != 0 || k.TurnInY != 0) {
-			spawns = []spawn{{MapID: k.TurnInMapID, X: k.TurnInX, Y: k.TurnInY}}
-			label = k.TurnInName
+		return out, lbl
+	}
+
+	var kind, text string
+	switch {
+	case inLog && complete:
+		kind, text = stepEntregar, "Entrega «"+title+"»"
+		s, l := questieSpawns(qq.Finishers)
+		use(s, l, srcQuestie)
+		if k != nil && k.TurnInMapID > 0 && (k.TurnInX != 0 || k.TurnInY != 0) {
+			use([]spawn{{MapID: k.TurnInMapID, X: k.TurnInX, Y: k.TurnInY}}, k.TurnInName, srcAprendido)
 		}
-		return stepFrom(stepEntregar, "Entrega «"+title+"»", label, spawns, pos)
 	case inLog && nextObj >= 0:
-		text := "Completa «" + title + "»"
+		kind, text = stepObjetivo, "Completa «"+title+"»"
 		if t := str(objectives[nextObj]["texto"]); t != "" {
 			text = "Haz: " + t
 		}
-		var spawns []spawn
-		label := ""
 		if hasQ {
 			for _, o := range qq.Objectives {
 				if o.Index == nextObj+1 {
-					spawns, label = o.Spawns, o.Name
+					use(o.Spawns, o.Name, srcQuestie)
 					break
 				}
 			}
 		}
-		return stepFrom(stepObjetivo, text, label, spawns, pos)
-	case inLog:
-		return map[string]any{"tipo": stepUnknown, "texto": "Todos los objetivos están hechos; entrega la misión cuando puedas."}
-	}
-	var spawns []spawn
-	label := ""
-	if hasQ {
-		for _, s := range qq.Starters {
-			spawns = append(spawns, s.Spawns...)
-			if label == "" {
-				label = s.Name
-			}
+	default:
+		kind, text = stepAccept, "Acepta «"+title+"»"
+		s, l := questieSpawns(qq.Starters)
+		use(s, l, srcQuestie)
+		if k != nil && k.GiverMapID > 0 && (k.GiverX != 0 || k.GiverY != 0) {
+			use([]spawn{{MapID: k.GiverMapID, X: k.GiverX, Y: k.GiverY}}, k.GiverName, srcAprendido)
 		}
 	}
-	if len(spawns) == 0 && k != nil && k.GiverMapID > 0 && (k.GiverX != 0 || k.GiverY != 0) {
-		spawns = []spawn{{MapID: k.GiverMapID, X: k.GiverX, Y: k.GiverY}}
-		label = k.GiverName
+	if sp, ok := nat.spotFor(id, inLog); ok {
+		use([]spawn{sp}, "", srcJuego)
 	}
-	return stepFrom(stepAccept, "Acepta «"+title+"»", label, spawns, pos)
+	// Last resort for a quest not in the log: the giver position the addon exported in questWindow.
+	if !inLog && win.Starter.OK {
+		use([]spawn{{MapID: win.Starter.MapID, X: win.Starter.X, Y: win.Starter.Y}}, win.Starter.Name, win.Starter.Source)
+	}
+	step := stepFrom(kind, text, label, spawns, pos)
+	if source != "" {
+		step["fuente"] = source
+	}
+	return step
 }
 
 // stepFrom builds a step with the nearest spawn. Without spawns it says the place is unknown.
@@ -406,17 +440,30 @@ func (g *Service) ProfessionPlan() (any, error) {
 
 // trainerRef is a trainer from the knowledge database or the Questie export.
 type trainerRef struct {
-	id     int64
-	name   string
-	kind   string // trainer type (knowledge) or subtitle (Questie)
-	mapID  int
-	x, y   float64
-	source string
+	id       int64
+	name     string
+	kind     string // trainer type (knowledge) or subtitle (Questie)
+	mapID    int
+	x, y     float64
+	source   string
+	services []string // spells the trainer teaches, when the addon saw them (learned)
 }
 
+// matches says whether the trainer teaches the profession: by its type, its name or a service.
 func (t trainerRef) matches(profession string) bool {
 	p := strings.ToLower(profession)
-	return p != "" && (strings.Contains(strings.ToLower(t.kind), p) || strings.Contains(strings.ToLower(t.name), p))
+	if p == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(t.kind), p) || strings.Contains(strings.ToLower(t.name), p) {
+		return true
+	}
+	for _, sv := range t.services {
+		if strings.Contains(strings.ToLower(sv), p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t trainerRef) view(pos position) map[string]any {
@@ -470,7 +517,14 @@ func (g *Service) knownTrainers() []trainerRef {
 			if n.Role != "trainer" {
 				continue
 			}
-			add(trainerRef{id: n.ID, name: n.Name, kind: n.Subtitle, mapID: n.MapID, x: n.X, y: n.Y, source: "questie"})
+			add(trainerRef{id: n.ID, name: n.Name, kind: n.Subtitle, mapID: n.MapID, x: n.X, y: n.Y, source: srcQuestie})
+		}
+		for _, n := range readNative(ch.data).NPCs {
+			if n.Role != "trainer" {
+				continue
+			}
+			add(trainerRef{id: n.ID, name: n.Name, kind: "entrenador", mapID: n.MapID, x: n.X, y: n.Y,
+				source: srcAprendido, services: n.Services})
 		}
 	}
 	return out

@@ -41,6 +41,7 @@ CompaneroWoWDB = {
             reputations = { { factionID = 1, standing = 5, name = "Ventormentas" } },
             talents = { raw = { configID = 77, specID = 62 } },
             quests = quests,
+            native = { available = true, sources = { juego = true }, quests = { { questID = 2001, name = "Mision nativa", mapID = 1429, source = "juego" } }, npcs = {} },
             location = { mapID = 1429, x = 0.45, y = 0.67 },
             inventory = { items = { { id = 6948, n = 1 }, { id = 2592, n = 20 } }, freeSlots = 12 },
             equipment = { { slot = 1, itemID = 12345 }, { slot = 16, itemID = 54321 } },

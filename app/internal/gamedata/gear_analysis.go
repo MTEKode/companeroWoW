@@ -136,6 +136,7 @@ func (g *Service) GearAnalysis(ventana, slot string) (any, error) {
 		"total":   len(kept),
 		"mejores": gd.topUpgrades(kept),
 		"ranuras": slots,
+		"fuentes": gd.CandidateSources.view(),
 	}
 	if slotName := slotLabel(only); slotName != "" {
 		fields["ranura"] = slotName
@@ -253,6 +254,9 @@ func (gd gearData) sourceView(s itemSource, state string) map[string]any {
 			name = q.Name
 		}
 		m := map[string]any{"tipo": "mision", "mision": name, "questID": s.QuestID, "estado": state, "aElegir": s.Choice}
+		if s.Source != "" {
+			m["fuente"] = s.Source
+		}
 		if ok {
 			m["nivel"] = q.Level
 			m["requiereNivel"] = q.RequiredLevel
@@ -272,11 +276,14 @@ func (gd gearData) sourceView(s itemSource, state string) map[string]any {
 			name = d.Name
 		}
 		m := map[string]any{"tipo": "mazmorra", "mazmorra": name, "estado": state}
+		if d.Source != "" {
+			m["fuente"] = d.Source
+		}
 		if s.Boss != "" {
 			m["jefe"] = s.Boss
 		}
 		if ok {
-			m["nivel"] = fmt.Sprintf("%d-%d", d.Min, d.Max)
+			m["nivel"] = levelText(d)
 			if d.Zone != "" {
 				m["zona"] = d.Zone
 			}

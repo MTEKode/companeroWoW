@@ -10,6 +10,7 @@ Util.lua
 Json.lua
 Core.lua
 Collectors.lua
+Native.lua
 Knowledge.lua
 Questie.lua
 QuestWindow.lua

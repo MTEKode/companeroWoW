@@ -109,8 +109,11 @@ func (g *Service) AvailableQuests(ventana, zona string) (any, error) {
 		"nivel":   gd.Level,
 		"total":   total,
 		"zonas":   zones,
+		"fuentes": gd.QuestSources.view(),
 	}
 	switch {
+	case total == 0 && !gd.QuestSources.Questie:
+		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos. Questie es opcional: instalarlo da más detalle."
 	case total == 0:
 		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos."
 	case total > len(rows):
@@ -133,7 +136,14 @@ func (gd gearData) questView(r questRow, upgrades map[int64]bool) map[string]any
 		"requiereNivel": q.RequiredLevel,
 		"ventana":       r.window,
 	}
-	mergePlace(m, q.Starter, "dondeAceptar", q.Starter.Name)
+	if q.Source != "" {
+		m["fuente"] = q.Source
+	}
+	if q.InLog {
+		m["enRegistro"] = true // already accepted: there is no place to accept it
+	} else {
+		mergePlace(m, q.Starter, "dondeAceptar", q.Starter.Name)
+	}
 	if r.sameMap {
 		m["mismoMapa"] = true
 		m["distancia"] = r.dist

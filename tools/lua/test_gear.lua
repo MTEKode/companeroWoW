@@ -70,6 +70,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Collectors.lua")
+load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Questie.lua")
 load("CompaneroWoW/QuestWindow.lua")
@@ -388,14 +389,14 @@ check("login: programa la exportacion tras 5 s", #W.callsNamed("C_Timer.After") 
 settle()
 check("login: exporta tras la espera", char() ~= nil and char().gear ~= nil)
 
--- Sin Questie: la ventana no disponible no sustituye a una buena.
+-- Sin Questie: la ventana sale del juego (available = true, sin fuente Questie), no se queda la antigua.
 setup()
 G.FlushNow()
-local good = char().questWindow
 _G.QuestieLoader = nil
 G.RequestExport()
 G.FlushNow()
-eq("sin Questie: la ventana buena se conserva", char().questWindow, good)
+check("sin Questie: la ventana sigue disponible (juego y aprendido)", char().questWindow.available == true)
+eq("sin Questie: la fuente questie queda en false", char().questWindow.sources.questie, false)
 _G.QuestieLoader = nil
 
 -- ---------------------------------------------------------------------------

@@ -652,11 +652,37 @@ end
 -- Exportacion
 -- ---------------------------------------------------------------------------
 
--- Construye la tabla questie completa. Sin Questie: { available = false }.
+-- Marca el origen "questie" en cada elemento del bloque y el resumen de fuentes.
+local function tagQuestie(out)
+    local function tagList(list)
+        for _, e in ipairs(list or {}) do e.source = "questie" end
+    end
+    for _, q in pairs(out.quests or {}) do
+        q.source = "questie"
+        tagList(q.starters)
+        tagList(q.finishers)
+        tagList(q.objectives)
+    end
+    if type(out.zoneQuests) == "table" then
+        for _, z in ipairs(out.zoneQuests.list or {}) do
+            z.source = "questie"
+            if z.starter then z.starter.source = "questie" end
+        end
+    end
+    tagList(out.npcs)
+    out.sources = ns.Native.SourceSummary({ questie = true })
+end
+
+-- Construye la tabla questie completa. Sin Questie (opcional): { available = false, reason }.
 -- Cada parte va protegida: un fallo omite esa parte, nunca lanza error.
 function ns.BuildQuestieExport()
     local db, zone = questieModules()
-    if not db then return { available = false } end
+    if not db then
+        return {
+            available = false, reason = "Questie no está instalado (opcional)",
+            sources = ns.Native.SourceSummary({}),
+        }
+    end
 
     local out = { available = true, exportedAt = ns.Now() }
     local version = Str(Call("C_AddOns.GetAddOnMetadata", "Questie", "Version"))
@@ -695,6 +721,7 @@ function ns.BuildQuestieExport()
         local okN, npcs = ns.Pcall(zoneNpcs, db, zone, areaId, faction, mapID, px, py)
         if okN and type(npcs) == "table" then out.npcs = npcs end
     end
+    tagQuestie(out)
     return out
 end
 
@@ -743,7 +770,7 @@ function ns.QuestieStatusLine()
     local c = key and db.characters[key]
     local data = type(c) == "table" and c.questie or nil
     if type(data) ~= "table" then return "Questie: sin exportar todavía (/compa sync)" end
-    if data.available ~= true then return "Questie: no disponible" end
+    if data.available ~= true then return "Questie: no instalado (opcional; el addon funciona sin él)" end
     local nQuests, nZone = 0, 0
     if type(data.quests) == "table" then for _ in pairs(data.quests) do nQuests = nQuests + 1 end end
     if type(data.zoneQuests) == "table" and type(data.zoneQuests.list) == "table" then
