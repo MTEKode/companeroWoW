@@ -207,10 +207,9 @@ Las herramientas de situación `contexto_jugador`, `guia_mision` y `plan_profesi
 
 ## Otros addons y sesiones
 
-El addon lee tres addons opcionales a través de sus APIs públicas y los guarda en SavedVariables junto a sus datos (fuera de combate, como mucho cada 10 s, al entrar y con `/compa sync`):
+El addon lee dos addons opcionales a través de sus APIs públicas y los guarda en SavedVariables junto a sus datos (fuera de combate, como mucho cada 10 s, al entrar y con `/compa sync`):
 
 - **WhatsTraining**: hechizos de clase disponibles y del siguiente nivel, con su coste en cobre.
-- **RXPGuides**: la guía activa, el paso actual y sus coordenadas, si el paso las trae.
 - **SkillUpForever**: la ruta de cada profesión (recetas, materiales y lista de la compra).
 
 Si uno de ellos no está instalado o falla, la herramienta correspondiente dice qué falta en lugar de dar error. El addon también cuenta los errores que ha capturado sin mostrarlos (`health`), y `estado_conexion` los muestra para diagnosticar.
