@@ -68,6 +68,36 @@ El panel es una ventana nativa de Windows (sin navegador integrado): sin barra d
 - Los consejos proactivos (al subir de nivel, completar objetivos, entregar una misión, cambiar de zona, cambiar una profesión o aceptar una misión) aparecen en la conversación como tarjetas destacadas con «💡 Consejo». Como mucho uno por minuto y nunca en combate. Si el panel está oculto, aparece sin robar el foco del juego.
 - Los enlaces se abren en tu navegador (solo http y https).
 - El DPI se respeta: el panel se escala en pantallas con 125 %, 150 % y otros valores.
+- **👍 / 👎**: bajo la última respuesta puedes valorarla. Con 👎 se abre una línea opcional para decir qué falló. Las valoraciones se guardan en `companero.db` con la pregunta, la respuesta, el proveedor y la versión de la skill (ver [Valoraciones](#valoraciones-y-exportación)).
+- **En combate** el panel se oculta solo (con `hideInCombat`, activado por defecto) y vuelve dos segundos después de acabar el combate. Los consejos que lleguen mientras tanto esperan en la conversación. Si abres el panel con el atajo durante un combate, se queda abierto.
+- **Bandeja**: el icono junto al reloj abre o oculta el panel con clic izquierdo; con clic derecho ofrece Mostrar/ocultar, Ajustes, Resumen de sesión y Salir. Cerrar el panel no quita el icono.
+- **Ajustes…** (menú contextual o bandeja): atajo, opacidad (60–100 %), tamaño de letra (9–14 pt), orden de proveedores, ocultar en combate, consejos proactivos, iniciar con WoW, carpeta de WoW y el estado de la clave de NVIDIA. Se guardan en `config.json`. Lo que se puede, se aplica al momento (atajo, opacidad, tamaño de letra, combate, inicio con WoW); lo demás se aplica al reiniciar y la propia pantalla lo dice.
+- **Asistente de configuración…** (menú contextual o bandeja): comprueba la carpeta de WoW Forever, el addon, la sesión de Antigravity y de Codex, y la clave de NVIDIA, con ✅ o ❌ por cada punto. Puede instalar el addon desde la carpeta `addon\CompaneroWoW` junto al programa, pero solo cuando pulsas «Instalar addon». Solo lee el sistema y ejecuta los comandos de estado (`agy models`, `codex login status`).
+- El asistente se abre solo la primera vez (cuando se crea `config.json`) y con `--setup`.
+
+## Primer uso
+
+1. Abre World of Warcraft en modo **sin bordes** (Opciones de vídeo → Modo de ventana): la app lee una franja de píxeles en la esquina superior izquierda, y debe verse.
+2. Instala el addon y escribe `/compa sync` en el juego para cargar tus datos.
+3. Sigue el asistente de configuración: marca lo que falte y pulsa **Comprobar de nuevo**.
+
+## Inicio con WoW
+
+En **Ajustes** marca **Iniciar con WoW**: la app se registra en la clave `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` y arranca al iniciar sesión en Windows, minimizada en la bandeja (`--tray`). Mientras WoW no esté abierto no hace nada, y la lectura del juego reintenta cada 5 segundos. La descripción de la bandeja muestra el estado de WoW. No se inyecta nada en el juego ni se instalan hooks. Desmarcar la casilla quita la entrada.
+
+## Valoraciones y exportación
+
+Cada 👍 o 👎 queda en la tabla `feedback` de `companero.db`. Para exportarlas a un archivo:
+
+```
+CompaneroWoW.exe --export-feedback valoraciones.json
+```
+
+El archivo tiene los totales y, por cada valoración, la fecha, la puntuación (+1 o -1), el motivo, la pregunta, la respuesta, el proveedor y la versión de la skill. La lista de herramientas usadas no se guarda todavía. Sirve también mientras la app está abierta.
+
+## Pantalla de integración para desarrolladores
+
+Otros componentes pueden añadir una opción al menú contextual de la cabecera con `ui.RegisterMenuAction(etiqueta, función)`. La función se ejecuta en el hilo de la interfaz: si tarda, debe lanzar su propia goroutine.
 
 ## Configuración (`config.json`)
 
@@ -122,6 +152,10 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
 | `proactive` | `true` activa los consejos proactivos. |
+| `hideInCombat` | `true` (por defecto) oculta el panel mientras el personaje está en combate. |
+| `startWithWoW` | `true` registra la app para arrancar al iniciar sesión, minimizada en la bandeja. Por defecto `false`. |
+| `opacity` | Opacidad del panel en porcentaje, de 60 a 100 (por defecto 90). |
+| `fontSize` | Tamaño del texto del panel en puntos, de 9 a 14 (por defecto 10). |
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |

@@ -56,7 +56,24 @@ type Config struct {
 	WebSources   []string      `json:"webSources"`
 	PixelPollMs  int           `json:"pixelPollMs"`
 	AITimeoutSec int           `json:"aiTimeoutSec"`
+	// HideInCombat hides the panel while the character is in combat and shows it again
+	// two seconds after combat ends.
+	HideInCombat bool `json:"hideInCombat"`
+	// StartWithWoW starts the app minimized to the tray at Windows logon (HKCU Run key).
+	StartWithWoW bool `json:"startWithWoW"`
+	// Opacity is the panel opacity in percent, from MinOpacity to 100.
+	Opacity int `json:"opacity"`
+	// FontSize is the panel's text size in points, from MinFontSize to MaxFontSize.
+	FontSize float64 `json:"fontSize"`
 }
+
+// Limits of the appearance settings.
+const (
+	MinOpacity  = 60
+	MaxOpacity  = 100
+	MinFontSize = 9.0
+	MaxFontSize = 14.0
+)
 
 // Defaults returns a Config populated with the default values.
 func Defaults() Config {
@@ -86,6 +103,10 @@ func Defaults() Config {
 		},
 		PixelPollMs:  250,
 		AITimeoutSec: 120,
+		HideInCombat: true,
+		StartWithWoW: false,
+		Opacity:      90,
+		FontSize:     10,
 	}
 }
 
@@ -116,29 +137,41 @@ func DefaultDir() (string, error) {
 // Fields absent from the file keep their default values. Invalid JSON is an error
 // that names the path.
 func Load(path string) (*Config, error) {
-	c := Defaults()
+	c, _, err := LoadInfo(path)
+	return c, err
+}
+
+// LoadInfo is Load that also reports whether the file was just created, which is how
+// the first-run wizard knows it should open.
+func LoadInfo(path string) (c *Config, created bool, err error) {
+	d := Defaults()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		if err := c.Save(path); err != nil {
-			return nil, fmt.Errorf("write default config %s: %w", path, err)
+		if err := d.Save(path); err != nil {
+			return nil, false, fmt.Errorf("write default config %s: %w", path, err)
 		}
-		return &c, nil
+		return &d, true, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, false, fmt.Errorf("read config %s: %w", path, err)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
-		return &c, nil
+		return &d, false, nil
 	}
-	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	if err := json.Unmarshal(data, &d); err != nil {
+		return nil, false, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if c.migrate() {
-		if err := c.Save(path); err != nil {
-			return nil, fmt.Errorf("save migrated config %s: %w", path, err)
+	// A file from before the appearance and combat settings lacks their keys; it is
+	// rewritten once so that the keys show up (and can be edited) in config.json.
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	_, hasKey := raw["hideInCombat"]
+	if d.migrate() || !hasKey {
+		if err := d.Save(path); err != nil {
+			return nil, false, fmt.Errorf("save migrated config %s: %w", path, err)
 		}
 	}
-	return &c, nil
+	return &d, false, nil
 }
 
 // migrate upgrades a config written by an earlier version and reports whether it changed
@@ -166,8 +199,31 @@ func (c *Config) migrate() bool {
 		c.APIProviders = []APIProvider{defaultNVIDIAProvider}
 		changed = true
 	}
+	if c.clampAppearance() {
+		changed = true
+	}
 	return changed
 }
+
+// clampAppearance brings opacity and font size into their ranges. A zero value (a file
+// written before these fields existed, or an explicit 0) gets the default. It reports
+// whether a value changed.
+func (c *Config) clampAppearance() bool {
+	d := Defaults()
+	before := *c
+	if c.Opacity == 0 {
+		c.Opacity = d.Opacity
+	}
+	c.Opacity = min(max(c.Opacity, MinOpacity), MaxOpacity)
+	if c.FontSize == 0 {
+		c.FontSize = d.FontSize
+	}
+	c.FontSize = min(max(c.FontSize, MinFontSize), MaxFontSize)
+	return before.Opacity != c.Opacity || before.FontSize != c.FontSize
+}
+
+// ClampAppearance is clampAppearance for values set by the settings screen.
+func (c *Config) ClampAppearance() { c.clampAppearance() }
 
 // Save writes the config as pretty JSON (2-space indent). The write is atomic:
 // a temporary file is written and then renamed over path.

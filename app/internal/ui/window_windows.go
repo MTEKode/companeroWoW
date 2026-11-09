@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/MTEKode/companeroWoW/app/internal/assistant"
+	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"golang.org/x/sys/windows"
 )
 
@@ -30,15 +31,26 @@ const (
 	msgTip    = wmApp + 2
 	msgStatus = wmApp + 3
 	msgToggle = wmApp + 4
+	msgCombat = wmApp + 5 // wParam 1 while the character is in combat
+	msgTray   = wmApp + 6 // tray icon mouse events (lParam)
+	msgWizard = wmApp + 7 // setup checks finished
 
-	idCheck = 2001
-	idSend  = 2002
-	idInput = 2003
+	idCheck  = 2001
+	idSend   = 2002
+	idInput  = 2003
+	idReason = 2004
 
 	menuClear     = 1001
 	menuQuit      = 1002
 	menuSession   = 1003
 	menuSessionAI = 1004
+	menuSettings  = 1005
+	menuWizard    = 1006
+	// Tray menu only; the other tray items reuse the header menu's commands.
+	trayToggle = 1010
+
+	// combatPeriod is how often the combat flag is read.
+	combatPeriod = 500 * time.Millisecond
 )
 
 // Palette: dark brown background, gold headings and borders, parchment text.
@@ -80,12 +92,30 @@ type winFonts struct {
 type window struct {
 	hwnd, inst               uintptr
 	conv, input, check, send uintptr
+	reasonEdit               uintptr // the one-line reason box after a 👎
+	origReasonProc           uintptr
 	opts                     Options
 	dpi                      uint32
 	scale                    float64
 	fonts                    winFonts
 	brushes                  winBrushes
 	state                    windowState
+
+	// cfg is the configuration in use; the settings screen replaces it (UI thread only).
+	cfg      config.Config
+	cfgPath  string
+	combat   combatHider
+	feedback FeedbackSaver
+	// reasonFor is the index of the answer whose reason is being typed, or -1.
+	reasonFor int
+	// wiz is the first-run wizard while it is open; nil otherwise.
+	wiz      *wizardView
+	wizCh    chan wizardResult
+	settings *settingsWin
+	hotkey   *hotkeyLoop
+	tray     trayIcon
+	// taskbarMsg is the "TaskbarCreated" broadcast; the tray icon is added again on it.
+	taskbarMsg uint32
 
 	quitting    bool // UI thread only
 	busy        bool // UI thread only
@@ -140,14 +170,21 @@ func Run(opts Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := &window{
-		opts:    opts,
-		ctx:     ctx,
-		cancel:  cancel,
-		answers: make(chan answer, 1),
-		tips:    make(chan assistant.Tip, tipQueueSize),
+		opts:      opts,
+		ctx:       ctx,
+		cancel:    cancel,
+		answers:   make(chan answer, 1),
+		tips:      make(chan assistant.Tip, tipQueueSize),
+		cfg:       opts.Config,
+		cfgPath:   opts.ConfigPath,
+		combat:    newCombatHider(opts.Config.HideInCombat),
+		feedback:  opts.Feedback,
+		reasonFor: -1,
+		wizCh:     make(chan wizardResult, 8),
 	}
 	w.inst = call(procGetModuleHandleW, 0)
 	w.setDPI(uint32(call(procGetDpiForSystem)))
+	call(procCoInitializeEx, 0, coinitApartmentThreaded) // the folder browser needs COM
 
 	if err := w.register(); err != nil {
 		return err
@@ -190,6 +227,7 @@ func Run(opts Options) error {
 	}
 	log.Printf("ui: ventana creada en %d,%d (%dx%d), %d ppp", w.state.X, w.state.Y, w.state.W, w.state.H, w.dpi)
 
+	w.taskbarMsg = registerMessage("TaskbarCreated")
 	w.makeBrushes()
 	w.makeFonts()
 	if err := w.createChildren(); err != nil {
@@ -200,12 +238,21 @@ func Run(opts Options) error {
 	w.loadHistory()
 	w.layoutChildren()
 	w.applyRegion()
+	w.applyOpacity()
 	w.renderAll()
 	w.registerHotkey()
-	w.show(true)
+	w.addTray()
+	if opts.Setup {
+		w.startWizard()
+	}
+	// A panel started with --tray stays hidden: only the tray icon shows.
+	if !opts.StartHidden || opts.Setup {
+		w.show(true)
+	}
 
 	go w.statusLoop()
 	go w.tipLoop()
+	go w.combatLoop()
 	log.Printf("ui: bucle de mensajes en marcha")
 
 	var m winMsg
@@ -214,12 +261,69 @@ func Run(opts Options) error {
 		if r <= 0 {
 			break
 		}
+		// The settings screen is a dialog: Tab moves between its fields, Enter presses
+		// Guardar and Escape closes it.
+		if s := w.settings; s != nil && call(procIsDialogMessageW, s.hwnd, ptrOf(&m)) != 0 {
+			continue
+		}
 		call(procTranslateMessage, ptrOf(&m))
 		call(procDispatchMessageW, ptrOf(&m))
 	}
 	cancel()
+	w.removeTray()
 	log.Printf("ui: panel cerrado")
 	return nil
+}
+
+// registerMessage returns the id of a system-wide window message.
+func registerMessage(name string) uint32 {
+	s := utf16Of(name)
+	id := uint32(call(procRegisterWindowMessageW, ptrOf(&s[0])))
+	runtime.KeepAlive(s)
+	return id
+}
+
+// combatLoop reads the combat flag twice a second and tells the UI thread about it. The
+// hide-in-combat rules themselves live in combatHider.
+func (w *window) combatLoop() {
+	if w.opts.InCombat == nil {
+		return
+	}
+	t := time.NewTicker(combatPeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-t.C:
+			var wp uintptr
+			if w.opts.InCombat() {
+				wp = 1
+			}
+			postMessage(w.hwnd, msgCombat, wp, 0)
+		}
+	}
+}
+
+// onCombat applies the combat flag: the panel is hidden when a fight starts while it is
+// open, and shown again two seconds after the fight ends.
+func (w *window) onCombat(inCombat bool) {
+	switch w.combat.Observe(inCombat, isVisible(w.hwnd), time.Now()) {
+	case CombatHide:
+		log.Printf("ui: en combate: el panel se oculta")
+		w.hide()
+	case CombatRestore:
+		log.Printf("ui: fin de combate: el panel vuelve")
+		w.show(false)
+	}
+}
+
+// applyOpacity sets the panel's opacity from the configuration.
+func (w *window) applyOpacity() {
+	if w.hwnd == 0 {
+		return
+	}
+	call(procSetLayeredWindowAttrs, w.hwnd, 0, uintptr(opacityAlpha(w.cfg.Opacity)), lwaAlpha)
 }
 
 // Activate brings an already running panel to the front. It reports whether one was found.
@@ -365,10 +469,16 @@ func (w *window) makeFonts() {
 			call(procDeleteObject, f)
 		}
 	}
+	// The configured size is the body text; the title is one point larger and the status
+	// line 1.5 points smaller, as they were at the default of 10 points.
+	pt := w.cfg.FontSize
+	if pt <= 0 {
+		pt = config.Defaults().FontSize
+	}
 	w.fonts = winFonts{
-		ui:    newFont("Segoe UI", 10, w.dpi, fwNormal),
-		title: newFont("Segoe UI", 11, w.dpi, fwSemibold),
-		small: newFont("Segoe UI", 8.5, w.dpi, fwNormal),
+		ui:    newFont("Segoe UI", pt, w.dpi, fwNormal),
+		title: newFont("Segoe UI", pt+1, w.dpi, fwSemibold),
+		small: newFont("Segoe UI", pt-1.5, w.dpi, fwNormal),
 	}
 }
 
@@ -389,8 +499,23 @@ func (w *window) createChildren() error {
 	editProcCB = windows.NewCallback(editProc)
 	origEditProc = call(procGetWindowLongPtrW, w.input, gwlpWndProc)
 	call(procSetWindowLongPtrW, w.input, gwlpWndProc, editProcCB)
+	// The reason box is created hidden; it shows in the feedback area after a 👎.
+	w.reasonEdit = w.child("EDIT", "", wsChild|wsTabStop|esAutoHScroll|wsBorder, idReason)
+	if w.reasonEdit != 0 {
+		reasonProcCB = windows.NewCallback(reasonProc)
+		w.origReasonProc = call(procGetWindowLongPtrW, w.reasonEdit, gwlpWndProc)
+		call(procSetWindowLongPtrW, w.reasonEdit, gwlpWndProc, reasonProcCB)
+		setCueBanner(w.reasonEdit, reasonPlaceholder)
+	}
 	w.applyFonts()
 	return nil
+}
+
+// setCueBanner shows a grey hint in an empty edit control.
+func setCueBanner(h uintptr, text string) {
+	t := utf16Of(text)
+	call(procSendMessageW, h, emSetCueBanner, 0, ptrOf(&t[0]))
+	runtime.KeepAlive(t)
 }
 
 // child creates a child control with text and a numeric ID.
@@ -406,7 +531,7 @@ func (w *window) child(class, text string, style uintptr, id uintptr) uintptr {
 
 // applyFonts gives the controls the UI font.
 func (w *window) applyFonts() {
-	for _, h := range []uintptr{w.input, w.check, w.send} {
+	for _, h := range []uintptr{w.input, w.check, w.send, w.reasonEdit} {
 		if h != 0 {
 			call(procSendMessageW, h, wmSetFont, w.fonts.ui, 1)
 		}
@@ -427,6 +552,9 @@ func (w *window) layoutChildren() {
 	move(w.input, l.Input)
 	move(w.check, l.Check)
 	move(w.send, l.Send)
+	if w.reasonEdit != 0 {
+		move(w.reasonEdit, l.Feedback)
+	}
 	call(procInvalidateRect, w.hwnd, 0, 1)
 }
 
@@ -543,6 +671,20 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case msgToggle:
 		w.toggle()
 		return 0
+	case msgCombat:
+		w.onCombat(wp != 0)
+		return 0
+	case msgTray:
+		w.onTrayMessage(uint32(lp & 0xFFFF))
+		return 0
+	case msgWizard:
+		w.onWizardResults()
+		return 0
+	}
+	if msg != 0 && uint32(msg) == w.taskbarMsg {
+		// Explorer restarted and dropped the tray icon: add it again.
+		w.addTray()
+		return 0
 	}
 	return call(procDefWindowProcW, hwnd, msg, wp, lp)
 }
@@ -603,7 +745,13 @@ func (w *window) ctlColor(hdc uintptr, text, bg uint32, brush uintptr) uintptr {
 // onLButtonDown handles the header buttons, and starts moving the window when the header
 // is dragged. The system does the moving, so the panel stays smooth.
 func (w *window) onLButtonDown(x, y int) {
-	cw, _ := w.clientSize()
+	cw, ch := w.clientSize()
+	if w.wiz != nil && w.wizardClick(x, y, cw, ch) {
+		return
+	}
+	if w.wiz == nil && w.feedbackClick(x, y, cw, ch) {
+		return
+	}
 	if btn, ok := hitHeaderButton(x, y, cw, w.scale); ok {
 		switch btn.Action {
 		case actionClear:
@@ -619,36 +767,64 @@ func (w *window) onLButtonDown(x, y int) {
 	}
 }
 
-// showMenu opens the header context menu.
-func (w *window) showMenu() {
+// menuItem is one line of a popup menu; a zero id draws a separator.
+type menuItem struct {
+	id    int
+	label string
+}
+
+// popup shows the items at the cursor and returns the chosen command id, or 0.
+func (w *window) popup(items []menuItem) int {
 	menu := call(procCreatePopupMenu)
 	if menu == 0 {
-		return
+		return 0
 	}
 	defer call(procDestroyMenu, menu)
-	summary := utf16Of("Resumen de sesión")
-	summaryAI := utf16Of("Analizar sesión con IA")
-	clear := utf16Of("Limpiar historial")
-	quit := utf16Of("Salir")
-	call(procAppendMenuW, menu, mfString, menuSession, ptrOf(&summary[0]))
-	call(procAppendMenuW, menu, mfString, menuSessionAI, ptrOf(&summaryAI[0]))
-	call(procAppendMenuW, menu, mfSeparator, 0, 0)
-	call(procAppendMenuW, menu, mfString, menuClear, ptrOf(&clear[0]))
-	call(procAppendMenuW, menu, mfSeparator, 0, 0)
-	call(procAppendMenuW, menu, mfString, menuQuit, ptrOf(&quit[0]))
-	runtime.KeepAlive(summary)
-	runtime.KeepAlive(summaryAI)
-	runtime.KeepAlive(clear)
-	runtime.KeepAlive(quit)
+	var keep [][]uint16
+	for _, it := range items {
+		if it.id == 0 {
+			call(procAppendMenuW, menu, mfSeparator, 0, 0)
+			continue
+		}
+		s := utf16Of(it.label)
+		keep = append(keep, s)
+		call(procAppendMenuW, menu, mfString, uintptr(it.id), ptrOf(&s[0]))
+	}
 	var pt point
 	call(procGetCursorPos, ptrOf(&pt))
 	call(procSetForegroundWindow, w.hwnd)
 	cmd := call(procTrackPopupMenu, menu, tpmRightButton|tpmReturnCmd,
 		uintptr(pt.X), uintptr(pt.Y), 0, w.hwnd, 0)
-	w.menuCommand(int(cmd))
+	runtime.KeepAlive(keep)
+	// The documented way to make a tray menu go away when the user clicks elsewhere.
+	postMessage(w.hwnd, wmNull, 0, 0)
+	return int(cmd)
 }
 
-// menuCommand runs the header menu item with the given command id.
+// showMenu opens the header context menu: the session, the settings, the wizard, the
+// history, the actions other components registered, and Salir.
+func (w *window) showMenu() {
+	items := []menuItem{
+		{menuSession, "Resumen de sesión"},
+		{menuSessionAI, "Analizar sesión con IA"},
+		{0, ""},
+		{menuSettings, "Ajustes…"},
+		{menuWizard, "Asistente de configuración…"},
+		{0, ""},
+		{menuClear, "Limpiar historial"},
+	}
+	if acts := menuActions(); len(acts) > 0 {
+		items = append(items, menuItem{0, ""})
+		for _, a := range acts {
+			items = append(items, menuItem{a.ID, a.Label})
+		}
+	}
+	items = append(items, menuItem{0, ""}, menuItem{menuQuit, "Salir"})
+	w.menuCommand(w.popup(items))
+}
+
+// menuCommand runs the menu item with the given command id: a header menu item, a tray
+// menu item or an action registered with RegisterMenuAction.
 func (w *window) menuCommand(id int) {
 	switch id {
 	case menuSession:
@@ -657,8 +833,19 @@ func (w *window) menuCommand(id int) {
 		w.showSession(true)
 	case menuClear:
 		w.clearHistory()
+	case menuSettings:
+		w.openSettings()
+	case menuWizard:
+		w.startWizard()
+	case trayToggle:
+		w.toggle()
 	case menuQuit:
 		w.quit()
+	case 0:
+	default:
+		if !runMenuAction(id) {
+			log.Printf("ui: orden de menú desconocida %d", id)
+		}
 	}
 }
 
@@ -723,6 +910,11 @@ func (w *window) paint() {
 		frameRect(hdc, b.Rect, w.brushes.gold)
 		drawText(hdc, b.Label, b.Rect, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.ui, colText)
 	}
+	if w.wiz != nil {
+		w.paintWizard(hdc, l)
+	} else {
+		w.paintFeedback(hdc, l)
+	}
 	drawText(hdc, w.statusText, l.Status,
 		dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix, w.fonts.small, w.statusColor)
 	frameRect(hdc, Rect{W: cw, H: ch}, w.brushes.gold)
@@ -778,6 +970,9 @@ func (w *window) quit() {
 	w.quitting = true
 	w.saveGeometry()
 	log.Printf("ui: Salir desde el panel")
+	if w.settings != nil {
+		call(procDestroyWindow, w.settings.hwnd)
+	}
 	call(procDestroyWindow, w.hwnd)
 }
 
@@ -807,7 +1002,9 @@ func (w *window) registerHotkey() {
 		return
 	}
 	hwnd := w.hwnd
-	if err := startHotkey(hk, func() { postMessage(hwnd, msgToggle, 0, 0) }); err != nil {
+	loop, err := startHotkey(hk, func() { postMessage(hwnd, msgToggle, 0, 0) })
+	w.hotkey = loop
+	if err != nil {
 		w.setNotice(fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk))
 		log.Printf("ui: atajo %s: %v", hk, err)
 		return
@@ -827,6 +1024,11 @@ func (w *window) loadHistory() {
 	}
 	for _, m := range toAnswerMsgs(msgs) {
 		w.entries = append(w.entries, entryFromMsg(m))
+	}
+	for i := range w.entries {
+		if w.entries[i].Kind == entryAssistant {
+			w.entries[i].Question = questionFor(w.entries, i)
+		}
 	}
 	log.Printf("ui: historial cargado (%d mensajes)", len(msgs))
 }
@@ -917,7 +1119,7 @@ func (w *window) answer(ctx context.Context, text string, withShot bool) entry {
 	if err != nil {
 		return entry{Kind: entryError, Text: askError(err)}
 	}
-	return entry{Kind: entryAssistant, Text: resp.Text, Provider: resp.Provider, At: time.Now().Format("15:04")}
+	return entry{Kind: entryAssistant, Text: resp.Text, Provider: resp.Provider, At: time.Now().Format("15:04"), Question: text}
 }
 
 // drainAnswers shows the answer that the ask goroutine delivered.
@@ -958,8 +1160,9 @@ func (w *window) drainTips() {
 	for {
 		select {
 		case tip := <-w.tips:
+			// During a fight the tip waits in the conversation and the panel stays hidden.
 			w.add(entry{Kind: entryTip, Title: tip.Title, Text: tip.Text})
-			if !isVisible(w.hwnd) {
+			if !isVisible(w.hwnd) && !w.combat.InCombat() {
 				w.show(false)
 			}
 		default:
@@ -1027,16 +1230,20 @@ func statusColour(s Status, busy bool) uint32 {
 	return colBad
 }
 
-// statusLoop asks for a fresh status every two seconds while the panel is visible.
+// statusLoop asks for a fresh status every two seconds while the panel is visible. A hidden
+// panel (the tray icon only) refreshes the tooltip every ten seconds instead.
 func (w *window) statusLoop() {
 	t := time.NewTicker(statusPeriod)
 	defer t.Stop()
+	const hiddenEvery = 5 // ticks: 10 s
+	n := 0
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
 		case <-t.C:
-			if isVisible(w.hwnd) {
+			n++
+			if isVisible(w.hwnd) || n%hiddenEvery == 0 {
 				w.pollStatus()
 			}
 		}
@@ -1044,7 +1251,7 @@ func (w *window) statusLoop() {
 }
 
 // pollStatus reads the status from the callback (any goroutine) and asks the UI thread
-// to show it.
+// to show it. The tray tooltip follows the same status.
 func (w *window) pollStatus() {
 	w.refreshAvoid()
 	if w.opts.Status == nil {
@@ -1054,6 +1261,7 @@ func (w *window) pollStatus() {
 	w.latestMu.Lock()
 	w.latest = s
 	w.latestMu.Unlock()
+	w.updateTray(trayTip(s))
 	postMessage(w.hwnd, msgStatus, 0, 0)
 }
 

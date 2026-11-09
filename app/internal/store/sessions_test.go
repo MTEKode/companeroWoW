@@ -152,7 +152,7 @@ func TestMigrationFromVersionOneKeepsMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(`DROP TABLE sessions; PRAGMA user_version = 1`); err != nil {
+	if _, err := raw.Exec(`DROP TABLE sessions; DROP TABLE feedback; PRAGMA user_version = 1`); err != nil {
 		t.Fatalf("downgrade fixture: %v", err)
 	}
 	if err := raw.Close(); err != nil {
