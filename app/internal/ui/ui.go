@@ -18,6 +18,7 @@ import (
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/assistant"
+	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 )
 
@@ -64,6 +65,25 @@ type Options struct {
 	// at the top-left of the client area. ok is false when WoW is not found. It may be
 	// called from any goroutine.
 	Avoid func() (r Rect, ok bool)
+
+	// Config holds the settings the settings screen edits. The panel keeps its own copy
+	// and writes it to ConfigPath when the user saves; Hotkey above must match Config.Hotkey.
+	Config     config.Config
+	ConfigPath string
+	// InCombat reports whether the character is in combat, from the live bridge. It may be
+	// called from any goroutine. It is polled every half second while Config.HideInCombat
+	// is set.
+	InCombat func() bool
+	// Feedback keeps the 👍/👎 ratings of the answers. Nil hides the buttons.
+	Feedback FeedbackSaver
+	// StartHidden starts with the panel hidden: only the tray icon shows (--tray).
+	StartHidden bool
+	// Setup opens the first-run wizard in the panel (a new config.json, or --setup).
+	Setup bool
+	// DataDir is the app's data folder; ExeDir is the folder of the executable, where an
+	// addon copy may ship (addon\CompaneroWoW).
+	DataDir string
+	ExeDir  string
 }
 
 // windowState is the saved geometry of the window, in physical pixels.

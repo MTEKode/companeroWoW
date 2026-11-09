@@ -63,6 +63,9 @@ type options struct {
 	eval         bool
 	evalOut      string
 	evalProvider string
+	setup        bool
+	tray         bool
+	exportFB     string
 }
 
 func main() {
@@ -72,6 +75,9 @@ func main() {
 	flag.BoolVar(&o.eval, "eval", false, "responde las preguntas de evaluación con la cadena real, escribe el informe y sale")
 	flag.StringVar(&o.evalOut, "eval-out", "", "con --eval, ruta del informe .md (el .json va al lado); por defecto en la carpeta de datos de la app")
 	flag.StringVar(&o.evalProvider, "eval-provider", "", "con --eval, usa solo este proveedor: antigravity, codex o api")
+	flag.BoolVar(&o.setup, "setup", false, "abre el asistente de configuración en el panel")
+	flag.BoolVar(&o.tray, "tray", false, "arranca minimizado en la bandeja, sin mostrar el panel (lo usa el inicio con WoW)")
+	flag.StringVar(&o.exportFB, "export-feedback", "", "escribe las valoraciones 👍/👎 en este archivo .json y sale")
 	flag.Parse()
 	os.Exit(run(o))
 }
@@ -92,7 +98,7 @@ func run(o options) int {
 		defer closer.Close()
 	}
 
-	cfg, err := config.Load(filepath.Join(dir, "config.json"))
+	cfg, created, err := config.LoadInfo(filepath.Join(dir, "config.json"))
 	if err != nil {
 		log.Printf("config: %v", err)
 		return 1
@@ -104,20 +110,33 @@ func run(o options) int {
 	if o.eval {
 		return runEval(cfg, dir, o.evalOut, o.evalProvider)
 	}
+	if o.exportFB != "" {
+		return runExportFeedback(dir, o.exportFB)
+	}
 
 	release, first := acquireSingleInstance()
 	if !first {
-		ui.Activate()
+		// A copy that starts with WoW must not pop up the panel of the running one.
+		if !o.tray {
+			ui.Activate()
+		}
 		return 0
 	}
 	defer release()
 
 	log.Printf("Compañero WoW %s iniciando", version)
-	return runApp(cfg, dir)
+	return runApp(cfg, dir, appStart{setup: created || o.setup, tray: o.tray})
+}
+
+// appStart is how the app was started: the first-run wizard opens when setup is set, and
+// tray keeps the panel hidden.
+type appStart struct {
+	setup bool
+	tray  bool
 }
 
 // runApp wires the components and runs the overlay until the user quits.
-func runApp(cfg *config.Config, dir string) int {
+func runApp(cfg *config.Config, dir string, start appStart) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -204,6 +223,13 @@ func runApp(cfg *config.Config, dir string) int {
 		})
 	}
 
+	// The start-with-WoW entry is rewritten at each start, so a moved install still starts.
+	if cfg.StartWithWoW {
+		if err := ui.SetStartWithWoW(true); err != nil {
+			log.Printf("inicio con WoW: %v", err)
+		}
+	}
+
 	uiErr := ui.Run(ui.Options{
 		Hotkey:    cfg.Hotkey,
 		StatePath: filepath.Join(dir, "window.json"),
@@ -213,6 +239,17 @@ func runApp(cfg *config.Config, dir string) int {
 		Status: func() ui.Status {
 			return buildStatus(g, providers, watcher, mcpErrs.get())
 		},
+		Config:     *cfg,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		InCombat: func() bool {
+			live, ok := g.Live()
+			return ok && live.InCombat
+		},
+		Feedback:    st,
+		StartHidden: start.tray,
+		Setup:       start.setup,
+		DataDir:     dir,
+		ExeDir:      executableDir(),
 	})
 
 	// The session ends with the app; it is saved before the store closes.
@@ -231,6 +268,15 @@ func runApp(cfg *config.Config, dir string) int {
 	}
 	log.Printf("Compañero WoW cerrado")
 	return 0
+}
+
+// executableDir is the folder of the running executable ("" when it is unknown).
+func executableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(exe)
 }
 
 // avoidStrip returns the WoW pixel strip at the top-left of the client area. The bridge

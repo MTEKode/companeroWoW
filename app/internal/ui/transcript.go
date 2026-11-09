@@ -20,6 +20,13 @@ type entry struct {
 	Provider string
 	At       string
 	Title    string // tips only
+	// Question is the user message the answer replies to (answers only); it is stored with
+	// the rating.
+	Question string
+	// Rating is the user's 👍 (+1) or 👎 (-1) on this answer, 0 when none; FeedbackID is
+	// its row in the store.
+	Rating     int
+	FeedbackID int64
 }
 
 // entryFromMsg turns a stored message into a conversation entry.

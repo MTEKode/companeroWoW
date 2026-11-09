@@ -16,6 +16,9 @@ type Layout struct {
 	Check  Rect
 	Send   Rect
 	Status Rect
+	// Feedback is the free space of the input row between the capture check and Enviar:
+	// the 👍/👎 buttons and the one-line reason box sit here.
+	Feedback Rect
 }
 
 const (
@@ -32,6 +35,10 @@ const (
 	buttonSpacing = 2
 	// gripWidth is the band along each edge that resizes the window.
 	gripWidth = 6
+	// thumbWidth is the width of a 👍 or 👎 button, at 96 DPI.
+	thumbWidth = 30
+	// feedbackLabelMin is the narrowest space in which the "¿Útil?" text is drawn.
+	feedbackLabelMin = 50
 )
 
 // Hit-test codes, with the values of the Win32 HT* constants.
@@ -80,14 +87,44 @@ func computeLayout(w, h int, scale float64) Layout {
 	if convH < 0 {
 		convH = 0
 	}
-	return Layout{
-		Header: Rect{X: 0, Y: 0, W: w, H: hdr},
-		Conv:   Rect{X: p, Y: convY, W: w - 2*p, H: convH},
-		Input:  Rect{X: p, Y: inputY, W: w - 2*p, H: inH},
-		Check:  Rect{X: p, Y: rowY, W: scaled(checkWidth, scale), H: rowH},
-		Send:   Rect{X: w - p - scaled(sendWidth, scale), Y: rowY, W: scaled(sendWidth, scale), H: rowH},
-		Status: status,
+	check := Rect{X: p, Y: rowY, W: scaled(checkWidth, scale), H: rowH}
+	send := Rect{X: w - p - scaled(sendWidth, scale), Y: rowY, W: scaled(sendWidth, scale), H: rowH}
+	fbX := check.X + check.W + g
+	fbW := send.X - g - fbX
+	if fbW < 0 {
+		fbW = 0
 	}
+	return Layout{
+		Header:   Rect{X: 0, Y: 0, W: w, H: hdr},
+		Conv:     Rect{X: p, Y: convY, W: w - 2*p, H: convH},
+		Input:    Rect{X: p, Y: inputY, W: w - 2*p, H: inH},
+		Check:    check,
+		Send:     send,
+		Status:   status,
+		Feedback: Rect{X: fbX, Y: rowY, W: fbW, H: rowH},
+	}
+}
+
+// feedbackThumbs returns the 👍 and 👎 buttons at the right end of the feedback area, 👍
+// first. The caller hides the label when the area is too narrow for it.
+func feedbackThumbs(l Layout, scale float64) (up, down Rect) {
+	bw := scaled(thumbWidth, scale)
+	sp := scaled(buttonSpacing, scale)
+	x := l.Feedback.X + l.Feedback.W - bw
+	down = Rect{X: x, Y: l.Feedback.Y, W: bw, H: l.Feedback.H}
+	up = Rect{X: x - bw - sp, Y: l.Feedback.Y, W: bw, H: l.Feedback.H}
+	return up, down
+}
+
+// feedbackLabelRect is the text area left of the thumbs, or an empty rectangle when it
+// would be too narrow to read.
+func feedbackLabelRect(l Layout, scale float64) Rect {
+	up, _ := feedbackThumbs(l, scale)
+	r := Rect{X: l.Feedback.X, Y: l.Feedback.Y, W: up.X - scaled(gap, scale) - l.Feedback.X, H: l.Feedback.H}
+	if r.W < scaled(feedbackLabelMin, scale) {
+		return Rect{}
+	}
+	return r
 }
 
 // headerButtons returns the header buttons from right to left: close, hide, clear.

@@ -86,6 +86,23 @@ var migrations = [][]string{
 		)`,
 		`CREATE INDEX sessions_started ON sessions(started_at)`,
 	},
+	{
+		// One row per 👍/👎 the user gives an answer (see feedback.go). Times are Unix
+		// nanoseconds, like messages; tool_calls is a JSON array of tool names, empty when
+		// the provider did not report them.
+		`CREATE TABLE feedback (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at    INTEGER NOT NULL,
+			rating        INTEGER NOT NULL,
+			reason        TEXT    NOT NULL DEFAULT '',
+			question      TEXT    NOT NULL DEFAULT '',
+			answer        TEXT    NOT NULL DEFAULT '',
+			provider      TEXT    NOT NULL DEFAULT '',
+			skill_version TEXT    NOT NULL DEFAULT '',
+			tool_calls    TEXT    NOT NULL DEFAULT '[]'
+		)`,
+		`CREATE INDEX feedback_created ON feedback(created_at)`,
+	},
 }
 
 // latestVersion is the user_version after all migrations have run.
