@@ -229,6 +229,10 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `buscar_web` | Busca en las fuentes de WoW: Forever de `webSources`. |
 | `leer_pagina` | Lee una página de esas fuentes. |
 | `capturar_pantalla` | Captura de la ventana de WoW. |
+| `analizar_rotacion` | Clase, nivel, especialización (la guardada o la deducida de los talentos), talentos y los hechizos conocidos con rango y etiquetas aproximadas. Trae la búsqueda web sugerida en inglés para la rotación. |
+| `revisar_combates` | Últimos combates grabados (hasta 10; `ultimo`, `muertes` y `n` filtran): duración, dps, hechizos con su porcentaje, daño recibido, muertes con el asesino y los últimos golpes, y pistas calculadas sobre la ventana. Requiere `/compa sync` tras un combate. |
+| `consejo_barras` | Barras de acción: ranura, tecla, hechizos repetidos, teclas lejanas, hechizos importantes sin colocar y una propuesta de ranuras libres. |
+| `generar_comando_barras` | Convierte una distribución (ranura y hechizo) en comandos `/compa barras aplicar` válidos (hasta 40 pares, 255 caracteres cada uno). Solo se copian; la app nunca los envía al juego. |
 | `que_entrenar` | Hechizos de clase que puede aprender ahora (y del siguiente nivel) con su coste, si le alcanza el oro y el entrenador de su clase cuando se conoce. Requiere WhatsTraining. |
 | `ruta_profesion` | Cómo subir una profesión (SkillUpForever): recetas del siguiente rango, materiales, lista de la compra y entrenador. Acepta `profesion` o `skill_line_id`. Requiere SkillUpForever. |
 | `analizar_equipo` | Mejoras por ranura con lo accesible ya («ahora») o pronto (hasta 3 niveles más): objeto actual, diferencia de nivel de objeto y de stats, misión o mazmorra de origen y su `/compa marca`. Acepta `ventana` (`ahora`, `pronto`, `ambas`) y `slot`. Requiere el equipo, las misiones accesibles y los candidatos que exporta el addon (`/compa sync`). |

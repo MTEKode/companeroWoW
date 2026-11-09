@@ -105,7 +105,13 @@ func runEval(cfg *config.Config, dir, outPath, provider string) int {
 		log.Printf("eval: escribir %s: %v", jsonPath, err)
 		return 1
 	}
-	if err := os.WriteFile(mdPath, []byte(eval.Markdown(rep)), 0o644); err != nil {
+	md := eval.Markdown(rep)
+	if fb, ferr := st.FeedbackSummaryMarkdown(); ferr != nil {
+		log.Printf("eval: feedback: %v", ferr)
+	} else if fb != "" {
+		md += "\n" + fb
+	}
+	if err := os.WriteFile(mdPath, []byte(md), 0o644); err != nil {
 		log.Printf("eval: escribir %s: %v", mdPath, err)
 		return 1
 	}

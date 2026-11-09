@@ -61,3 +61,38 @@ func TestCopiedNoticeIsSpanish(t *testing.T) {
 		t.Errorf("notice = %q", CopiedNotice)
 	}
 }
+
+const answerWithBars = "Coloca los hechizos fuera de combate.\n⌨️ /compa barras aplicar 6:2054,7:8092\nLuego revisa las teclas."
+
+func TestBarsLinesAreHighlightedAndCopyTheCommand(t *testing.T) {
+	var marks []Span
+	for _, s := range MarkRuns(answerWithBars) {
+		if s.Style&StyleMark != 0 {
+			marks = append(marks, s)
+		}
+	}
+	if len(marks) != 2 {
+		t.Fatalf("highlighted runs = %d, want the mark and the command", len(marks))
+	}
+	cmd := marks[1]
+	if cmd.Style&StyleLink == 0 || !strings.Contains(cmd.Text, "· Copiar comando") || strings.Contains(cmd.Text, "Copiar marca") {
+		t.Errorf("bars command run = %+v", cmd)
+	}
+	got, ok := CommandFromLink(cmd.Text)
+	if !ok || got != "/compa barras aplicar 6:2054,7:8092" {
+		t.Fatalf("CommandFromLink = %q, %v", got, ok)
+	}
+}
+
+func TestMarkCommandsIncludesBarsCommands(t *testing.T) {
+	got := MarkCommands(answerWithMark + "\n" + answerWithBars)
+	if len(got) != 2 || got[1] != "/compa barras aplicar 6:2054,7:8092" {
+		t.Fatalf("MarkCommands = %q", got)
+	}
+}
+
+func TestCommandFromLinkRefusesBareBarsPrefix(t *testing.T) {
+	if _, ok := CommandFromLink("/compa barras"); ok {
+		t.Error("a bare bars prefix is not copied")
+	}
+}

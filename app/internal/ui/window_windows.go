@@ -182,6 +182,9 @@ func Run(opts Options) error {
 		reasonFor: -1,
 		wizCh:     make(chan wizardResult, 8),
 	}
+	RegisterQuestionActions()
+	setQuestionSink(w.askFromMenu)
+	defer setQuestionSink(nil)
 	w.inst = call(procGetModuleHandleW, 0)
 	w.setDPI(uint32(call(procGetDpiForSystem)))
 	call(procCoInitializeEx, 0, coinitApartmentThreaded) // the folder browser needs COM
@@ -1065,6 +1068,21 @@ func (w *window) submit() {
 	withShot := call(procSendMessageW, w.check, bmGetCheck, 0, 0) == bstChecked
 	setWindowText(w.input, "")
 	w.start(text, text, withShot)
+}
+
+// askFromMenu sends a question chosen in the header menu. It reports whether the question was
+// sent; while another question is in flight it only says so, and the question is not sent.
+func (w *window) askFromMenu(question string) bool {
+	if w.opts.Backend == nil {
+		w.add(entry{Kind: entryError, Text: "El asistente no está disponible."})
+		return false
+	}
+	if w.busy {
+		w.setNotice("Espera a que termine la pregunta actual")
+		return false
+	}
+	w.start(question, question, false)
+	return true
 }
 
 // start sends question to the assistant and shows display as the user's message. The
