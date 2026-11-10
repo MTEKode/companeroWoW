@@ -103,6 +103,39 @@ var migrations = [][]string{
 		)`,
 		`CREATE INDEX feedback_created ON feedback(created_at)`,
 	},
+	{
+		// wowforevertalents.com (see websearch/wft*.go). wft_pages keeps the raw HTML of each
+		// page with its validators (ETag, Last-Modified) and the patch it was read under;
+		// wft_sitemap is the URL index; wft_meta holds timestamps and the current patch;
+		// wft_parsed caches the structured data the parsers extract from a page.
+		`CREATE TABLE wft_pages (
+			url           TEXT    PRIMARY KEY,
+			body          TEXT    NOT NULL,
+			etag          TEXT    NOT NULL DEFAULT '',
+			last_modified TEXT    NOT NULL DEFAULT '',
+			patch         TEXT    NOT NULL DEFAULT '',
+			fetched_at    INTEGER NOT NULL
+		)`,
+		`CREATE TABLE wft_sitemap (
+			url     TEXT PRIMARY KEY,
+			slug    TEXT NOT NULL DEFAULT '',
+			title   TEXT NOT NULL DEFAULT '',
+			section TEXT NOT NULL DEFAULT '',
+			cls     TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX wft_sitemap_section ON wft_sitemap(section, cls)`,
+		`CREATE TABLE wft_meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+		`CREATE TABLE wft_parsed (
+			key        TEXT    PRIMARY KEY,
+			kind       TEXT    NOT NULL,
+			json       TEXT    NOT NULL,
+			patch      TEXT    NOT NULL DEFAULT '',
+			fetched_at INTEGER NOT NULL
+		)`,
+	},
 }
 
 // latestVersion is the user_version after all migrations have run.

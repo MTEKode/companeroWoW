@@ -36,7 +36,7 @@ const (
 
 	descBuscarWeb = "Busca en las fuentes web de WoW Forever (wiki, guías y bases de datos de la versión Forever) cuando el conocimiento local no basta. Solo devuelve páginas de esas fuentes, nunca de Classic ni de Retail. Puede limitarse a un sitio concreto. Devuelve títulos, enlaces y extractos; usa leer_pagina para leer una página completa."
 
-	descLeerPagina = "Lee el texto de una página de WoW Forever a partir de su URL, la que devolvió buscar_web. Úsala cuando el extracto no tenga la respuesta completa. Solo admite los sitios permitidos."
+	descLeerPagina = "Lee el texto de una página de WoW Forever a partir de su URL, la que devolvió buscar_web. Úsala cuando el extracto no tenga la respuesta completa. En una página larga, pasa «buscar» con lo que buscas: devuelve primero esas secciones. Solo admite los sitios permitidos."
 
 	descEntrenar = "Dice qué hechizos de clase puede aprender ahora con su coste, cuánto cuesta en total, si el jugador puede pagarlos y dónde está el entrenador de su clase cuando se conoce. Incluye también los hechizos del siguiente nivel. Úsala cuando pregunten qué entrenar, qué hechizos tiene disponibles o cuánto cuesta subir de nivel en hechizos."
 

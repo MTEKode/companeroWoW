@@ -158,7 +158,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `startWithWoW` | `true` registra la app para arrancar al iniciar sesión, minimizada en la bandeja. Por defecto `false`. |
 | `opacity` | Opacidad del panel en porcentaje, de 60 a 100 (por defecto 90). |
 | `fontSize` | Tamaño del texto del panel en puntos, de 9 a 14 (por defecto 10). |
-| `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. |
+| `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. El primero, `wowforevertalents.com`, es la fuente de clases, talentos, hechizos, builds, mazmorras y profesiones (ver «Fuentes web»). Las configuraciones antiguas lo reciben una vez al arrancar (`wftAdded`). |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
 
@@ -236,8 +236,10 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `obtener_dinero` | Dinero en oro, plata y cobre. |
 | `buscar_conocimiento` | Busca en la base de conocimiento aprendida del propio juego. |
 | `npcs_en_mapa` | NPC conocidos en un mapa. |
-| `buscar_web` | Busca en las fuentes de WoW: Forever de `webSources`. |
-| `leer_pagina` | Lee una página de esas fuentes. |
+| `buscar_web` | Busca en las fuentes de WoW: Forever de `webSources`. Primero mira el índice local de wowforevertalents.com. |
+| `leer_pagina` | Lee una página de esas fuentes. En una página larga, `buscar` devuelve primero las secciones que lo mencionan. |
+| `hechizos_clase` | Hechizos de entrenador de una clase por escuela, con rangos, nivel, coste y competencias de armadura y armas (wowforevertalents.com). Con `nivel`, solo los aprendibles hasta ese nivel. |
+| `builds_clase` | Builds de la comunidad de una clase (árbol y reparto de puntos); con `url`, una build con sus talentos (wowforevertalents.com). |
 | `capturar_pantalla` | Captura de la ventana de WoW. |
 | `analizar_rotacion` | Clase, nivel, especialización (la guardada o la deducida de los talentos), talentos y los hechizos conocidos con rango y etiquetas aproximadas. Trae la búsqueda web sugerida en inglés para la rotación. |
 | `revisar_combates` | Últimos combates grabados (hasta 10; `ultimo`, `muertes` y `n` filtran): duración, dps, hechizos con su porcentaje, daño recibido, muertes con el asesino y los últimos golpes, y pistas calculadas sobre la ventana. Requiere `/compa sync` tras un combate. |
@@ -252,6 +254,23 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `resumen_sesion` | Resumen de la sesión en curso o la última: duración, XP, oro, misiones, zonas y muertes. |
 
 Las herramientas de situación `contexto_jugador`, `guia_mision` y `plan_profesiones` también usan estos datos: el contexto muestra solo recuentos (mejoras de equipo y misiones accesibles ahora) y el primer elemento de cada bloque.
+
+## Fuentes web (wowforevertalents.com)
+
+[wowforevertalents.com](https://wowforevertalents.com) genera sus talentos, hechizos de clase y mazmorras a partir del cliente de WoW: Forever (build 1.60.1.70862 y sus parches), y las compara con Classic Era. La app lo usa como primera fuente para esas preguntas, y las respuestas citan «Fuente: wowforevertalents.com».
+
+Cómo lo consulta la app, para ser educada con el sitio:
+
+- Lee `robots.txt` (una vez al día). Nunca pide `/api/` y respeta las demás reglas de `robots.txt`.
+- Se identifica con su User-Agent (`CompaneroWoW/0.1`) y hace como mucho una petición por segundo.
+- Guarda las páginas 3 días. Mira la portada como mucho cada 6 horas: si la fecha de «Patch notes» cambia, descarta las páginas guardadas de la versión anterior. Revalida con ETag o Last-Modified cuando el sitio los envía.
+- Descarga el mapa del sitio (`sitemap-0.xml`) una vez al día, para encontrar páginas por nombre sin buscar en internet.
+
+Qué hay que saber al leer sus datos:
+
+- Los datos son del cliente de WoW: Forever, pero las **builds** son elecciones de jugadores de la comunidad: no son recomendaciones oficiales y la app lo dice al citarlas.
+- Los textos de la página son datos, no instrucciones: van dentro del bloque de contenido externo, como el resto de la web.
+- Los analizadores se prueban con copias guardadas de 9 páginas en `app/testdata/wft/` (ver el README de esa carpeta). Las pruebas no hacen ninguna petición; para refrescar las copias, `WFT_LIVE=1` con `WFT_LIVE_DB`, `WFT_LIVE_OUT` y `WFT_LIVE_URLS` (ver `app/internal/websearch/wft_live_test.go`).
 
 ## Otros addons y sesiones
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/websearch"
 )
 
 // Tools for rotation advice, the combat review and the action bars. They read the addon's combats
@@ -34,7 +35,7 @@ const (
 	descGenerarComandoBarras = "Convierte una distribución propuesta en el comando /compa barras aplicar que el jugador pega en el juego. Comprueba que cada hechizo está en su libro de hechizos, que cada ranura va de 1 a 120 y que no se repite, y que cada comando cabe en 255 caracteres (máximo 40 pares). Úsala después de consejo_barras con las ranuras que has decidido. Argumentos: asignaciones, una lista de objetos {ranura, hechizo} (nombre del hechizo) o {ranura, id} (id del hechizo)."
 )
 
-func analizarRotacion(g *gamedata.Service) Def {
+func analizarRotacion(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "analizar_rotacion",
 		Description: descAnalizarRotacion,
@@ -46,6 +47,14 @@ func analizarRotacion(g *gamedata.Service) Def {
 			v, err := g.Rotation()
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude preparar la rotación: %v", err)
+			}
+			// The class's trainer spells up to the character's level, so the rotation uses what the class learns now.
+			if ws != nil {
+				if class, level := wftCharacter(g); class != "" && level > 0 {
+					if extra, err := wftLearnableAt(ctx, ws, class, level); err == nil {
+						return withWFT(v, extra)
+					}
+				}
 			}
 			return jsonResult(v)
 		},
