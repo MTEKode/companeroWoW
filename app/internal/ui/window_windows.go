@@ -136,8 +136,16 @@ type window struct {
 
 	answers chan answer        // answers from the ask goroutine
 	tips    chan assistant.Tip // tips from the tip goroutine
-	ctx     context.Context
-	cancel  context.CancelFunc
+
+	// byUser is true while the panel is open because the user opened it (hotkey, tray,
+	// balloon, menu); false when a tip opened it. The hide-in-combat rule reads it.
+	byUser bool
+	// badge counts the tips that came while the panel was closed; the tray icon shows it.
+	badge tipBadge
+	// pendingTip is a tip whose balloon waits for the end of the fight.
+	pendingTip *assistant.Tip
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	// askCancel cancels the question in flight; askGen identifies it, so that the answer of
 	// a cancelled or superseded question is dropped. noticeAt is when notice was set.
@@ -309,15 +317,23 @@ func (w *window) combatLoop() {
 }
 
 // onCombat applies the combat flag: the panel is hidden when a fight starts while it is
-// open, and shown again two seconds after the fight ends.
+// open, and shown again two seconds after the fight ends, but only when the user opened it.
+// A tip that waited for the fight gets its balloon when the fight ends.
 func (w *window) onCombat(inCombat bool) {
-	switch w.combat.Observe(inCombat, isVisible(w.hwnd), time.Now()) {
+	switch w.combat.Observe(inCombat, isVisible(w.hwnd), w.byUser, time.Now()) {
 	case CombatHide:
 		log.Printf("ui: en combate: el panel se oculta")
 		w.hide()
 	case CombatRestore:
 		log.Printf("ui: fin de combate: el panel vuelve")
 		w.show(false)
+	}
+	if !inCombat && w.pendingTip != nil {
+		tip := *w.pendingTip
+		w.pendingTip = nil
+		if !isVisible(w.hwnd) {
+			w.balloonFor(tip)
+		}
 	}
 }
 
@@ -938,7 +954,8 @@ func (w *window) onDPIChanged(wp, lp uintptr) {
 }
 
 // show makes the panel visible. The focus moves to the input only when focus is true, so
-// that tips never take the keyboard from the game.
+// that tips never take the keyboard from the game. focus means the user opened the panel:
+// then the unread tips are marked as read.
 func (w *window) show(focus bool) {
 	w.refreshAvoid()
 	w.enforceAvoid()
@@ -947,11 +964,73 @@ func (w *window) show(focus bool) {
 		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
 		call(procSetForegroundWindow, w.hwnd)
 		call(procSetFocus, w.input)
+		w.byUser = true
+		w.markRead()
 	} else {
 		call(procShowWindow, w.hwnd, swShowNoActivate)
 		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate)
 	}
 	go w.pollStatus()
+}
+
+// markRead runs when the user opens the panel: the badge clears and the conversation scrolls
+// to the first tip that came while the panel was closed. A balloon still waiting is dropped.
+func (w *window) markRead() {
+	w.pendingTip = nil
+	first, unread := w.badge.firstUnread()
+	if !unread {
+		return
+	}
+	w.badge.clear()
+	w.syncBadge()
+	off := unreadOffset(w.entries, first)
+	call(procSendMessageW, w.conv, emSetSel, uintptr(off), uintptr(off))
+	call(procSendMessageW, w.conv, emScrollCaret, 0, 0)
+}
+
+// syncBadge shows the unread count on the tray icon and in its tooltip.
+func (w *window) syncBadge() {
+	n := w.badge.count()
+	w.tray.setBadge(n)
+	w.latestMu.Lock()
+	s := w.latest
+	w.latestMu.Unlock()
+	w.updateTray(trayTipWithBadge(s, n))
+}
+
+// deliverTip routes a proactive tip by the tips mode: the conversation always gets it (unless
+// the tips are off), the panel opens only in panel mode, and in bandeja mode the tray badge
+// and a balloon announce it.
+func (w *window) deliverTip(tip assistant.Tip) {
+	route := routeTip(w.cfg.TipsMode, isVisible(w.hwnd), w.combat.InCombat())
+	if !route.Conversation {
+		log.Printf("ui: consejo descartado (consejos desactivados): %s", tip.Title)
+		return
+	}
+	w.add(entry{Kind: entryTip, Title: tip.Title, Text: tip.Text})
+	if route.ShowPanel {
+		w.byUser = false
+		w.show(false)
+	}
+	if route.Badge {
+		w.badge.add(len(w.entries) - 1)
+		w.syncBadge()
+	}
+	if route.Balloon {
+		w.balloonFor(tip)
+	}
+	if route.Defer {
+		t := tip
+		w.pendingTip = &t
+	}
+}
+
+// balloonFor shows the tray balloon of a tip, as the sound setting says.
+func (w *window) balloonFor(tip assistant.Tip) {
+	title, text := balloonText(tip)
+	if !w.balloon(title, text, w.cfg.TipsSound) {
+		log.Printf("ui: no pude mostrar el aviso del consejo: %s", tip.Title)
+	}
 }
 
 func (w *window) hide() {
@@ -1046,6 +1125,8 @@ func (w *window) clearHistory() {
 		}
 	}
 	w.entries = nil
+	w.badge.clear()
+	w.syncBadge()
 	w.renderAll()
 	w.refreshStatus()
 }
@@ -1173,16 +1254,12 @@ func (w *window) expireNotice() {
 	}
 }
 
-// drainTips shows the queued proactive tips. A hidden panel is shown without focus.
+// drainTips delivers the queued proactive tips (see deliverTip).
 func (w *window) drainTips() {
 	for {
 		select {
 		case tip := <-w.tips:
-			// During a fight the tip waits in the conversation and the panel stays hidden.
-			w.add(entry{Kind: entryTip, Title: tip.Title, Text: tip.Text})
-			if !isVisible(w.hwnd) && !w.combat.InCombat() {
-				w.show(false)
-			}
+			w.deliverTip(tip)
 		default:
 			return
 		}
@@ -1279,7 +1356,7 @@ func (w *window) pollStatus() {
 	w.latestMu.Lock()
 	w.latest = s
 	w.latestMu.Unlock()
-	w.updateTray(trayTip(s))
+	w.updateTray(trayTipWithBadge(s, w.tray.badgeCount()))
 	postMessage(w.hwnd, msgStatus, 0, 0)
 }
 

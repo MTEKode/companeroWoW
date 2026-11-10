@@ -20,18 +20,25 @@ var (
 	procRegisterWindowMessageW = modUser32.NewProc("RegisterWindowMessageW")
 	procAdjustWindowRectEx     = modUser32.NewProc("AdjustWindowRectEx")
 	procIsDialogMessageW       = modUser32.NewProc("IsDialogMessageW")
+	procCreateIconFromResource = modUser32.NewProc("CreateIconFromResourceEx")
 )
 
 // Shell notification (the tray icon).
 const (
-	nimAdd         = 0x00000000
-	nimModify      = 0x00000001
-	nimDelete      = 0x00000002
-	nifMessage     = 0x00000001
-	nifIcon        = 0x00000002
-	nifTip         = 0x00000004
-	trayUID        = 1
-	idiApplication = 32512
+	nimAdd        = 0x00000000
+	nimModify     = 0x00000001
+	nimDelete     = 0x00000002
+	nifMessage    = 0x00000001
+	nifIcon       = 0x00000002
+	nifTip        = 0x00000004
+	nifInfo       = 0x00000010 // balloon text and title
+	niifInfo      = 0x00000001 // the balloon's icon: information
+	niifNoSound   = 0x00000010
+	niifQuietTime = 0x00000080 // no balloon during the system's quiet time (Focus assist)
+	// ninBalloonUserClick is the callback message when the user clicks the balloon.
+	ninBalloonUserClick = 0x0405
+	trayUID             = 1
+	idiApplication      = 32512
 )
 
 // Messages used by the tray icon and the wizard.
@@ -43,6 +50,8 @@ const (
 // Controls and styles of the settings screen.
 const (
 	bsDefPushButton         = 0x00000001
+	bsAutoRadio             = 0x00000009
+	wsGroup                 = 0x00020000
 	bsPushButton            = 0x00000000
 	esAutoHScroll           = 0x00000080
 	wsBorder                = 0x00800000
