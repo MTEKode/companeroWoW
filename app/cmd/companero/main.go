@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
@@ -220,15 +221,18 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	providers := availableProviders(providerReport(cfg, dir))
 
 	tips := make(chan assistant.Tip, tipQueueSize)
-	if cfg.TipsMode != config.TipsOff {
-		go asst.RunProactive(ctx, reader.Events(), func(t assistant.Tip) {
-			select {
-			case tips <- t:
-			default:
-				log.Printf("tip dropped (queue full): %s", t.Title)
-			}
-		})
-	}
+	// The tip loop always runs; the gate drops the events while the tips are off, so the
+	// setting takes effect at once when the settings screen changes it.
+	var tipsOn atomic.Bool
+	tipsOn.Store(cfg.TipsMode != config.TipsOff)
+	events := assistant.Gate(ctx, reader.Events(), tipsOn.Load)
+	go asst.RunProactive(ctx, events, func(t assistant.Tip) {
+		select {
+		case tips <- t:
+		default:
+			log.Printf("tip dropped (queue full): %s", t.Title)
+		}
+	})
 
 	if start.testTip {
 		go sendTestTip(tips, cfg.TipsMode)
@@ -247,6 +251,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		Avoid:     avoidStrip,
 		Backend:   asst,
 		Tips:      tips,
+		TipsModeChanged: func(mode string) {
+			tipsOn.Store(mode != config.TipsOff)
+		},
 		Status: func() ui.Status {
 			return buildStatus(g, providers, watcher, mcpErrs.get())
 		},

@@ -60,9 +60,11 @@ type Options struct {
 	Backend   Backend
 	// Status is called on a timer while the window is visible, and when it is shown.
 	Status func() Status
-	// Tips delivers proactive tips; Run shows each one in the conversation without
-	// taking the focus.
+	// Tips delivers proactive tips; Run routes each one by the tips mode (see deliverTip).
 	Tips <-chan assistant.Tip
+	// TipsModeChanged is called when the settings screen saves a new tips mode, so that the
+	// tip loop follows it without a restart. It may be nil.
+	TipsModeChanged func(mode string)
 	// Avoid returns the screen rectangle the panel must never cover: the WoW pixel strip
 	// at the top-left of the client area. ok is false when WoW is not found. It may be
 	// called from any goroutine.

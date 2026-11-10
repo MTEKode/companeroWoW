@@ -422,6 +422,9 @@ func (w *window) applySettings(next config.Config) (string, error) {
 	}
 
 	w.combat.enabled = next.HideInCombat
+	if old.TipsMode != next.TipsMode && w.opts.TipsModeChanged != nil {
+		w.opts.TipsModeChanged(next.TipsMode)
+	}
 	w.applyOpacity()
 	if old.FontSize != next.FontSize {
 		w.makeFonts()

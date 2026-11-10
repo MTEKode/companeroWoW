@@ -135,12 +135,7 @@ func settingsChanges(old, next config.Config) (live, restart []string) {
 		restart = append(restart, "orden de proveedores")
 	}
 	if old.TipsMode != next.TipsMode {
-		// Turning tips on or off starts or stops the tip loop, which only starts with the app.
-		if (old.TipsMode == config.TipsOff) != (next.TipsMode == config.TipsOff) {
-			restart = append(restart, "consejos proactivos")
-		} else {
-			live = append(live, "modo de los consejos")
-		}
+		live = append(live, "consejos")
 	}
 	if old.TipsSound != next.TipsSound {
 		live = append(live, "sonido de los consejos")

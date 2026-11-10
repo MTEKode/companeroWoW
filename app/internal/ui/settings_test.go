@@ -92,10 +92,10 @@ func TestSettingsChangesLiveAndRestart(t *testing.T) {
 	next.ProviderOrder = []string{"codex", "antigravity", "api"}
 	next.Hotkey = "Alt+F1"
 	live, restart := settingsChanges(old, next)
-	if !reflect.DeepEqual(live, []string{"atajo de teclado", "opacidad", "ocultar en combate"}) {
+	if !reflect.DeepEqual(live, []string{"atajo de teclado", "opacidad", "ocultar en combate", "consejos"}) {
 		t.Errorf("live = %v", live)
 	}
-	if !reflect.DeepEqual(restart, []string{"orden de proveedores", "consejos proactivos"}) {
+	if !reflect.DeepEqual(restart, []string{"orden de proveedores"}) {
 		t.Errorf("restart = %v", restart)
 	}
 	if msg := saveMessage(live, restart); !strings.Contains(msg, "Se aplicará al reiniciar: orden de proveedores") {
@@ -154,23 +154,25 @@ func TestTipsFormValidatesAndSyncs(t *testing.T) {
 	}
 }
 
-func TestTipsModeChangesLiveUnlessTurningOffOrOn(t *testing.T) {
+// Every tips change applies at once, turning the tips off or on included.
+func TestTipsModeChangesAreLive(t *testing.T) {
 	base := config.Defaults()
-	panel := base
-	panel.TipsMode = config.TipsPanel
-	live, restart := settingsChanges(base, panel)
-	if !reflect.DeepEqual(live, []string{"modo de los consejos"}) || len(restart) != 0 {
-		t.Errorf("bandeja -> panel: live %v, restart %v", live, restart)
+	for _, mode := range []string{config.TipsPanel, config.TipsOff} {
+		next := base
+		next.TipsMode = mode
+		live, restart := settingsChanges(base, next)
+		if !reflect.DeepEqual(live, []string{"consejos"}) || len(restart) != 0 {
+			t.Errorf("bandeja -> %s: live %v, restart %v", mode, live, restart)
+		}
 	}
 	off := base
 	off.TipsMode = config.TipsOff
-	live, restart = settingsChanges(base, off)
-	if len(live) != 0 || !reflect.DeepEqual(restart, []string{"consejos proactivos"}) {
-		t.Errorf("bandeja -> off: live %v, restart %v", live, restart)
+	if live, restart := settingsChanges(off, base); !reflect.DeepEqual(live, []string{"consejos"}) || len(restart) != 0 {
+		t.Errorf("off -> bandeja: live %v, restart %v", live, restart)
 	}
 	sound := base
 	sound.TipsSound = true
-	live, _ = settingsChanges(base, sound)
+	live, _ := settingsChanges(base, sound)
 	if !reflect.DeepEqual(live, []string{"sonido de los consejos"}) {
 		t.Errorf("sound: live %v", live)
 	}
