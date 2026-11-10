@@ -19,13 +19,14 @@ const (
 
 // combatHider is the hide-in-combat state machine. It only acts on the transitions: a panel
 // the user opens during a fight stays open, and a panel that was not visible when combat
-// began is not shown afterwards. The window feeds it the live combat flag every half
-// second and asks InCombat when a proactive tip arrives, so tips wait while the player is
-// fighting. It is used on the UI thread only.
+// began is not shown afterwards. A panel that was open because of a tip is hidden for the
+// fight but is not brought back after it: only a panel the user opened comes back. The
+// window feeds it the live combat flag every half second and asks InCombat when a proactive
+// tip arrives, so tips wait while the player is fighting. It is used on the UI thread only.
 type combatHider struct {
 	enabled  bool
 	inCombat bool
-	hidByUs  bool      // the panel was hidden for combat and is not restored yet
+	hidByUs  bool      // the panel was hidden for combat, was opened by the user, and is not restored yet
 	leftAt   time.Time // when combat ended; zero while in combat or not pending
 }
 
@@ -33,9 +34,9 @@ func newCombatHider(enabled bool) combatHider {
 	return combatHider{enabled: enabled}
 }
 
-// Observe takes the live combat flag, whether the panel is visible now and the time, and
-// returns what to do with the panel.
-func (c *combatHider) Observe(inCombat, visible bool, now time.Time) CombatAction {
+// Observe takes the live combat flag, whether the panel is visible now, whether the user
+// opened the panel (not a tip) and the time, and returns what to do with the panel.
+func (c *combatHider) Observe(inCombat, visible, byUser bool, now time.Time) CombatAction {
 	if !c.enabled {
 		// Turned off while the panel is hidden for combat: bring it back at once.
 		c.inCombat = inCombat
@@ -51,7 +52,7 @@ func (c *combatHider) Observe(inCombat, visible bool, now time.Time) CombatActio
 		c.inCombat = true
 		c.leftAt = time.Time{}
 		if visible {
-			c.hidByUs = true
+			c.hidByUs = byUser
 			return CombatHide
 		}
 		return CombatNone

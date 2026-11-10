@@ -52,10 +52,16 @@ type Config struct {
 	CodexEffort  string        `json:"codexEffort"`
 	APIProviders []APIProvider `json:"apiProviders"`
 	MCPPort      int           `json:"mcpPort"`
-	Proactive    bool          `json:"proactive"`
-	WebSources   []string      `json:"webSources"`
-	PixelPollMs  int           `json:"pixelPollMs"`
-	AITimeoutSec int           `json:"aiTimeoutSec"`
+	// TipsMode is how proactive tips reach the player: TipsPanel, TipsBandeja or TipsOff.
+	TipsMode string `json:"tipsMode"`
+	// TipsSound plays the Windows notification sound with the tray balloon of a tip.
+	TipsSound bool `json:"tipsSound"`
+	// Proactive is true unless TipsMode is off. It mirrors TipsMode for older versions that
+	// read this key; TipsMode is the setting that counts.
+	Proactive    bool     `json:"proactive"`
+	WebSources   []string `json:"webSources"`
+	PixelPollMs  int      `json:"pixelPollMs"`
+	AITimeoutSec int      `json:"aiTimeoutSec"`
 	// HideInCombat hides the panel while the character is in combat and shows it again
 	// two seconds after combat ends.
 	HideInCombat bool `json:"hideInCombat"`
@@ -65,6 +71,22 @@ type Config struct {
 	Opacity int `json:"opacity"`
 	// FontSize is the panel's text size in points, from MinFontSize to MaxFontSize.
 	FontSize float64 `json:"fontSize"`
+}
+
+// The ways proactive tips reach the player (TipsMode).
+const (
+	// TipsPanel opens the panel without taking the focus when a tip arrives (the old behaviour).
+	TipsPanel = "panel"
+	// TipsBandeja keeps the panel closed: a tray balloon and a badge on the tray icon announce
+	// the tip, and the panel shows it when it is opened. It is the default.
+	TipsBandeja = "bandeja"
+	// TipsOff produces no proactive tips.
+	TipsOff = "off"
+)
+
+// ValidTipsMode reports whether s is one of the TipsMode values.
+func ValidTipsMode(s string) bool {
+	return s == TipsPanel || s == TipsBandeja || s == TipsOff
 }
 
 // Limits of the appearance settings.
@@ -92,6 +114,8 @@ func Defaults() Config {
 		CodexEffort:       "low",
 		APIProviders:      []APIProvider{defaultNVIDIAProvider},
 		MCPPort:           47321,
+		TipsMode:          TipsBandeja,
+		TipsSound:         false,
 		Proactive:         true,
 		WebSources: []string{
 			"warcraft.wiki.gg",
@@ -166,6 +190,11 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &raw)
 	_, hasKey := raw["hideInCombat"]
+	// A file from before tipsMode existed takes its mode from proactive (see syncTips).
+	if _, hasTips := raw["tipsMode"]; !hasTips {
+		d.TipsMode = ""
+		hasKey = false
+	}
 	if d.migrate() || !hasKey {
 		if err := d.Save(path); err != nil {
 			return nil, false, fmt.Errorf("save migrated config %s: %w", path, err)
@@ -202,8 +231,30 @@ func (c *Config) migrate() bool {
 	if c.clampAppearance() {
 		changed = true
 	}
+	if c.syncTips() {
+		changed = true
+	}
 	return changed
 }
+
+// syncTips makes TipsMode a valid mode and Proactive agree with it. When TipsMode is missing
+// or unknown, it comes from Proactive: false means off, anything else bandeja. It reports
+// whether a value changed.
+func (c *Config) syncTips() bool {
+	beforeMode, beforeProactive := c.TipsMode, c.Proactive
+	if !ValidTipsMode(c.TipsMode) {
+		if c.Proactive {
+			c.TipsMode = TipsBandeja
+		} else {
+			c.TipsMode = TipsOff
+		}
+	}
+	c.Proactive = c.TipsMode != TipsOff
+	return beforeMode != c.TipsMode || beforeProactive != c.Proactive
+}
+
+// SyncTips is syncTips for values set by the settings screen.
+func (c *Config) SyncTips() { c.syncTips() }
 
 // clampAppearance brings opacity and font size into their ranges. A zero value (a file
 // written before these fields existed, or an explicit 0) gets the default. It reports
@@ -228,7 +279,9 @@ func (c *Config) ClampAppearance() { c.clampAppearance() }
 // Save writes the config as pretty JSON (2-space indent). The write is atomic:
 // a temporary file is written and then renamed over path.
 func (c *Config) Save(path string) error {
-	data, err := json.MarshalIndent(c, "", "  ")
+	out := *c
+	out.syncTips()
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}

@@ -67,13 +67,16 @@ El panel es una ventana nativa de Windows (sin navegador integrado): sin barra d
 - **Incluir captura**: envía una captura de la ventana de WoW para preguntas sobre lo que ves en pantalla.
 - **Enviar** hace lo mismo que Enter. Mientras la IA responde, la barra inferior muestra «Pensando…».
 - La barra inferior muestra el estado: WoW conectado (con nivel y zona), franja de píxeles no encontrada, o la antigüedad de los datos de SavedVariables.
-- Los consejos proactivos (al subir de nivel, completar objetivos, entregar una misión, cambiar de zona, cambiar una profesión o aceptar una misión) aparecen en la conversación como tarjetas destacadas con «💡 Consejo». Como mucho uno por minuto y nunca en combate. Si el panel está oculto, aparece sin robar el foco del juego.
+- Los consejos proactivos (al subir de nivel, completar objetivos, entregar una misión, cambiar de zona, cambiar una profesión o aceptar una misión) se guardan en la conversación como tarjetas destacadas con «💡 Consejo». Como mucho uno por minuto y nunca en combate. Según **Consejos** en los ajustes:
+  - **Notificación discreta** (por defecto): el panel no se abre solo. Aparece un aviso de Windows desde el icono de la bandeja, y el icono muestra un punto rojo con el número de consejos nuevos (también en la descripción al pasar el ratón). Al hacer clic en el aviso o en el icono, el panel se abre en el primer consejo nuevo y el punto desaparece. Con **Sonido** activado, el aviso suena. Durante un combate el aviso espera a que termine.
+  - **En el panel**: el consejo abre el panel sin robar el foco del juego, como antes.
+  - **Desactivados**: no hay consejos proactivos. Como todos los consejos, se aplica al momento.
 - Los enlaces se abren en tu navegador (solo http y https).
 - El DPI se respeta: el panel se escala en pantallas con 125 %, 150 % y otros valores.
 - **👍 / 👎**: bajo la última respuesta puedes valorarla. Con 👎 se abre una línea opcional para decir qué falló. Las valoraciones se guardan en `companero.db` con la pregunta, la respuesta, el proveedor y la versión de la skill (ver [Valoraciones](#valoraciones-y-exportación)).
 - **En combate** el panel se oculta solo (con `hideInCombat`, activado por defecto) y vuelve dos segundos después de acabar el combate. Los consejos que lleguen mientras tanto esperan en la conversación. Si abres el panel con el atajo durante un combate, se queda abierto.
 - **Bandeja**: el icono junto al reloj abre o oculta el panel con clic izquierdo; con clic derecho ofrece Mostrar/ocultar, Ajustes, Resumen de sesión y Salir. Cerrar el panel no quita el icono.
-- **Ajustes…** (menú contextual o bandeja): atajo, opacidad (60–100 %), tamaño de letra (9–14 pt), orden de proveedores, ocultar en combate, consejos proactivos, iniciar con WoW, carpeta de WoW y el estado de la clave de NVIDIA. Se guardan en `config.json`. Lo que se puede, se aplica al momento (atajo, opacidad, tamaño de letra, combate, inicio con WoW); lo demás se aplica al reiniciar y la propia pantalla lo dice.
+- **Ajustes…** (menú contextual o bandeja): atajo, opacidad (60–100 %), tamaño de letra (9–14 pt), orden de proveedores, ocultar en combate, consejos (en el panel, notificación discreta o desactivados) y sonido de los consejos, iniciar con WoW, carpeta de WoW y el estado de la clave de NVIDIA. Se guardan en `config.json`. Lo que se puede, se aplica al momento (atajo, opacidad, tamaño de letra, combate, consejos, inicio con WoW); lo demás se aplica al reiniciar y la propia pantalla lo dice.
 - **Asistente de configuración…** (menú contextual o bandeja): comprueba la carpeta de WoW Forever, el addon, la sesión de Antigravity y de Codex, y la clave de NVIDIA, con ✅ o ❌ por cada punto. Puede instalar el addon desde la carpeta `addon\CompaneroWoW` junto al programa, pero solo cuando pulsas «Instalar addon». Solo lee el sistema y ejecuta los comandos de estado (`agy models`, `codex login status`).
 - El asistente se abre solo la primera vez (cuando se crea `config.json`) y con `--setup`.
 
@@ -129,6 +132,8 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
     }
   ],
   "mcpPort": 47321,
+  "tipsMode": "bandeja",
+  "tipsSound": false,
   "proactive": true,
   "webSources": [
     "warcraft.wiki.gg",
@@ -153,7 +158,9 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `antigravityCommand` / `codexCommand` | Nombre o ruta de los comandos de las CLI. Para `antigravityCommand` la app también busca `%LOCALAPPDATA%\agy\bin\agy.exe`. |
 | `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
-| `proactive` | `true` activa los consejos proactivos. |
+| `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
+| `tipsSound` | `true` reproduce el sonido de Windows con el aviso de un consejo. Por defecto, `false`. |
+| `proactive` | Refleja `tipsMode` (`false` solo con `off`); se mantiene por compatibilidad. Si `tipsMode` existe, manda `tipsMode`. |
 | `hideInCombat` | `true` (por defecto) oculta el panel mientras el personaje está en combate. |
 | `startWithWoW` | `true` registra la app para arrancar al iniciar sesión, minimizada en la bandeja. Por defecto `false`. |
 | `opacity` | Opacidad del panel en porcentaje, de 60 a 100 (por defecto 90). |

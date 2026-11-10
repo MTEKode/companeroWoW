@@ -88,14 +88,14 @@ func TestSettingsChangesLiveAndRestart(t *testing.T) {
 	next := old
 	next.Opacity = 70
 	next.HideInCombat = false
-	next.Proactive = false
+	next.TipsMode = config.TipsOff
 	next.ProviderOrder = []string{"codex", "antigravity", "api"}
 	next.Hotkey = "Alt+F1"
 	live, restart := settingsChanges(old, next)
-	if !reflect.DeepEqual(live, []string{"atajo de teclado", "opacidad", "ocultar en combate"}) {
+	if !reflect.DeepEqual(live, []string{"atajo de teclado", "opacidad", "ocultar en combate", "consejos"}) {
 		t.Errorf("live = %v", live)
 	}
-	if !reflect.DeepEqual(restart, []string{"orden de proveedores", "consejos proactivos"}) {
+	if !reflect.DeepEqual(restart, []string{"orden de proveedores"}) {
 		t.Errorf("restart = %v", restart)
 	}
 	if msg := saveMessage(live, restart); !strings.Contains(msg, "Se aplicará al reiniciar: orden de proveedores") {
@@ -131,5 +131,49 @@ func TestKeyStatusNeverShowsValue(t *testing.T) {
 	}
 	if got := keyStatusText(false); got != "Clave de NVIDIA: no configurada" {
 		t.Errorf("not configured = %q", got)
+	}
+}
+
+func TestTipsFormValidatesAndSyncs(t *testing.T) {
+	f := formFromConfig(config.Defaults())
+	if f.TipsMode != config.TipsBandeja {
+		t.Fatalf("form TipsMode = %q, want bandeja", f.TipsMode)
+	}
+	f.TipsMode = "nope"
+	if _, err := f.apply(config.Defaults()); err == nil || !strings.Contains(err.Error(), "Consejos") {
+		t.Errorf("bad tips mode: err = %v", err)
+	}
+	f.TipsMode = config.TipsOff
+	f.TipsSound = true
+	got, err := f.apply(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TipsMode != config.TipsOff || got.Proactive || !got.TipsSound {
+		t.Errorf("off+sound = mode %q, proactive %v, sound %v", got.TipsMode, got.Proactive, got.TipsSound)
+	}
+}
+
+// Every tips change applies at once, turning the tips off or on included.
+func TestTipsModeChangesAreLive(t *testing.T) {
+	base := config.Defaults()
+	for _, mode := range []string{config.TipsPanel, config.TipsOff} {
+		next := base
+		next.TipsMode = mode
+		live, restart := settingsChanges(base, next)
+		if !reflect.DeepEqual(live, []string{"consejos"}) || len(restart) != 0 {
+			t.Errorf("bandeja -> %s: live %v, restart %v", mode, live, restart)
+		}
+	}
+	off := base
+	off.TipsMode = config.TipsOff
+	if live, restart := settingsChanges(off, base); !reflect.DeepEqual(live, []string{"consejos"}) || len(restart) != 0 {
+		t.Errorf("off -> bandeja: live %v, restart %v", live, restart)
+	}
+	sound := base
+	sound.TipsSound = true
+	live, _ := settingsChanges(base, sound)
+	if !reflect.DeepEqual(live, []string{"sonido de los consejos"}) {
+		t.Errorf("sound: live %v", live)
 	}
 }

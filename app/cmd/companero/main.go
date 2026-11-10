@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
@@ -65,6 +66,7 @@ type options struct {
 	evalProvider string
 	setup        bool
 	tray         bool
+	testTip      bool
 	exportFB     string
 }
 
@@ -77,6 +79,7 @@ func main() {
 	flag.StringVar(&o.evalProvider, "eval-provider", "", "con --eval, usa solo este proveedor: antigravity, codex o api")
 	flag.BoolVar(&o.setup, "setup", false, "abre el asistente de configuración en el panel")
 	flag.BoolVar(&o.tray, "tray", false, "arranca minimizado en la bandeja, sin mostrar el panel (lo usa el inicio con WoW)")
+	flag.BoolVar(&o.testTip, "test-tip", false, "con la ventana, envía un consejo de prueba por el mismo camino que los proactivos (globo de la bandeja o panel, según ajustes)")
 	flag.StringVar(&o.exportFB, "export-feedback", "", "escribe las valoraciones 👍/👎 en este archivo .json y sale")
 	flag.Parse()
 	os.Exit(run(o))
@@ -114,6 +117,10 @@ func run(o options) int {
 		return runExportFeedback(dir, o.exportFB)
 	}
 
+	if o.testTip {
+		// Like --diag: the test's report goes to the console that started the app, if any.
+		attachConsole()
+	}
 	release, first := acquireSingleInstance()
 	if !first {
 		// A copy that starts with WoW must not pop up the panel of the running one.
@@ -125,14 +132,15 @@ func run(o options) int {
 	defer release()
 
 	log.Printf("Compañero WoW %s iniciando", version)
-	return runApp(cfg, dir, appStart{setup: created || o.setup, tray: o.tray})
+	return runApp(cfg, dir, appStart{setup: created || o.setup, tray: o.tray, testTip: o.testTip})
 }
 
 // appStart is how the app was started: the first-run wizard opens when setup is set, and
 // tray keeps the panel hidden.
 type appStart struct {
-	setup bool
-	tray  bool
+	setup   bool
+	tray    bool
+	testTip bool
 }
 
 // runApp wires the components and runs the overlay until the user quits.
@@ -213,14 +221,21 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	providers := availableProviders(providerReport(cfg, dir))
 
 	tips := make(chan assistant.Tip, tipQueueSize)
-	if cfg.Proactive {
-		go asst.RunProactive(ctx, reader.Events(), func(t assistant.Tip) {
-			select {
-			case tips <- t:
-			default:
-				log.Printf("tip dropped (queue full): %s", t.Title)
-			}
-		})
+	// The tip loop always runs; the gate drops the events while the tips are off, so the
+	// setting takes effect at once when the settings screen changes it.
+	var tipsOn atomic.Bool
+	tipsOn.Store(cfg.TipsMode != config.TipsOff)
+	events := assistant.Gate(ctx, reader.Events(), tipsOn.Load)
+	go asst.RunProactive(ctx, events, func(t assistant.Tip) {
+		select {
+		case tips <- t:
+		default:
+			log.Printf("tip dropped (queue full): %s", t.Title)
+		}
+	})
+
+	if start.testTip {
+		go sendTestTip(tips, cfg.TipsMode)
 	}
 
 	// The start-with-WoW entry is rewritten at each start, so a moved install still starts.
@@ -236,6 +251,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		Avoid:     avoidStrip,
 		Backend:   asst,
 		Tips:      tips,
+		TipsModeChanged: func(mode string) {
+			tipsOn.Store(mode != config.TipsOff)
+		},
 		Status: func() ui.Status {
 			return buildStatus(g, providers, watcher, mcpErrs.get())
 		},
@@ -268,6 +286,28 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	}
 	log.Printf("Compañero WoW cerrado")
 	return 0
+}
+
+// testTipDelay is how long --test-tip waits for the panel and the tray icon to be up.
+const testTipDelay = 3 * time.Second
+
+// sendTestTip delivers one tip through the channel the proactive tips use, so that --test-tip
+// shows what a real tip does with the current tips mode. It reports on the console and the log.
+func sendTestTip(tips chan<- assistant.Tip, mode string) {
+	time.Sleep(testTipDelay)
+	t := assistant.Tip{
+		Title: "Consejo de prueba",
+		Text:  "Así se ve un consejo proactivo. Si ves este aviso, la notificación de la bandeja funciona.",
+		At:    time.Now(),
+	}
+	select {
+	case tips <- t:
+		msg := fmt.Sprintf("test-tip: enviado con consejos en modo %q", mode)
+		log.Print(msg)
+		fmt.Fprintln(os.Stdout, msg)
+	default:
+		log.Printf("test-tip: cola llena, no enviado")
+	}
 }
 
 // executableDir is the folder of the running executable ("" when it is unknown).

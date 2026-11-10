@@ -17,7 +17,8 @@ type settingsForm struct {
 	FontSize      string
 	ProviderOrder []string
 	HideInCombat  bool
-	Proactive     bool
+	TipsMode      string
+	TipsSound     bool
 	StartWithWoW  bool
 	WoWPath       string
 }
@@ -30,7 +31,8 @@ func formFromConfig(c config.Config) settingsForm {
 		FontSize:      strconv.FormatFloat(c.FontSize, 'f', -1, 64),
 		ProviderOrder: append([]string(nil), c.ProviderOrder...),
 		HideInCombat:  c.HideInCombat,
-		Proactive:     c.Proactive,
+		TipsMode:      c.TipsMode,
+		TipsSound:     c.TipsSound,
 		StartWithWoW:  c.StartWithWoW,
 		WoWPath:       c.WoWPath,
 	}
@@ -70,7 +72,12 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	next.FontSize = size
 	next.ProviderOrder = order
 	next.HideInCombat = f.HideInCombat
-	next.Proactive = f.Proactive
+	if !config.ValidTipsMode(f.TipsMode) {
+		return config.Config{}, fmt.Errorf("Consejos: elige en el panel, notificación discreta o desactivados")
+	}
+	next.TipsMode = f.TipsMode
+	next.TipsSound = f.TipsSound
+	next.SyncTips()
 	next.StartWithWoW = f.StartWithWoW
 	next.WoWPath = path
 	return next, nil
@@ -127,8 +134,11 @@ func settingsChanges(old, next config.Config) (live, restart []string) {
 	if !equalStrings(old.ProviderOrder, next.ProviderOrder) {
 		restart = append(restart, "orden de proveedores")
 	}
-	if old.Proactive != next.Proactive {
-		restart = append(restart, "consejos proactivos")
+	if old.TipsMode != next.TipsMode {
+		live = append(live, "consejos")
+	}
+	if old.TipsSound != next.TipsSound {
+		live = append(live, "sonido de los consejos")
 	}
 	if old.WoWPath != next.WoWPath {
 		restart = append(restart, "carpeta de WoW")
