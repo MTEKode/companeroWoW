@@ -116,6 +116,10 @@ func run(o options) int {
 		return runExportFeedback(dir, o.exportFB)
 	}
 
+	if o.testTip {
+		// Like --diag: the test's report goes to the console that started the app, if any.
+		attachConsole()
+	}
 	release, first := acquireSingleInstance()
 	if !first {
 		// A copy that starts with WoW must not pop up the panel of the running one.
