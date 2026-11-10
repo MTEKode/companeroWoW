@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/websearch"
 )
 
 // Tools that answer from the blocks the addon exports from other addons (WhatsTraining,
@@ -18,7 +19,7 @@ var (
 	aliasSkillLine = []string{"skill_line_id", "skilllineid", "skill_line", "skillline"}
 )
 
-func queEntrenar(g *gamedata.Service) Def {
+func queEntrenar(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "que_entrenar",
 		Description: descEntrenar,
@@ -31,12 +32,20 @@ func queEntrenar(g *gamedata.Service) Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude preparar el entrenamiento: %v", err)
 			}
+			// Without the addon's training list, the site's trainer spells up to the level fill the gap.
+			if isUnavailable(v) && ws != nil {
+				if class, level := wftCharacter(g); class != "" && level > 0 {
+					if extra, err := wftLearnableAt(ctx, ws, class, level); err == nil {
+						return withWFT(v, extra)
+					}
+				}
+			}
 			return jsonResult(v)
 		},
 	}
 }
 
-func rutaProfesion(g *gamedata.Service) Def {
+func rutaProfesion(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "ruta_profesion",
 		Description: descRutaProfesion,
@@ -60,6 +69,12 @@ func rutaProfesion(g *gamedata.Service) Def {
 			v, err := g.ProfessionRoute(nombre, id)
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude preparar la ruta de la profesión: %v", err)
+			}
+			// Without the addon's skill data, the recipes of the site's profession page.
+			if isUnavailable(v) && nombre != "" && ws != nil {
+				if extra, err := wftRecipes(ctx, ws, nombre, 0); err == nil {
+					return withWFT(v, extra)
+				}
 			}
 			return jsonResult(v)
 		},

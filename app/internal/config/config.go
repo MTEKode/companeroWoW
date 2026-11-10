@@ -58,10 +58,13 @@ type Config struct {
 	TipsSound bool `json:"tipsSound"`
 	// Proactive is true unless TipsMode is off. It mirrors TipsMode for older versions that
 	// read this key; TipsMode is the setting that counts.
-	Proactive    bool     `json:"proactive"`
-	WebSources   []string `json:"webSources"`
-	PixelPollMs  int      `json:"pixelPollMs"`
-	AITimeoutSec int      `json:"aiTimeoutSec"`
+	Proactive  bool     `json:"proactive"`
+	WebSources []string `json:"webSources"`
+	// WFTAdded records that wowforevertalents.com was put at the top of WebSources (once, by
+	// migrate), so that removing it from the list later sticks.
+	WFTAdded     bool `json:"wftAdded"`
+	PixelPollMs  int  `json:"pixelPollMs"`
+	AITimeoutSec int  `json:"aiTimeoutSec"`
 	// HideInCombat hides the panel while the character is in combat and shows it again
 	// two seconds after combat ends.
 	HideInCombat bool `json:"hideInCombat"`
@@ -118,6 +121,8 @@ func Defaults() Config {
 		TipsSound:         false,
 		Proactive:         true,
 		WebSources: []string{
+			// First: its talents, spells, builds and dungeons are read from the client data.
+			WFTHost,
 			"warcraft.wiki.gg",
 			"www.warcrafttavern.com",
 			"mobalytics.gg",
@@ -131,8 +136,12 @@ func Defaults() Config {
 		StartWithWoW: false,
 		Opacity:      90,
 		FontSize:     10,
+		WFTAdded:     true,
 	}
 }
+
+// WFTHost is the site of WoW: Forever's talents, spells, builds and dungeons (client data).
+const WFTHost = "wowforevertalents.com"
 
 // PixelPoll returns PixelPollMs as a duration (falls back to 250ms when unset).
 func (c *Config) PixelPoll() time.Duration {
@@ -190,6 +199,10 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &raw)
 	_, hasKey := raw["hideInCombat"]
+	if _, has := raw["wftAdded"]; !has {
+		// A file from before the site was added: the migration must still run, whatever the default.
+		d.WFTAdded = false
+	}
 	// A file from before tipsMode existed takes its mode from proactive (see syncTips).
 	if _, hasTips := raw["tipsMode"]; !hasTips {
 		d.TipsMode = ""
@@ -234,6 +247,14 @@ func (c *Config) migrate() bool {
 	if c.syncTips() {
 		changed = true
 	}
+	if !c.WFTAdded {
+		// Once per config: put the site first, unless the list already has it.
+		c.WFTAdded = true
+		changed = true
+		if !slices.ContainsFunc(c.WebSources, isWFTEntry) {
+			c.WebSources = append([]string{WFTHost}, c.WebSources...)
+		}
+	}
 	return changed
 }
 
@@ -275,6 +296,18 @@ func (c *Config) clampAppearance() bool {
 
 // ClampAppearance is clampAppearance for values set by the settings screen.
 func (c *Config) ClampAppearance() { c.clampAppearance() }
+
+// isWFTEntry reports whether a configured source is the site, as a host or a URL.
+func isWFTEntry(entry string) bool {
+	h := strings.ToLower(strings.TrimSpace(entry))
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	if i := strings.IndexAny(h, "/?#"); i >= 0 {
+		h = h[:i]
+	}
+	return strings.TrimPrefix(h, "www.") == WFTHost
+}
 
 // Save writes the config as pretty JSON (2-space indent). The write is atomic:
 // a temporary file is written and then renamed over path.

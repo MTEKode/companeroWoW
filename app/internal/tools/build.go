@@ -42,14 +42,14 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(contextoJugador(g))
 	r.Add(guiaMision(g))
 	r.Add(planProfesiones(g))
-	r.Add(queEntrenar(g))
-	r.Add(rutaProfesion(g))
-	r.Add(analizarEquipo(g))
+	r.Add(queEntrenar(g, ws))
+	r.Add(rutaProfesion(g, ws))
+	r.Add(analizarEquipo(g, ws))
 	r.Add(misionesDisponibles(g))
-	r.Add(infoMazmorra(g))
+	r.Add(infoMazmorra(g, ws))
 	r.Add(buscarObjeto(g))
 	r.Add(resumenSesion(g))
-	r.Add(analizarRotacion(g))
+	r.Add(analizarRotacion(g, ws))
 	r.Add(revisarCombates(g))
 	r.Add(consejoBarras(g))
 	r.Add(generarComandoBarras(g))
@@ -89,6 +89,8 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(npcsEnMapa(g))
 	r.Add(buscarWeb(ws))
 	r.Add(leerPagina(ws))
+	r.Add(hechizosClase(ws))
+	r.Add(buildsClase(ws))
 	return r
 }
 
@@ -343,7 +345,8 @@ func leerPagina(ws *websearch.Client) Def {
 		Name:        "leer_pagina",
 		Description: descLeerPagina,
 		InputSchema: schema(map[string]any{
-			"url": strProp("Dirección completa de la página, tal como la devolvió buscar_web."),
+			"url":    strProp("Dirección completa de la página, tal como la devolvió buscar_web."),
+			"buscar": strProp("Opcional: lo que buscas en una página larga (un hechizo, un jefe, una receta). Devuelve primero las secciones que lo mencionan."),
 		}, "url"),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			a, err := parseArgs(args)
@@ -357,7 +360,8 @@ func leerPagina(ws *websearch.Client) Def {
 			if ws == nil {
 				return Result{}, errors.New("la lectura web no está configurada")
 			}
-			text, err := ws.Fetch(ctx, u)
+			buscar, _ := a.text("buscar", "busqueda", "búsqueda")
+			text, err := ws.FetchQuery(ctx, u, buscar)
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude leer la página: %v", err)
 			}

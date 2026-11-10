@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/websearch"
 )
 
 // Tools that answer from the gear, quest-window and dungeon blocks the addon exports: what to
@@ -31,7 +32,7 @@ const (
 	descBuscarObjeto = "Busca un objeto por nombre o por item_id: de dónde sale (misión o jefe de mazmorra, con su estado), su nivel de objeto y stats, si su clase lo puede usar, si es mejora para su equipo y si lo lleva en las bolsas. Úsala para «¿dónde consigo X?» o «¿me sirve X?»."
 )
 
-func analizarEquipo(g *gamedata.Service) Def {
+func analizarEquipo(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "analizar_equipo",
 		Description: descAnalizarEquipo,
@@ -52,6 +53,12 @@ func analizarEquipo(g *gamedata.Service) Def {
 			v, err := g.GearAnalysis(ventana, slot)
 			if err != nil {
 				return Result{}, err
+			}
+			// The class's armour and weapon proficiencies from the site, to cross-check the gear.
+			if class, _ := wftCharacter(g); class != "" && ws != nil {
+				if extra, err := wftProficiencies(ctx, ws, class); err == nil {
+					return withWFT(v, extra)
+				}
 			}
 			return jsonResult(v)
 		},
@@ -85,7 +92,7 @@ func misionesDisponibles(g *gamedata.Service) Def {
 	}
 }
 
-func infoMazmorra(g *gamedata.Service) Def {
+func infoMazmorra(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "info_mazmorra",
 		Description: descInfoMazmorra,
@@ -104,6 +111,12 @@ func infoMazmorra(g *gamedata.Service) Def {
 			v, err := g.DungeonInfo(nombre)
 			if err != nil {
 				return Result{}, err
+			}
+			// The site's group size, boss order and zones for the dungeon, labelled as its source.
+			if nombre != "" && ws != nil {
+				if extra, err := wftDungeon(ctx, ws, nombre); err == nil && extra != nil {
+					return withWFT(v, extra)
+				}
 			}
 			return jsonResult(v)
 		},

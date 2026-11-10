@@ -55,9 +55,16 @@ type Client struct {
 	wikiAPI     string // MediaWiki api.php endpoint (injectable for tests)
 	ddgEndpoint string // DuckDuckGo HTML endpoint (injectable for tests)
 	minInterval time.Duration
+	wftRoot     string           // root of wowforevertalents.com (injectable for tests)
+	wftNow      func() time.Time // clock of the site cache (injectable for tests)
 
 	mu   sync.Mutex
 	next map[string]time.Time // earliest next request time per host
+
+	// Memory copies of the wowforevertalents.com state, used when there is no store.
+	wftMem   map[string]string
+	wftPages map[string]storePage
+	wftIndex []WFTURL
 }
 
 // New creates a client that only talks to allowedDomains. st may be nil (no cache).
@@ -67,6 +74,7 @@ func New(allowedDomains []string, st *store.Store) *Client {
 		wikiAPI:     wikiAPIURL,
 		ddgEndpoint: ddgURL,
 		minInterval: defaultMinInterval,
+		wftRoot:     wftRootURL,
 		next:        make(map[string]time.Time),
 	}
 	c.http = &http.Client{
@@ -193,6 +201,18 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 		}
 	}
 
+	// The local index of wowforevertalents.com answers first, instantly; the site is then left
+	// out of the DuckDuckGo query, which only runs when the index has nothing for it.
+	local := []Hit{}
+	if siteEntry == "" || normHost(siteEntry) == c.wftHostname() {
+		local = c.wftLocal(ctx, query)
+		for _, h := range local {
+			boost[h.URL] += 10
+		}
+		hits = append(hits, local...)
+	}
+	wftDone := len(local) > 0
+
 	var first []step
 	wiki := c.wantsWiki(siteEntry)
 	if wiki {
@@ -202,7 +222,7 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 			first = append(first, step{run: func() ([]Hit, error) { return c.wikiSearch(ctx, q) }, wiki: true})
 		}
 	}
-	if doms := c.otherDomains(siteEntry); len(doms) > 0 {
+	if doms := c.otherDomains(siteEntry, wftDone); len(doms) > 0 {
 		attempts++
 		first = append(first, step{run: func() ([]Hit, error) { return c.ddgSearch(ctx, query+" Forever", doms) }})
 	}
@@ -219,10 +239,10 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 	if err := parent.Err(); err != nil {
 		return nil, err
 	}
-	if attempts == 0 {
+	if attempts == 0 && len(hits) == 0 {
 		return nil, errors.New("no hay fuentes web configuradas")
 	}
-	if len(errs) == attempts {
+	if attempts > 0 && len(errs) == attempts {
 		return nil, fmt.Errorf("no pude consultar las fuentes web: %w", errors.Join(errs...))
 	}
 
@@ -235,9 +255,16 @@ func (c *Client) Search(ctx context.Context, query, site string) ([]Hit, error) 
 	return hits, nil
 }
 
-// Fetch returns the clean text of an allow-listed page. The text is capped at 12000
-// runes including the trailing "\n[Fuente: <url>]" line.
+// Fetch returns the clean text of an allow-listed page, as much of it as fits in 12000 runes
+// including the trailing footer line "[Fuente: <url>]". When the page is longer, the sections are
+// chosen by their headings (see sections.go). It is FetchQuery without search terms.
 func (c *Client) Fetch(ctx context.Context, rawURL string) (string, error) {
+	return c.FetchQuery(ctx, rawURL, "")
+}
+
+// FetchQuery is Fetch for a long page: when buscar holds words, the sections that mention
+// them are returned first. The text is capped at 12000 runes including the footer.
+func (c *Client) FetchQuery(ctx context.Context, rawURL, buscar string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return "", fmt.Errorf("URL no válida: %w", err)
@@ -249,14 +276,29 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (string, error) {
 		return "", fmt.Errorf("dominio no permitido: %s", u.Hostname())
 	}
 	source := u.String()
-	key := "page:" + source
+	text, err := c.pageText(ctx, u)
+	if err != nil {
+		return "", err
+	}
+	footer := "\n[Fuente: " + source + "]"
+	body := selectSections(text, searchTerms(buscar), maxPageRunes-len([]rune(footer)))
+	return body + footer, nil
+}
+
+// pageText returns the whole readable text of a page, cached for a week. The site of
+// wowforevertalents.com keeps its own cache (see wft.go).
+func (c *Client) pageText(ctx context.Context, u *url.URL) (string, error) {
+	if c.isWFT(u) {
+		return c.WFTText(ctx, u.String())
+	}
+	key := "pagefull:" + u.String()
 	if c.st != nil {
 		if v, ok, err := c.st.CacheGet(key, pageTTL); err == nil && ok {
 			return v, nil
 		}
 	}
-
 	var text string
+	var err error
 	if normHost(u.Hostname()) == wikiHost {
 		text, err = c.fetchWiki(ctx, u)
 	} else {
@@ -265,8 +307,6 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	footer := "\n[Fuente: " + source + "]"
-	text = truncateRunes(text, maxPageRunes-len([]rune(footer))) + footer
 	if c.st != nil {
 		_ = c.st.CachePut(key, text)
 	}
@@ -319,16 +359,20 @@ func (c *Client) wantsWiki(siteEntry string) bool {
 }
 
 // otherDomains lists the allowed domains that DuckDuckGo must search (not the wiki).
-func (c *Client) otherDomains(siteEntry string) []string {
+// wftDone is true when the local index of wowforevertalents.com already answered.
+func (c *Client) otherDomains(siteEntry string, wftDone bool) []string {
+	skip := func(a string) bool {
+		return normHost(a) == wikiHost || (wftDone && normHost(a) == c.wftHostname())
+	}
 	if siteEntry != "" {
-		if normHost(siteEntry) == wikiHost {
+		if skip(siteEntry) {
 			return nil
 		}
 		return []string{siteEntry}
 	}
 	var out []string
 	for _, a := range c.allowed {
-		if normHost(a) != wikiHost {
+		if !skip(a) {
 			out = append(out, a)
 		}
 	}

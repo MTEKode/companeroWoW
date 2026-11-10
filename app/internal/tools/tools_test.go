@@ -52,6 +52,8 @@ var wantNames = []string{
 	"npcs_en_mapa",
 	"buscar_web",
 	"leer_pagina",
+	"hechizos_clase",
+	"builds_clase",
 }
 
 // fixtureService builds a gamedata service over the SavedVariables fixture with the
