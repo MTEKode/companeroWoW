@@ -56,7 +56,9 @@ type settingsWin struct {
 	scale float64
 
 	hotkey, opacity, font, providers uintptr
-	up, down, hide, proactive        uintptr
+	up, down, hide                   uintptr
+	tipsPanel, tipsBandeja, tipsOff  uintptr // the three ways tips reach the player
+	tipsSound                        uintptr
 	startup, wowPath, browseBtn      uintptr
 	keyLabel, keyFolder, status      uintptr
 	wizard, cancel, saveBtn          uintptr
@@ -112,8 +114,8 @@ func newSettingsWin(owner *window) (*settingsWin, error) {
 	}
 	s := &settingsWin{inst: owner.inst, owner: owner, scale: owner.scale}
 	style := uintptr(wsPopup | wsCaption | wsSysMenu | wsClipChildren)
-	// The client area is 440 x 470 logical pixels; AdjustWindowRectEx adds the frame.
-	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(470))}
+	// The client area is 440 x 530 logical pixels; AdjustWindowRectEx adds the frame.
+	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(530))}
 	call(procAdjustWindowRectEx, ptrOf(&rc), style, 0, wsExAppWindow)
 	ow, oh := int(rc.Right-rc.Left), int(rc.Bottom-rc.Top)
 	screen := screenRect()
@@ -162,6 +164,16 @@ func (s *settingsWin) checkBox(text string, x, y, w, h int) uintptr {
 	return s.createChild("BUTTON", text, wsChild|wsVisible|wsTabStop|bsAutoCheckbox, x, y, w, h, 0)
 }
 
+// radio is a button of a group; first starts the group (WS_GROUP), so the arrow keys and
+// the exclusivity follow the three tip modes.
+func (s *settingsWin) radio(text string, x, y, w, h int, first bool) uintptr {
+	style := uintptr(wsChild | wsVisible | wsTabStop | bsAutoRadio)
+	if first {
+		style |= wsGroup
+	}
+	return s.createChild("BUTTON", text, style, x, y, w, h, 0)
+}
+
 // createControls lays out the screen. The rows are in logical pixels.
 func (s *settingsWin) createControls() {
 	s.label("Atajo de teclado", 16, 16, 170, 20)
@@ -181,25 +193,29 @@ func (s *settingsWin) createControls() {
 	s.down = s.button("▼", 360, 148, 32, 32, 0, idSetDown)
 
 	s.hide = s.checkBox("Ocultar el panel en combate", 16, 194, 400, 22)
-	s.proactive = s.checkBox("Consejos proactivos", 16, 220, 400, 22)
-	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 246, 400, 22)
+	s.label("Consejos:", 16, 218, 180, 20)
+	s.tipsPanel = s.radio("En el panel", 200, 218, 220, 22, true)
+	s.tipsBandeja = s.radio("Notificación discreta", 200, 240, 220, 22, false)
+	s.tipsOff = s.radio("Desactivados", 200, 262, 220, 22, false)
+	s.tipsSound = s.checkBox("Sonido", 200, 286, 220, 22)
+	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 312, 400, 22)
 
-	s.label("Carpeta de WoW (_forever_)", 16, 280, 400, 20)
-	s.wowPath = s.edit(16, 302, 316, 24, 0)
-	s.browseBtn = s.button("Examinar…", 340, 301, 84, 26, 0, idSetBrowse)
+	s.label("Carpeta de WoW (_forever_)", 16, 346, 400, 20)
+	s.wowPath = s.edit(16, 368, 316, 24, 0)
+	s.browseBtn = s.button("Examinar…", 340, 367, 84, 26, 0, idSetBrowse)
 
-	s.keyLabel = s.label("", 16, 336, 240, 20)
-	s.keyFolder = s.button("Abrir carpeta .env", 260, 332, 164, 26, 0, idSetKey)
+	s.keyLabel = s.label("", 16, 402, 240, 20)
+	s.keyFolder = s.button("Abrir carpeta .env", 260, 398, 164, 26, 0, idSetKey)
 
-	s.status = s.label("", 16, 370, 408, 44)
+	s.status = s.label("", 16, 436, 408, 44)
 
-	s.wizard = s.button("Asistente de configuración…", 16, 424, 210, 28, 0, idSetWizard)
-	s.cancel = s.button("Cancelar", 276, 424, 70, 28, 0, idCancel)
-	s.saveBtn = s.button("Guardar", 354, 424, 70, 28, bsDefPushButton, idOK)
+	s.wizard = s.button("Asistente de configuración…", 16, 490, 210, 28, 0, idSetWizard)
+	s.cancel = s.button("Cancelar", 276, 490, 70, 28, 0, idCancel)
+	s.saveBtn = s.button("Guardar", 354, 490, 70, 28, bsDefPushButton, idOK)
 
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
-		s.proactive, s.startup, s.wowPath, s.browseBtn, s.keyLabel, s.keyFolder, s.status,
-		s.wizard, s.cancel, s.saveBtn} {
+		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
+		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn} {
 		call(procSendMessageW, h, wmSetFont, s.owner.fonts.ui, 1)
 	}
 	s.statusColor = colMeta
@@ -212,11 +228,34 @@ func (s *settingsWin) load(cfg config.Config) {
 	setWindowText(s.font, strconv.FormatFloat(cfg.FontSize, 'f', -1, 64))
 	s.fillProviders(cfg.ProviderOrder)
 	setCheck(s.hide, cfg.HideInCombat)
-	setCheck(s.proactive, cfg.Proactive)
+	s.setTipsMode(cfg.TipsMode)
+	setCheck(s.tipsSound, cfg.TipsSound)
 	setCheck(s.startup, cfg.StartWithWoW)
 	setWindowText(s.wowPath, cfg.WoWPath)
 	s.refreshKey(cfg)
 	s.setStatus("Cambia lo que quieras y pulsa Guardar.", colMeta)
+}
+
+// setTipsMode checks the radio of the tips mode. Auto radio buttons do not clear their group
+// when set from code, so all three are set.
+func (s *settingsWin) setTipsMode(mode string) {
+	setCheck(s.tipsPanel, mode == config.TipsPanel)
+	setCheck(s.tipsBandeja, mode == config.TipsBandeja)
+	setCheck(s.tipsOff, mode == config.TipsOff)
+}
+
+// readTipsMode returns the tips mode of the checked radio, or "" when none is checked (the
+// settings check then reports it).
+func (s *settingsWin) readTipsMode() string {
+	switch {
+	case getCheck(s.tipsPanel):
+		return config.TipsPanel
+	case getCheck(s.tipsBandeja):
+		return config.TipsBandeja
+	case getCheck(s.tipsOff):
+		return config.TipsOff
+	}
+	return ""
 }
 
 // refreshKey shows whether the NVIDIA key is configured. The key itself is never read out.
@@ -273,7 +312,8 @@ func (s *settingsWin) save() {
 		FontSize:      getWindowText(s.font),
 		ProviderOrder: s.readProviders(),
 		HideInCombat:  getCheck(s.hide),
-		Proactive:     getCheck(s.proactive),
+		TipsMode:      s.readTipsMode(),
+		TipsSound:     getCheck(s.tipsSound),
 		StartWithWoW:  getCheck(s.startup),
 		WoWPath:       getWindowText(s.wowPath),
 	}

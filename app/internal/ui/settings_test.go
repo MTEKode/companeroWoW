@@ -88,7 +88,7 @@ func TestSettingsChangesLiveAndRestart(t *testing.T) {
 	next := old
 	next.Opacity = 70
 	next.HideInCombat = false
-	next.Proactive = false
+	next.TipsMode = config.TipsOff
 	next.ProviderOrder = []string{"codex", "antigravity", "api"}
 	next.Hotkey = "Alt+F1"
 	live, restart := settingsChanges(old, next)
@@ -131,5 +131,47 @@ func TestKeyStatusNeverShowsValue(t *testing.T) {
 	}
 	if got := keyStatusText(false); got != "Clave de NVIDIA: no configurada" {
 		t.Errorf("not configured = %q", got)
+	}
+}
+
+func TestTipsFormValidatesAndSyncs(t *testing.T) {
+	f := formFromConfig(config.Defaults())
+	if f.TipsMode != config.TipsBandeja {
+		t.Fatalf("form TipsMode = %q, want bandeja", f.TipsMode)
+	}
+	f.TipsMode = "nope"
+	if _, err := f.apply(config.Defaults()); err == nil || !strings.Contains(err.Error(), "Consejos") {
+		t.Errorf("bad tips mode: err = %v", err)
+	}
+	f.TipsMode = config.TipsOff
+	f.TipsSound = true
+	got, err := f.apply(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TipsMode != config.TipsOff || got.Proactive || !got.TipsSound {
+		t.Errorf("off+sound = mode %q, proactive %v, sound %v", got.TipsMode, got.Proactive, got.TipsSound)
+	}
+}
+
+func TestTipsModeChangesLiveUnlessTurningOffOrOn(t *testing.T) {
+	base := config.Defaults()
+	panel := base
+	panel.TipsMode = config.TipsPanel
+	live, restart := settingsChanges(base, panel)
+	if !reflect.DeepEqual(live, []string{"modo de los consejos"}) || len(restart) != 0 {
+		t.Errorf("bandeja -> panel: live %v, restart %v", live, restart)
+	}
+	off := base
+	off.TipsMode = config.TipsOff
+	live, restart = settingsChanges(base, off)
+	if len(live) != 0 || !reflect.DeepEqual(restart, []string{"consejos proactivos"}) {
+		t.Errorf("bandeja -> off: live %v, restart %v", live, restart)
+	}
+	sound := base
+	sound.TipsSound = true
+	live, _ = settingsChanges(base, sound)
+	if !reflect.DeepEqual(live, []string{"sonido de los consejos"}) {
+		t.Errorf("sound: live %v", live)
 	}
 }
