@@ -16,26 +16,61 @@ type settingsForm struct {
 	Opacity       string
 	FontSize      string
 	ProviderOrder []string
-	HideInCombat  bool
-	TipsMode      string
-	TipsSound     bool
-	StartWithWoW  bool
-	WoWPath       string
+	// AntigravityModels is the order in which agy models are tried.
+	AntigravityModels []string
+	// QuotaCooldownMin is the text of the cooldown minutes (see config.MinQuotaCooldownMin).
+	QuotaCooldownMin string
+	HideInCombat     bool
+	TipsMode         string
+	TipsSound        bool
+	StartWithWoW     bool
+	WoWPath          string
 }
 
 // formFromConfig fills the form from the saved configuration.
 func formFromConfig(c config.Config) settingsForm {
 	return settingsForm{
-		Hotkey:        c.Hotkey,
-		Opacity:       strconv.Itoa(c.Opacity),
-		FontSize:      strconv.FormatFloat(c.FontSize, 'f', -1, 64),
-		ProviderOrder: append([]string(nil), c.ProviderOrder...),
-		HideInCombat:  c.HideInCombat,
-		TipsMode:      c.TipsMode,
-		TipsSound:     c.TipsSound,
-		StartWithWoW:  c.StartWithWoW,
-		WoWPath:       c.WoWPath,
+		Hotkey:            c.Hotkey,
+		Opacity:           strconv.Itoa(c.Opacity),
+		FontSize:          strconv.FormatFloat(c.FontSize, 'f', -1, 64),
+		ProviderOrder:     append([]string(nil), c.ProviderOrder...),
+		AntigravityModels: append([]string(nil), c.AntigravityModels...),
+		QuotaCooldownMin:  strconv.Itoa(c.AntigravityQuotaCooldownMin),
+		HideInCombat:      c.HideInCombat,
+		TipsMode:          c.TipsMode,
+		TipsSound:         c.TipsSound,
+		StartWithWoW:      c.StartWithWoW,
+		WoWPath:           c.WoWPath,
 	}
+}
+
+// checkAntigravityModels accepts the models once each, in the given order. At least one is
+// needed, and each must be a slug that agy takes (see config.ValidAntigravityModel).
+func checkAntigravityModels(models []string) ([]string, error) {
+	var out []string
+	for _, m := range models {
+		m = strings.TrimSpace(m)
+		if m == "" || contains(out, m) {
+			continue
+		}
+		if !config.ValidAntigravityModel(m) {
+			return nil, fmt.Errorf("Modelos de Antigravity: %q no es un nombre de modelo válido", m)
+		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("Modelos de Antigravity: deja al menos un modelo")
+	}
+	return out, nil
+}
+
+// checkQuotaCooldown reads the cooldown minutes of the form.
+func checkQuotaCooldown(text string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || n < config.MinQuotaCooldownMin || n > config.MaxQuotaCooldownMin {
+		return 0, fmt.Errorf("Enfriamiento de la cuota: escribe minutos entre %d y %d", config.MinQuotaCooldownMin, config.MaxQuotaCooldownMin)
+	}
+	return n, nil
 }
 
 // knownProviders are the names the provider order may use.
@@ -62,6 +97,14 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	models, err := checkAntigravityModels(f.AntigravityModels)
+	if err != nil {
+		return config.Config{}, err
+	}
+	cooldown, err := checkQuotaCooldown(f.QuotaCooldownMin)
+	if err != nil {
+		return config.Config{}, err
+	}
 	path := strings.TrimSpace(f.WoWPath)
 	if path == "" {
 		return config.Config{}, errors.New("Carpeta de WoW: indica la carpeta _forever_ o usa Examinar…")
@@ -71,6 +114,8 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	next.Opacity = opacity
 	next.FontSize = size
 	next.ProviderOrder = order
+	next.AntigravityModels = models
+	next.AntigravityQuotaCooldownMin = cooldown
 	next.HideInCombat = f.HideInCombat
 	if !config.ValidTipsMode(f.TipsMode) {
 		return config.Config{}, fmt.Errorf("Consejos: elige en el panel, notificación discreta o desactivados")
@@ -133,6 +178,12 @@ func settingsChanges(old, next config.Config) (live, restart []string) {
 	}
 	if !equalStrings(old.ProviderOrder, next.ProviderOrder) {
 		restart = append(restart, "orden de proveedores")
+	}
+	if !equalStrings(old.AntigravityModels, next.AntigravityModels) {
+		restart = append(restart, "modelos de Antigravity")
+	}
+	if old.AntigravityQuotaCooldownMin != next.AntigravityQuotaCooldownMin {
+		restart = append(restart, "enfriamiento de la cuota")
 	}
 	if old.TipsMode != next.TipsMode {
 		live = append(live, "consejos")

@@ -164,6 +164,7 @@ type Record struct {
 	ID          string     `json:"id"`
 	Question    string     `json:"question"`
 	Provider    string     `json:"provider"`
+	Model       string     `json:"model,omitempty"`
 	DurationSec float64    `json:"durationSec"`
 	Tools       []ToolCall `json:"tools"`
 	Answer      string     `json:"answer"`
@@ -196,6 +197,7 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 			ID:          q.ID,
 			Question:    q.Text,
 			Provider:    resp.Provider,
+			Model:       modelOf(resp),
 			DurationSec: round2(time.Since(start).Seconds()),
 			Answer:      resp.Text,
 		}
@@ -784,18 +786,19 @@ func Markdown(rep Report) string {
 	fmt.Fprintf(&b, "- Versión de la skill: %s\n", rep.SkillVersion)
 	fmt.Fprintf(&b, "- Resultado: %d de %d preguntas superan todas las comprobaciones\n\n", rep.Passed, rep.Total)
 
-	b.WriteString("| Pregunta | Proveedor | Segundos | Herramientas | Resultado |\n")
-	b.WriteString("|---|---|---|---|---|\n")
+	b.WriteString("| Pregunta | Proveedor | Modelo | Segundos | Herramientas | Resultado |\n")
+	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, r := range rep.Records {
 		res := "NO"
 		if r.Passed {
 			res = "sí"
 		}
-		fmt.Fprintf(&b, "| %s %s | %s | %.1f | %d | %s |\n", r.ID, escapeCell(r.Question), orDefault(r.Provider, "—"), r.DurationSec, len(r.Tools), res)
+		fmt.Fprintf(&b, "| %s %s | %s | %s | %.1f | %d | %s |\n", r.ID, escapeCell(r.Question), orDefault(r.Provider, "—"), orDefault(r.Model, "—"), r.DurationSec, len(r.Tools), res)
 	}
+	writeModelLatency(&b, rep.Records)
 	for _, r := range rep.Records {
 		fmt.Fprintf(&b, "\n## %s %s\n\n", r.ID, r.Question)
-		fmt.Fprintf(&b, "Proveedor: %s · %.1f s · %d herramientas\n\n", orDefault(r.Provider, "ninguno"), r.DurationSec, len(r.Tools))
+		fmt.Fprintf(&b, "Proveedor: %s · Modelo: %s · %.1f s · %d herramientas\n\n", orDefault(r.Provider, "ninguno"), orDefault(r.Model, "—"), r.DurationSec, len(r.Tools))
 		if r.Error != "" {
 			fmt.Fprintf(&b, "**Error:** %s\n\n", r.Error)
 		}
@@ -840,4 +843,67 @@ func orDefault(s, def string) string {
 
 func escapeCell(s string) string {
 	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+// modelOf is the agy model that answered, from the response or from its provider name
+// ("antigravity:<model>").
+func modelOf(resp ai.Response) string {
+	if resp.Model != "" {
+		return resp.Model
+	}
+	if _, model, ok := strings.Cut(resp.Provider, ":"); ok {
+		return model
+	}
+	return ""
+}
+
+// modelStat is the latency of the questions one model answered.
+type modelStat struct {
+	Model string
+	N     int
+	Errs  int
+	Total float64
+	Max   float64
+}
+
+// modelLatency groups the records by the model that answered (the provider when no model
+// did), in order of first use.
+func modelLatency(recs []Record) []modelStat {
+	var out []modelStat
+	idx := map[string]int{}
+	for _, r := range recs {
+		name := r.Model
+		if _, m, ok := strings.Cut(r.Provider, ":"); ok && name == "" {
+			name = m
+		}
+		name = orDefault(name, orDefault(r.Provider, "ninguno"))
+		i, ok := idx[name]
+		if !ok {
+			i = len(out)
+			idx[name] = i
+			out = append(out, modelStat{Model: name})
+		}
+		s := &out[i]
+		s.N++
+		if r.Error != "" {
+			s.Errs++
+		}
+		s.Total += r.DurationSec
+		s.Max = max(s.Max, r.DurationSec)
+	}
+	return out
+}
+
+// writeModelLatency writes the per-model latency table of the report.
+func writeModelLatency(b *strings.Builder, recs []Record) {
+	stats := modelLatency(recs)
+	if len(stats) == 0 {
+		return
+	}
+	b.WriteString("\n## Latencia por modelo\n\n")
+	b.WriteString("| Modelo | Preguntas | Errores | Media (s) | Máxima (s) |\n")
+	b.WriteString("|---|---|---|---|---|\n")
+	for _, s := range stats {
+		fmt.Fprintf(b, "| %s | %d | %d | %.1f | %.1f |\n", escapeCell(s.Model), s.N, s.Errs, s.Total/float64(s.N), s.Max)
+	}
 }

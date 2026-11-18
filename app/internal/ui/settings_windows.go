@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"golang.org/x/sys/windows"
 )
@@ -23,12 +25,20 @@ const settingsClass = "CompaneroWoWSettings"
 // Control ids of the settings screen. IDOK and IDCANCEL are the dialog's own: Enter presses
 // Guardar and Escape closes the screen.
 const (
-	idSetUp     = 2010
-	idSetDown   = 2011
-	idSetBrowse = 2012
-	idSetKey    = 2013
-	idSetWizard = 2014
+	idSetUp           = 2010
+	idSetDown         = 2011
+	idSetBrowse       = 2012
+	idSetKey          = 2013
+	idSetWizard       = 2014
+	idSetModelUp      = 2015
+	idSetModelDown    = 2016
+	idSetModelDel     = 2017
+	idSetModelAdd     = 2018
+	idSetModelRefresh = 2019
 )
+
+// msgModelsFetched is posted to the settings screen when the refresh of agy's model list ends.
+const msgModelsFetched = wmApp + 21
 
 // Styles that are not in the panel's list.
 const (
@@ -57,11 +67,22 @@ type settingsWin struct {
 
 	hotkey, opacity, font, providers uintptr
 	up, down, hide                   uintptr
-	tipsPanel, tipsBandeja, tipsOff  uintptr // the three ways tips reach the player
-	tipsSound                        uintptr
-	startup, wowPath, browseBtn      uintptr
-	keyLabel, keyFolder, status      uintptr
-	wizard, cancel, saveBtn          uintptr
+	models, modelUp, modelDown       uintptr // the Antigravity models in use, in the order tried
+	modelDel, avail, modelAdd        uintptr // ... the removal, the models agy offers, adding
+	modelRefresh, cooldown           uintptr // ... refreshing the offer, the cooldown minutes
+
+	// catalog is the list of models agy offers (cached); fetching is set while `agy models`
+	// runs in the background, and its result waits in fetched for msgModelsFetched.
+	catalog                         []string
+	fetching                        bool
+	fetchMu                         sync.Mutex
+	fetched                         ai.ModelCatalog
+	fetchErr                        error
+	tipsPanel, tipsBandeja, tipsOff uintptr // the three ways tips reach the player
+	tipsSound                       uintptr
+	startup, wowPath, browseBtn     uintptr
+	keyLabel, keyFolder, status     uintptr
+	wizard, cancel, saveBtn         uintptr
 
 	statusColor uint32
 }
@@ -114,8 +135,8 @@ func newSettingsWin(owner *window) (*settingsWin, error) {
 	}
 	s := &settingsWin{inst: owner.inst, owner: owner, scale: owner.scale}
 	style := uintptr(wsPopup | wsCaption | wsSysMenu | wsClipChildren)
-	// The client area is 440 x 530 logical pixels; AdjustWindowRectEx adds the frame.
-	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(530))}
+	// The client area is 440 x 712 logical pixels; AdjustWindowRectEx adds the frame.
+	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(712))}
 	call(procAdjustWindowRectEx, ptrOf(&rc), style, 0, wsExAppWindow)
 	ow, oh := int(rc.Right-rc.Left), int(rc.Bottom-rc.Top)
 	screen := screenRect()
@@ -200,22 +221,41 @@ func (s *settingsWin) createControls() {
 	s.tipsSound = s.checkBox("Sonido", 200, 286, 220, 22)
 	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 312, 400, 22)
 
-	s.label("Carpeta de WoW (_forever_)", 16, 346, 400, 20)
-	s.wowPath = s.edit(16, 368, 316, 24, 0)
-	s.browseBtn = s.button("Examinar…", 340, 367, 84, 26, 0, idSetBrowse)
+	// The Antigravity models: the order in use (left), the ones agy offers (below). Adding
+	// takes a model from the offer, removing puts nothing back by itself.
+	s.label("Modelos de Antigravity", 16, 342, 180, 20)
+	s.models = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
+		200, 340, 150, 72, 0)
+	s.modelUp = s.button("▲", 360, 340, 32, 32, 0, idSetModelUp)
+	s.modelDown = s.button("▼", 360, 378, 32, 32, 0, idSetModelDown)
+	s.modelDel = s.button("✕", 400, 340, 32, 32, 0, idSetModelDel)
 
-	s.keyLabel = s.label("", 16, 402, 240, 20)
-	s.keyFolder = s.button("Abrir carpeta .env", 260, 398, 164, 26, 0, idSetKey)
+	s.label("Modelos disponibles", 16, 422, 180, 20)
+	s.avail = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
+		200, 420, 150, 72, 0)
+	s.modelAdd = s.button("Añadir", 360, 420, 76, 26, 0, idSetModelAdd)
+	s.modelRefresh = s.button("Actualizar", 360, 466, 76, 26, 0, idSetModelRefresh)
 
-	s.status = s.label("", 16, 436, 408, 44)
+	s.label("Volver al primero tras (min)", 16, 502, 180, 20)
+	s.cooldown = s.edit(200, 499, 60, 24, esNumber)
 
-	s.wizard = s.button("Asistente de configuración…", 16, 490, 210, 28, 0, idSetWizard)
-	s.cancel = s.button("Cancelar", 276, 490, 70, 28, 0, idCancel)
-	s.saveBtn = s.button("Guardar", 354, 490, 70, 28, bsDefPushButton, idOK)
+	s.label("Carpeta de WoW (_forever_)", 16, 530, 400, 20)
+	s.wowPath = s.edit(16, 552, 316, 24, 0)
+	s.browseBtn = s.button("Examinar…", 340, 551, 84, 26, 0, idSetBrowse)
+
+	s.keyLabel = s.label("", 16, 586, 240, 20)
+	s.keyFolder = s.button("Abrir carpeta .env", 260, 582, 164, 26, 0, idSetKey)
+
+	s.status = s.label("", 16, 616, 408, 44)
+
+	s.wizard = s.button("Asistente de configuración…", 16, 672, 210, 28, 0, idSetWizard)
+	s.cancel = s.button("Cancelar", 276, 672, 70, 28, 0, idCancel)
+	s.saveBtn = s.button("Guardar", 354, 672, 70, 28, bsDefPushButton, idOK)
 
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
 		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
-		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn} {
+		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn,
+		s.models, s.modelUp, s.modelDown, s.modelDel, s.avail, s.modelAdd, s.modelRefresh, s.cooldown} {
 		call(procSendMessageW, h, wmSetFont, s.owner.fonts.ui, 1)
 	}
 	s.statusColor = colMeta
@@ -227,6 +267,10 @@ func (s *settingsWin) load(cfg config.Config) {
 	setWindowText(s.opacity, strconv.Itoa(cfg.Opacity))
 	setWindowText(s.font, strconv.FormatFloat(cfg.FontSize, 'f', -1, 64))
 	s.fillProviders(cfg.ProviderOrder)
+	s.catalog = ai.CachedAntigravityModels(s.owner.opts.DataDir).Models
+	s.fillList(s.models, cfg.AntigravityModels)
+	s.refreshAvailable()
+	setWindowText(s.cooldown, strconv.Itoa(cfg.AntigravityQuotaCooldownMin))
 	setCheck(s.hide, cfg.HideInCombat)
 	s.setTipsMode(cfg.TipsMode)
 	setCheck(s.tipsSound, cfg.TipsSound)
@@ -307,15 +351,17 @@ func (s *settingsWin) moveProvider(dir int) {
 // save reads the screen, checks it and hands it to the panel to apply.
 func (s *settingsWin) save() {
 	form := settingsForm{
-		Hotkey:        getWindowText(s.hotkey),
-		Opacity:       getWindowText(s.opacity),
-		FontSize:      getWindowText(s.font),
-		ProviderOrder: s.readProviders(),
-		HideInCombat:  getCheck(s.hide),
-		TipsMode:      s.readTipsMode(),
-		TipsSound:     getCheck(s.tipsSound),
-		StartWithWoW:  getCheck(s.startup),
-		WoWPath:       getWindowText(s.wowPath),
+		Hotkey:            getWindowText(s.hotkey),
+		Opacity:           getWindowText(s.opacity),
+		FontSize:          getWindowText(s.font),
+		ProviderOrder:     s.readProviders(),
+		AntigravityModels: s.readList(s.models),
+		QuotaCooldownMin:  getWindowText(s.cooldown),
+		HideInCombat:      getCheck(s.hide),
+		TipsMode:          s.readTipsMode(),
+		TipsSound:         getCheck(s.tipsSound),
+		StartWithWoW:      getCheck(s.startup),
+		WoWPath:           getWindowText(s.wowPath),
 	}
 	next, err := form.apply(s.owner.cfg)
 	if err != nil {
@@ -453,6 +499,16 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 			s.moveProvider(-1)
 		case idSetDown:
 			s.moveProvider(1)
+		case idSetModelUp:
+			s.moveModel(-1)
+		case idSetModelDown:
+			s.moveModel(1)
+		case idSetModelDel:
+			s.removeModel()
+		case idSetModelAdd:
+			s.addModel()
+		case idSetModelRefresh:
+			s.refreshModels()
 		case idSetBrowse:
 			s.browse()
 		case idSetKey:
@@ -470,6 +526,9 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 		}
 		call(procSetBkMode, wp, transparent)
 		return s.ctlColor(wp, text, colBG, s.owner.brushes.bg)
+	case msgModelsFetched:
+		s.onModelsFetched()
+		return 0
 	case wmDestroy:
 		if s.owner.settings == s {
 			s.owner.settings = nil
@@ -496,4 +555,121 @@ func setCheck(h uintptr, on bool) {
 		v = 1
 	}
 	call(procSendMessageW, h, bmSetCheck, v, 0)
+}
+
+// fillList replaces the items of a list box and selects the first one.
+func (s *settingsWin) fillList(h uintptr, items []string) {
+	call(procSendMessageW, h, lbResetContent, 0, 0)
+	for _, it := range items {
+		t := utf16Of(it)
+		call(procSendMessageW, h, lbAddString, 0, ptrOf(&t[0]))
+		runtime.KeepAlive(t)
+	}
+	call(procSendMessageW, h, lbSetCurSel, 0, 0)
+}
+
+// readList returns the items of a list box in its order.
+func (s *settingsWin) readList(h uintptr) []string {
+	n := int(call(procSendMessageW, h, lbGetCount, 0, 0))
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		l := int(call(procSendMessageW, h, lbGetTextLen, uintptr(i), 0))
+		buf := make([]uint16, l+1)
+		call(procSendMessageW, h, lbGetText, uintptr(i), ptrOf(&buf[0]))
+		out = append(out, windows.UTF16ToString(buf))
+	}
+	return out
+}
+
+// selected is the index of the selected item of a list box, or -1.
+func (s *settingsWin) selected(h uintptr) int {
+	return int(int32(call(procSendMessageW, h, lbGetCurSel, 0, 0)))
+}
+
+// refreshAvailable fills the offer with the agy models that are not in use yet.
+func (s *settingsWin) refreshAvailable() {
+	used := s.readList(s.models)
+	var avail []string
+	for _, m := range s.catalog {
+		if !contains(used, m) {
+			avail = append(avail, m)
+		}
+	}
+	s.fillList(s.avail, avail)
+}
+
+// moveModel moves the selected model one place up (-1) or down (+1) in the order tried.
+func (s *settingsWin) moveModel(dir int) {
+	sel := s.selected(s.models)
+	if sel < 0 {
+		return
+	}
+	list, idx := moveItem(s.readList(s.models), sel, dir)
+	s.fillList(s.models, list)
+	call(procSendMessageW, s.models, lbSetCurSel, uintptr(idx), 0)
+}
+
+// removeModel takes the selected model out of the order; the last one stays, since agy needs one.
+func (s *settingsWin) removeModel() {
+	sel := s.selected(s.models)
+	if sel < 0 {
+		return
+	}
+	list := s.readList(s.models)
+	if len(list) <= 1 {
+		s.setStatus("Deja al menos un modelo de Antigravity.", colBad)
+		return
+	}
+	list = append(list[:sel:sel], list[sel+1:]...)
+	s.fillList(s.models, list)
+	s.refreshAvailable()
+}
+
+// addModel appends the selected offer to the order.
+func (s *settingsWin) addModel() {
+	sel := s.selected(s.avail)
+	offer := s.readList(s.avail)
+	if sel < 0 || sel >= len(offer) {
+		return
+	}
+	list := append(s.readList(s.models), offer[sel])
+	s.fillList(s.models, list)
+	call(procSendMessageW, s.models, lbSetCurSel, uintptr(len(list)-1), 0)
+	s.refreshAvailable()
+}
+
+// refreshModels asks agy for its model list in the background; the answer comes back through
+// msgModelsFetched.
+func (s *settingsWin) refreshModels() {
+	if s.fetching {
+		return
+	}
+	s.fetching = true
+	s.setStatus("Buscando los modelos de agy…", colMeta)
+	command := s.owner.cfg.AntigravityCommand
+	dir := s.owner.opts.DataDir
+	hwnd := s.hwnd
+	go func() {
+		c, err := ai.RefreshAntigravityModels(context.Background(), command, dir)
+		s.fetchMu.Lock()
+		s.fetched, s.fetchErr = c, err
+		s.fetchMu.Unlock()
+		postMessage(hwnd, msgModelsFetched, 0, 0)
+	}()
+}
+
+// onModelsFetched shows the models that the background refresh found.
+func (s *settingsWin) onModelsFetched() {
+	s.fetching = false
+	s.fetchMu.Lock()
+	c, err := s.fetched, s.fetchErr
+	s.fetchMu.Unlock()
+	if err != nil {
+		log.Printf("ui: modelos de agy: %v", err)
+		s.setStatus("No pude listar los modelos de agy: "+err.Error(), colBad)
+		return
+	}
+	s.catalog = c.Models
+	s.refreshAvailable()
+	s.setStatus(fmt.Sprintf("Modelos de agy: %d disponibles.", len(c.Models)), colOK)
 }

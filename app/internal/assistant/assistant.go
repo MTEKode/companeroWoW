@@ -30,7 +30,7 @@ const historyAnswerRunes = 600
 // questionDeadline bounds one question, from the window to the last provider. The chain
 // tries providers in turn, so the bound is what keeps a stuck question from waiting
 // forever.
-const questionDeadline = 150 * time.Second
+const questionDeadline = 210 * time.Second
 
 // proactivePrefix marks the provider of a stored proactive tip ("proactivo:<provider>").
 // Tips are shown and stored, but are not sent back as conversation history.

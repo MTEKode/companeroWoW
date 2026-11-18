@@ -255,7 +255,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 			tipsOn.Store(mode != config.TipsOff)
 		},
 		Status: func() ui.Status {
-			return buildStatus(g, providers, watcher, mcpErrs.get())
+			s := buildStatus(g, providers, watcher, mcpErrs.get())
+			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
+			return s
 		},
 		Config:     *cfg,
 		ConfigPath: filepath.Join(dir, "config.json"),

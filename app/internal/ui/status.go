@@ -14,6 +14,9 @@ func formatStatus(s Status, notice string, busy bool) string {
 		parts = append(parts, "Pensando…")
 	}
 	parts = append(parts, bridgeText(s), savedVarsText(s.SavedVarsAgeSec))
+	if s.Model != "" {
+		parts = append(parts, s.Model)
+	}
 	if s.Channel != "" {
 		parts = append(parts, s.Channel)
 	}

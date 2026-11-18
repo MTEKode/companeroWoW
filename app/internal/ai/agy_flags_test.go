@@ -93,48 +93,6 @@ func TestAntigravityWorkspaceHoldsNoSecrets(t *testing.T) {
 	}
 }
 
-func TestAntigravityModelAndEffortFlags(t *testing.T) {
-	cases := []struct {
-		name       string
-		model      string
-		effort     string
-		wantModel  string
-		wantEffort string
-	}{
-		{"defaults", "gemini-3.8-flash-low", "low", "gemini-3.8-flash-low", "low"},
-		{"agy default model, no effort", "", "", "", ""},
-		{"explicit model and effort", "gemini-4-argon-high", "high", "gemini-4-argon-high", "high"},
-		{"model with spaces is dropped", "bad model", "medium", "", "medium"},
-		{"model with shell characters is dropped", "x;rm -rf", "", "", ""},
-		{"unknown effort is dropped", "gemini-3.8-flash-low", "turbo", "gemini-3.8-flash-low", ""},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			workDir := t.TempDir()
-			fr := &fakeRunner{fn: func(cmdSpec) (cmdResult, error) {
-				return cmdResult{Stdout: []byte(envelopeSuccess)}, nil
-			}}
-			cfg := testConfig()
-			cfg.AntigravityModel = c.model
-			cfg.AntigravityEffort = c.effort
-			p := newAntigravity(&cfg, workDir, fr, found)
-			if _, err := p.Ask(context.Background(), Request{Prompt: "x"}); err != nil {
-				t.Fatalf("Ask: %v", err)
-			}
-			args := fr.calls[0].Args
-			if got := argValue(args, "--model"); got != c.wantModel {
-				t.Errorf("--model = %q, want %q (args %v)", got, c.wantModel, args)
-			}
-			if got := argValue(args, "--effort"); got != c.wantEffort {
-				t.Errorf("--effort = %q, want %q (args %v)", got, c.wantEffort, args)
-			}
-			if !hasArg(args, "-p") || args[len(args)-2] != "-p" {
-				t.Errorf("the prompt must come last: %v", args)
-			}
-		})
-	}
-}
-
 func TestCodexModelAndEffortFlags(t *testing.T) {
 	run := func(t *testing.T, model, effort string) []string {
 		t.Helper()

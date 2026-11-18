@@ -30,7 +30,7 @@ func TestAntigravityBuildsHeadlessCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if resp.Text != "Eldoria está al norte." || resp.Provider != "antigravity" {
+	if resp.Text != "Eldoria está al norte." || resp.Provider != "antigravity:gemini-4-hydrogen-high" {
 		t.Fatalf("resp = %+v", resp)
 	}
 	if len(fr.calls) != 1 {

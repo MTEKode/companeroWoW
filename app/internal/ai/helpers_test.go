@@ -24,6 +24,8 @@ func (f *fakeRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
 func found(name string) (string, error) { return "/fake/bin/" + name, nil }
 
 func testConfig() config.Config {
+	// The quota memory is shared by the process: each test starts with no model on cooldown.
+	resetQuotaMemory()
 	c := config.Defaults()
 	c.MCPPort = 47321
 	c.AITimeoutSec = 30

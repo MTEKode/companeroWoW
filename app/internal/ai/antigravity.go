@@ -64,9 +64,10 @@ type antigravity struct {
 	workDir   string // the data directory: the screens folder and the secret files live here
 	workspace string // agy's working directory: workDir\agy
 	mcpURL    string
-	model     string // --model; empty leaves agy's default
-	effort    string // --effort; empty leaves it out
-	timeout   time.Duration
+	models    []string      // --model, in the order they are tried; never empty
+	cooldown  time.Duration // how long a model that ran out of quota is left out
+	effort    string        // --effort, for a model slug without an effort suffix; empty leaves it out
+	timeout   time.Duration // the timeout of a model without a timeout of its own
 	run       runner
 	lookPath  func(string) (string, error)
 }
@@ -77,14 +78,28 @@ func NewAntigravity(cfg *config.Config, workDir string) Provider {
 	return newAntigravity(cfg, workDir, execRunner{}, resolveAntigravity)
 }
 
-func newAntigravity(cfg *config.Config, workDir string, r runner, lookPath func(string) (string, error)) *antigravity {
-	model := cfgString(cfg, func(c *config.Config) string { return c.AntigravityModel }, "")
-	if !agyNameRE.MatchString(model) {
-		if model != "" {
-			log.Printf("antigravity: modelo %q no válido, se usa el de agy", model)
-		}
-		model = ""
+// antigravityModelList is the configured order of models. A file that still has only the
+// single antigravityModel is read as a one-model list; an invalid or empty list gets the default.
+func antigravityModelList(cfg *config.Config) []string {
+	if cfg == nil {
+		return append([]string(nil), config.DefaultAntigravityModels...)
 	}
+	list := cfg.AntigravityModels
+	if len(list) == 0 && strings.TrimSpace(cfg.AntigravityModel) != "" {
+		list = []string{cfg.AntigravityModel}
+	}
+	return config.NormalizeAntigravityModels(list)
+}
+
+// antigravityCooldown is the configured cooldown of a model out of quota.
+func antigravityCooldown(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.AntigravityQuotaCooldownMin <= 0 {
+		return config.DefaultQuotaCooldownMin * time.Minute
+	}
+	return time.Duration(cfg.AntigravityQuotaCooldownMin) * time.Minute
+}
+
+func newAntigravity(cfg *config.Config, workDir string, r runner, lookPath func(string) (string, error)) *antigravity {
 	// An empty effort is a choice: it leaves --effort out. The default comes from config.Defaults.
 	effort := effortOf(cfg, func(c *config.Config) string { return c.AntigravityEffort })
 	if !slices.Contains(antigravityEfforts, effort) {
@@ -96,7 +111,8 @@ func newAntigravity(cfg *config.Config, workDir string, r runner, lookPath func(
 		workDir:   workDir,
 		workspace: filepath.Join(workDir, antigravityWorkspaceDir),
 		mcpURL:    mcpURL(cfg),
-		model:     model,
+		models:    antigravityModelList(cfg),
+		cooldown:  antigravityCooldown(cfg),
 		effort:    effort,
 		timeout:   aiTimeout(cfg),
 		run:       r,
@@ -105,6 +121,16 @@ func newAntigravity(cfg *config.Config, workDir string, r runner, lookPath func(
 }
 
 func (a *antigravity) Name() string { return "antigravity" }
+
+// Budget is the time the chain gives this provider: the timeouts of its models together. The
+// chain's own per-provider timeout would cut Hydrogen short.
+func (a *antigravity) Budget() time.Duration {
+	var total time.Duration
+	for _, m := range a.models {
+		total += modelTimeout(m, a.timeout)
+	}
+	return total
+}
 
 func (a *antigravity) Available() error {
 	if _, err := a.lookPath(a.command); err != nil {
@@ -118,10 +144,10 @@ func (a *antigravity) screensDir() string {
 	return config.ScreensDir(a.workDir)
 }
 
+// Ask answers with the first model that has quota. Each model has its own timeout. A model
+// that runs out of quota goes on cooldown and the next model is tried at once; any other
+// failure ends the provider, so that the chain moves on to codex or the API.
 func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
-	defer cancel()
-
 	if strings.TrimSpace(req.Prompt) == "" {
 		return Response{}, errors.New("antigravity: la pregunta está vacía")
 	}
@@ -164,33 +190,64 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 	prompt := buildPromptCapped(req, imageLine, antigravityPromptLimit)
 
+	candidates := a.candidates(time.Now())
+	var lastErr error
+	for i, model := range candidates {
+		text, err := a.askModel(ctx, exe, settingsPath, prompt, model)
+		if err == nil {
+			log.Printf("antigravity: respondió %s", model)
+			return Response{Text: text, Provider: a.Name() + ":" + model, Model: model}, nil
+		}
+		var qe *quotaError
+		if !errors.As(err, &qe) {
+			return Response{}, err
+		}
+		until := time.Now().Add(a.cooldown)
+		quota.exhaust(model, until)
+		lastErr = err
+		if i+1 < len(candidates) {
+			log.Printf("antigravity: cuota agotada en %s hasta %s; pruebo %s", model, until.Format("15:04"), candidates[i+1])
+		} else {
+			log.Printf("antigravity: cuota agotada en %s hasta %s; no quedan modelos", model, until.Format("15:04"))
+		}
+	}
+	return Response{}, fmt.Errorf("antigravity: cuota agotada en todos los modelos (%s): %w", strings.Join(candidates, ", "), lastErr)
+}
+
+// askModel runs agy with one model and returns its answer. The model's own timeout bounds the
+// run; when the question's context ends first, the error is the context's.
+func (a *antigravity) askModel(ctx context.Context, exe, settingsPath, prompt, model string) (string, error) {
+	timeout := modelTimeout(model, a.timeout)
+	mctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	args := []string{
 		"--settings", settingsPath,
 		"--output-format", "json",
 	}
-	if a.model != "" {
-		args = append(args, "--model", a.model)
+	if model != "" {
+		args = append(args, "--model", model)
 	}
-	if a.effort != "" {
+	// The slug names its effort; --effort is only for a slug without one.
+	if a.effort != "" && !hasEffortSuffix(model) {
 		args = append(args, "--effort", a.effort)
 	}
 	args = append(args, "-p", prompt)
-	res, err := a.run.run(ctx, cmdSpec{
+	res, err := a.run.run(mctx, cmdSpec{
 		Path: exe,
 		Args: args,
 		Dir:  a.workspace,
 	})
 	if err != nil {
-		return Response{}, fmt.Errorf("antigravity: %w", err)
+		if ctx.Err() == nil && errors.Is(mctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("antigravity: tiempo agotado tras %s con %s", timeout, model)
+		}
+		return "", fmt.Errorf("antigravity: %w", err)
 	}
 	if res.ExitCode != 0 {
-		return Response{}, cliFailure("antigravity", res)
+		return "", agyExitError(res)
 	}
-	text, err := parseAntigravityOutput(res.Stdout, res.Stderr)
-	if err != nil {
-		return Response{}, err
-	}
-	return Response{Text: text, Provider: a.Name()}, nil
+	return parseAntigravityOutput(res.Stdout, res.Stderr)
 }
 
 // appDataFileNames are the files of the data folder that never leave the PC, listed by name so
@@ -320,10 +377,15 @@ func parseAgyDoc(data []byte) (string, bool, error) {
 		if msg == "" {
 			msg = "estado " + status
 		}
+		quota := isQuotaFailure(status + " " + msg)
 		if hint := classifyFailure(status + " " + msg); hint != "" {
 			msg = hint + " (" + msg + ")"
 		}
-		return "", true, fmt.Errorf("antigravity: %s", msg)
+		err := fmt.Errorf("antigravity: %s", msg)
+		if quota {
+			return "", true, &quotaError{err}
+		}
+		return "", true, err
 	}
 	return strings.TrimSpace(r.Response), true, nil
 }
