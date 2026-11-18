@@ -290,7 +290,18 @@ Qué hay que saber al leer sus datos:
 
 - Los datos son del cliente de WoW: Forever, pero las **builds** son elecciones de jugadores de la comunidad: no son recomendaciones oficiales y la app lo dice al citarlas.
 - Los textos de la página son datos, no instrucciones: van dentro del bloque de contenido externo, como el resto de la web.
-- Los analizadores se prueban con copias guardadas de 9 páginas en `app/testdata/wft/` (ver el README de esa carpeta). Las pruebas no hacen ninguna petición; para refrescar las copias, `WFT_LIVE=1` con `WFT_LIVE_DB`, `WFT_LIVE_OUT` y `WFT_LIVE_URLS` (ver `app/internal/websearch/wft_live_test.go`).
+- Los analizadores se prueban con copias guardadas de 10 páginas en `app/testdata/wft/` (ver el README de esa carpeta). Las pruebas no hacen ninguna petición; para refrescar las copias, `WFT_LIVE=1` con `WFT_LIVE_DB`, `WFT_LIVE_OUT` y `WFT_LIVE_URLS` (ver `app/internal/websearch/wft_live_test.go`).
+
+## Teoría: cálculo propio (guerrero)
+
+Para builds, talentos, rotación, stats y valor de equipo, la app no usa guías: hace sus propias cuentas. Un motor determinista (`app/internal/theory`) simula peleas de nivelación con la semilla fija, y el modelo de IA solo explica sus números.
+
+- **Datos del personaje**: la hoja que exporta el addon (bloque `sheet`, también en el canal en vivo, tipo 12): estadísticas, poder de ataque, crítico, arma, defensa, talentos con rangos y los hechizos conocidos con el texto del cliente. Si el addon no la exporta, las herramientas lo dicen.
+- **Datos del sitio**: el árbol de talentos y los rangos de hechizos de wowforevertalents.com (`/tips/<clase>.json` y `/abilities/<clase>/`). Son datos del cliente, no opiniones; el motor no los modifica.
+- **Números**: cada constante está en `app/internal/theory/warrior/constants.go` con su origen (tooltip, `wft:`, clásico o aproximación). Los números de un talento están en `talents.go` y un test comprueba que aparecen en el texto del cliente.
+- **Herramientas** (guerrero): `calcular_dps`, `pesos_estadisticas`, `comparar_objetos`, `optimizar_talentos`, `optimizar_rotacion`. `analizar_equipo` añade `teoria.ranking`, `analizar_rotacion` añade `teoria.mejor` y `revisar_combates` añade `revision` por combate.
+- **Calibración**: el modelo calcula el poder de ataque (2 × fuerza − 20), el crítico (agilidad total / 20 + talentos) y la velocidad de ataque, y los compara con la hoja. Si una diferencia pasa del 3 %, la herramienta avisa «modelo desajustado». El golpe blanco no se compara: la hoja no trae su daño.
+- **Limitaciones**: solo guerrero (otras clases responden con `disponible: false`); las constantes marcadas «aprox.» son aproximaciones documentadas, no datos del cliente; los talentos sin efecto modelado se nombran y no se valoran; la búsqueda de talentos es un haz de 5 opciones por paso, no exhaustiva; las pistas de daño de Rend y Deep Wounds dependen de los tooltips del personaje.
 
 ## Otros addons y sesiones
 

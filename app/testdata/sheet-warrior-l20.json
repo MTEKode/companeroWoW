@@ -1,0 +1,64 @@
+{
+  "exportedAt": 1795000000,
+  "level": 20,
+  "class": "WARRIOR",
+  "race": "Human",
+  "stance": "Battle Stance",
+  "base": { "str": 60, "agi": 40, "sta": 55, "int": 20, "spi": 30 },
+  "total": { "str": 60, "agi": 52, "sta": 65, "int": 20, "spi": 30 },
+  "health": 1000,
+  "healthMax": 1000,
+  "power": 0,
+  "powerMax": 100,
+  "powerType": "RAGE",
+  "armor": 620,
+  "armorEffective": 620,
+  "melee": {
+    "ap": 124, "apBase": 100, "apPos": 24, "apNeg": 0,
+    "crit": 5.6, "hit": 2, "expertise": 0,
+    "mhMin": 44, "mhMax": 62, "mhSpeed": 3.5,
+    "ohMin": null, "ohMax": null, "ohSpeed": null,
+    "mhSkill": 100, "ohSkill": null, "attackSpeed": 3.5
+  },
+  "ranged": { "ap": 0, "crit": 0, "min": 0, "max": 0, "speed": 0 },
+  "defense": { "dodge": 6.0, "parry": 5.0, "block": 0, "blockValue": 0, "defenseSkill": 100 },
+  "spell": { "crit": 0, "power": 0, "hit": 0, "haste": 0 },
+  "regen": { "manaBase": 0, "manaCasting": 0 },
+  "resist": { "arcane": 0, "fire": 0, "frost": 0, "nature": 0, "shadow": 0 },
+  "talents": {
+    "tabs": [
+      {
+        "name": "Arms", "points": 8,
+        "talents": [
+          { "name": "Deflection", "rank": 0, "maxRank": 5, "row": 1, "col": 1, "spellID": 0 },
+          { "name": "Improved Heroic Strike", "rank": 3, "maxRank": 3, "row": 1, "col": 2, "spellID": 0 },
+          { "name": "Improved Rend", "rank": 3, "maxRank": 3, "row": 1, "col": 3, "spellID": 0 },
+          { "name": "Improved Overpower", "rank": 2, "maxRank": 2, "row": 2, "col": 2, "spellID": 0 }
+        ]
+      },
+      {
+        "name": "Fury", "points": 3,
+        "talents": [
+          { "name": "Cruelty", "rank": 3, "maxRank": 5, "row": 1, "col": 2, "spellID": 0 }
+        ]
+      },
+      { "name": "Protection", "points": 0, "talents": [] }
+    ],
+    "unspent": 0
+  },
+  "spells": [
+    { "spellID": 78, "name": "Heroic Strike", "rank": "Rank 3", "known": true, "cost": 12, "powerType": "RAGE", "castTime": 0, "cooldown": 0, "range": 0, "tooltip": "A strong attack that increases melee damage by 32 and causes a high amount of threat." },
+    { "spellID": 772, "name": "Rend", "rank": "Rank 3", "known": true, "cost": 10, "powerType": "RAGE", "castTime": 0, "cooldown": 0, "range": 5, "tooltip": "Wounds the target causing them to bleed for 61 damage over 15 sec." },
+    { "spellID": 7384, "name": "Overpower", "rank": "Rank 1", "known": true, "cost": 5, "powerType": "RAGE", "castTime": 0, "cooldown": 5, "range": 5, "tooltip": "Instantly overpower the enemy, causing weapon damage plus 5. Only useable after the target dodges. The Overpower cannot be blocked, dodged or parried." },
+    { "spellID": 845, "name": "Cleave", "rank": "Rank 1", "known": true, "cost": 20, "powerType": "RAGE", "castTime": 0, "cooldown": 0, "range": 5, "tooltip": "A sweeping attack that does your weapon damage plus 5 to the target and a second nearby enemy." },
+    { "spellID": 1464, "name": "Slam", "rank": "Rank 1", "known": true, "cost": 15, "powerType": "RAGE", "castTime": 1.5, "cooldown": 15, "range": 5, "tooltip": "Slams the opponent, causing weapon damage plus 16." },
+    { "spellID": 6673, "name": "Battle Shout", "rank": "Rank 2", "known": true, "cost": 10, "powerType": "RAGE", "castTime": 0, "cooldown": 0, "range": 0, "tooltip": "The warrior shouts, increasing the melee attack power of all party or raid members within 20 yards by 24. Lasts 3 min." },
+    { "spellID": 2457, "name": "Battle Stance", "rank": "", "known": true, "cost": 0, "powerType": "RAGE", "castTime": 0, "cooldown": 1, "range": 0, "tooltip": "A balanced combat stance." },
+    { "spellID": 100, "name": "Charge", "rank": "Rank 2", "known": true, "cost": 0, "powerType": "RAGE", "castTime": 0, "cooldown": 15, "range": 25, "tooltip": "Charge an enemy, generate 12 Rage, and Stun it for 1 sec. Cannot be used in combat." },
+    { "spellID": 1715, "name": "Hamstring", "rank": "Rank 1", "known": true, "cost": 10, "powerType": "RAGE", "castTime": 0, "cooldown": 0, "range": 5, "tooltip": "Maims the enemy, causing 5 damage and slowing the enemy's movement by 40% for 15 sec." }
+  ],
+  "weaponSkills": [
+    { "name": "Two-Handed Swords", "rank": 100, "max": 100 },
+    { "name": "Defense", "rank": 100, "max": 100 }
+  ]
+}

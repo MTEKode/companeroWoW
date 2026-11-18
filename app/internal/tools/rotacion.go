@@ -48,6 +48,8 @@ func analizarRotacion(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude preparar la rotación: %v", err)
 			}
+			// The priority list the simulation ranks best for the character's own talents and spells.
+			v = withExtras(v, map[string]any{"teoria": theoryRotationSummary(ctx, g, ws)})
 			// The class's trainer spells up to the character's level, so the rotation uses what the class learns now.
 			if ws != nil {
 				if class, level := wftCharacter(g); class != "" && level > 0 {
@@ -61,7 +63,7 @@ func analizarRotacion(g *gamedata.Service, ws *websearch.Client) Def {
 	}
 }
 
-func revisarCombates(g *gamedata.Service) Def {
+func revisarCombates(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "revisar_combates",
 		Description: descRevisarCombates,
@@ -88,7 +90,8 @@ func revisarCombates(g *gamedata.Service) Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude revisar los combates: %v", err)
 			}
-			return jsonResult(v)
+			// The expected damage of the same fights from the class model, when the class has one.
+			return jsonResult(withExtras(v, map[string]any{"teoria": theoryReviewSummary(ctx, g, ws, n, ultimo, muertes)}))
 		},
 	}
 }

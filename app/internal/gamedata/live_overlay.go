@@ -63,6 +63,13 @@ func applyLiveBlock(merged map[string]any, t uint8, v any) bool {
 	switch t {
 	case bridge.MsgCompletedQuests:
 		return applyCompletedQuests(merged, v)
+	case bridge.MsgSheet:
+		// The character sheet replaces the saved one as a whole (it is newer than the saved one when this runs).
+		if !ok || len(body) == 0 {
+			return false
+		}
+		merged["sheet"] = body
+		return true
 	case bridge.MsgCombat:
 		if !ok {
 			return false
