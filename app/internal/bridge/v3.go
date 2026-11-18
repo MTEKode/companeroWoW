@@ -61,6 +61,8 @@ const (
 	MsgHeavy           uint8 = 10 // questie, questWindow, gearCandidates, dungeons
 	MsgMeta            uint8 = 11 // addon version, export timestamps, health
 	MsgSheet           uint8 = 12 // character sheet: the same shape as characters[key].sheet (manual, every 60 s at most)
+	MsgMacros          uint8 = 13 // account and character macros (Macros.lua, low priority)
+	MsgSession         uint8 = 14 // current play session and the last five: the same shape as characters[key].session (on demand)
 )
 
 // MsgNames maps each message type to its name in the addon and in --diag.
@@ -68,7 +70,8 @@ var MsgNames = map[uint8]string{
 	MsgCharacter: "character", MsgQuests: "quests", MsgBags: "bags", MsgEquipment: "equipment",
 	MsgProfessions: "professions", MsgCompletedQuests: "completedQuests", MsgCombat: "combat",
 	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta", MsgSheet: "sheet",
-	13: "macros", // Macros.lua: account and character macros (low priority)
+	MsgSession: "session",
+	MsgMacros:  "macros", // Macros.lua: account and character macros (low priority)
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.

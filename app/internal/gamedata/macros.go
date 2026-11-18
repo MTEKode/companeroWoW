@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/MTEKode/companeroWoW/app/internal/bridge"
 )
 
 // Macros: the player's macros as the addon exported them (characters[key].macros, account and
@@ -16,8 +18,8 @@ import (
 // HintMacros tells the player how to get the macros into the app.
 const HintMacros = "No tengo tus macros: escribe /compa sync en el juego"
 
-// msgMacros is the live channel message type of the macros block (Channel.lua, type 13).
-const msgMacros uint8 = 13
+// msgMacros is the live channel message type of the macros block (bridge.MsgMacros).
+const msgMacros = bridge.MsgMacros
 
 // macroAbilityIDs maps an ability key to the spell ids of its ranks. The ids are the warrior table of
 // the theory model (theory/warrior/ids.go) and the Classic ids of the same spells; a rank the
