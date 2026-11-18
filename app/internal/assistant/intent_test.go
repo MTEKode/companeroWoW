@@ -470,3 +470,15 @@ func hasStr(list []string, s string) bool {
 	}
 	return false
 }
+
+// TestPlaybookPartsKeepTheirSubItems: a part reads to the end of its items, including the indented
+// sub-items of the SKILL bullet (the gear analysis format is one of them).
+func TestPlaybookPartsKeepTheirSubItems(t *testing.T) {
+	playbookOnce.Do(func() { playbooks = parsePlaybooks(skill.Body()) })
+	if pb := playbooks["equipo.analisis"]; !strings.Contains(pb, "Pronto (nivel N)") {
+		t.Errorf("the gear analysis part lost its format items: %q", pb)
+	}
+	if pb := playbooks["build.macros"]; !strings.Contains(pb, "Ejemplos de guerrero") {
+		t.Errorf("the macro part lost its examples: %q", pb)
+	}
+}
