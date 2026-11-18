@@ -54,13 +54,17 @@ func analizarEquipo(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, err
 			}
+			// The simulated ranking of the candidates (the class model, when there is one).
+			extras := map[string]any{}
+			teo, _ := theoryCandidatesSummary(ctx, g, ws)
+			extras["teoria"] = teo
 			// The class's armour and weapon proficiencies from the site, to cross-check the gear.
 			if class, _ := wftCharacter(g); class != "" && ws != nil {
 				if extra, err := wftProficiencies(ctx, ws, class); err == nil {
-					return withWFT(v, extra)
+					return withWFT(withExtras(v, extras), extra)
 				}
 			}
-			return jsonResult(v)
+			return jsonResult(withExtras(v, extras))
 		},
 	}
 }

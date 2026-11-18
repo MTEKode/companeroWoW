@@ -26,7 +26,7 @@ var (
 
 const (
 	descHechizosClase = "Hechizos de entrenador de una clase de WoW: Forever según wowforevertalents.com (datos del cliente): por escuela, con sus rangos, el nivel en que se aprenden, coste y texto, y las competencias de armadura y armas. Con nivel, solo los que se aprenden hasta ese nivel. Cita la fuente. Úsala para «qué puedo aprender», «qué hechizos tiene X» o para completar que_entrenar."
-	descBuildsClase   = "Builds de la comunidad de una clase en wowforevertalents.com: árbol, reparto de puntos y enlace. Con url, lee una build: talentos de cada árbol con sus puntos y su descripción. Son elecciones de jugadores, no recomendaciones oficiales: dilo al recomendarlas. Úsala para «qué build uso» o «qué talentos suelen llevar»."
+	descBuildsClase   = "Builds de la comunidad de una clase en wowforevertalents.com: árbol, reparto de puntos y enlace. Con url, lee una build: talentos de cada árbol con sus puntos y su descripción. Son elecciones de jugadores, no recomendaciones oficiales: dilo al recomendarlas. Para el guerrero, la recomendación de talentos sale de optimizar_talentos (cálculo propio): muestra estas builds solo si el jugador pide las de la comunidad. Úsala para «qué build uso» o «qué talentos suelen llevar»."
 )
 
 // sourceNote is the note that goes with every web-derived block.

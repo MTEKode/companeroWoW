@@ -60,13 +60,14 @@ const (
 	MsgKnowledge       uint8 = 9  // knowledge delta: new or updated quests/npcs
 	MsgHeavy           uint8 = 10 // questie, questWindow, gearCandidates, dungeons
 	MsgMeta            uint8 = 11 // addon version, export timestamps, health
+	MsgSheet           uint8 = 12 // character sheet: the same shape as characters[key].sheet (manual, every 60 s at most)
 )
 
 // MsgNames maps each message type to its name in the addon and in --diag.
 var MsgNames = map[uint8]string{
 	MsgCharacter: "character", MsgQuests: "quests", MsgBags: "bags", MsgEquipment: "equipment",
 	MsgProfessions: "professions", MsgCompletedQuests: "completedQuests", MsgCombat: "combat",
-	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta",
+	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta", MsgSheet: "sheet",
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.
@@ -75,11 +76,11 @@ var ErrBadChunk = errors.New("bridge: bad chunk header")
 // FrameV3 is one decoded v3 frame.
 type FrameV3 struct {
 	Seq        uint8
-	N          int        // blocks in the row
-	Status     LiveState  // the status payload (Seq set)
-	MsgType    uint8      // 0 = no chunk pending
-	MsgID      uint16     // message id, the same on every chunk of a message
-	ChunkIndex uint16     // 0-based
+	N          int       // blocks in the row
+	Status     LiveState // the status payload (Seq set)
+	MsgType    uint8     // 0 = no chunk pending
+	MsgID      uint16    // message id, the same on every chunk of a message
+	ChunkIndex uint16    // 0-based
 	ChunkCount uint16
 	Data       []byte // chunk data (nil when MsgType is 0)
 }
@@ -416,4 +417,3 @@ func DecodeAny(img image.Image, hint float64) (Decoded, error) {
 	}
 	return Decoded{}, err2
 }
-

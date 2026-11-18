@@ -16,6 +16,7 @@ hacen ninguna petición de red.
 | `dungeons.html` | `/dungeons/` (lista de mazmorras, bandas y campos de batalla) |
 | `dungeon-ahn-qiraj-temple.html` | `/dungeons/ahn-qiraj-temple/` |
 | `profession-blacksmithing.html` | `/professions/blacksmithing/` (recetas) |
+| `tips-warrior.json` | `/tips/warrior.json` (árbol de talentos del guerrero: filas, requisitos, rangos) |
 
 El contenido pertenece a sus autores y se usa solo como dato de prueba. Para actualizarlo,
 volver a descargar con `WFT_LIVE=1` (ver `wft_live_test.go`), nunca a mano.
