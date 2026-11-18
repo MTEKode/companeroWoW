@@ -178,3 +178,25 @@ func TestHumanAgeSpanish(t *testing.T) {
 		}
 	}
 }
+
+// While the addon streams its share window a question waits up to 20 s; otherwise at most 3 s,
+// and a shorter configured wait is kept.
+func TestWaitForShareWindow(t *testing.T) {
+	cases := []struct {
+		name       string
+		remaining  int
+		configured time.Duration
+		want       time.Duration
+	}{
+		{"share window running", 12, 8 * time.Second, 20 * time.Second},
+		{"share window running, short config", 1, time.Second, 20 * time.Second},
+		{"no share window, default config", 0, 8 * time.Second, 3 * time.Second},
+		{"no share window, shorter config kept", 0, 2 * time.Second, 2 * time.Second},
+		{"no share window, unset config", 0, 0, 3 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := WaitFor(tc.remaining, tc.configured); got != tc.want {
+			t.Errorf("%s: WaitFor(%d, %v) = %v, want %v", tc.name, tc.remaining, tc.configured, got, tc.want)
+		}
+	}
+}

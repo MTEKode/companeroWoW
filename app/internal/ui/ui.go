@@ -1,5 +1,5 @@
 // Package ui is the overlay panel: a native Win32 window (no browser engine) shown on top
-// of WoW and toggled by a global hotkey. The types, the window state file, the Markdown
+// of WoW and opened by a global key. The types, the window state file, the Markdown
 // conversion and the layout arithmetic are platform-neutral and tested everywhere; only
 // the window itself is Windows-specific.
 package ui
@@ -55,12 +55,25 @@ type Status struct {
 	// Idle is true in the on-demand mode while the game is not read: the bar says so instead
 	// of the bridge state.
 	Idle bool `json:"idle,omitempty"`
+	// ShareRemainingSec is the countdown of the addon's share window (status payload byte 30);
+	// 0 while the addon is at rest.
+	ShareRemainingSec int `json:"shareRemainingSec,omitempty"`
+	// KeyKnown is true once the key data types (character, sheet, quests, equipment) have
+	// arrived; KeyAgeSec is the age of the oldest of them.
+	KeyKnown  bool  `json:"keyKnown,omitempty"`
+	KeyAgeSec int64 `json:"keyAgeSec,omitempty"`
+
+	// shareLine is the share line of the status bar, worked out by the window (see shareNotice).
+	shareLine string
 }
 
 // Options configures Run.
 type Options struct {
-	// Hotkey is the global shortcut, for example "Ctrl+Shift+Space".
+	// Hotkey is the panel key, for example "Ctrl+Shift+Space".
 	Hotkey string
+	// HotkeyMethod is config.HotkeyListen (a keyboard hook that only observes the key: the
+	// default) or config.HotkeyExclusive (RegisterHotKey). Other values mean the default.
+	HotkeyMethod string
 	// StatePath is the window.json file that remembers position and size.
 	StatePath string
 	Backend   Backend

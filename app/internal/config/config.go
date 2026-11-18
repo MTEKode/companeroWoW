@@ -35,9 +35,13 @@ var defaultNVIDIAProvider = APIProvider{
 
 // Config is the persisted application configuration.
 type Config struct {
-	WoWPath            string   `json:"wowPath"`
-	Account            string   `json:"account"`
-	Hotkey             string   `json:"hotkey"`
+	WoWPath string `json:"wowPath"`
+	Account string `json:"account"`
+	Hotkey  string `json:"hotkey"`
+	// HotkeyMethod is how the panel key is listened for: HotkeyListen (a keyboard hook that
+	// only observes the key, so WoW still gets it: the default) or HotkeyExclusive (the
+	// system RegisterHotKey, which takes the key away from every other application).
+	HotkeyMethod       string   `json:"hotkeyMethod"`
 	Language           string   `json:"language"`
 	ProviderOrder      []string `json:"providerOrder"`
 	AntigravityCommand string   `json:"antigravityCommand"`
@@ -156,12 +160,19 @@ const (
 	MaxFontSize = 14.0
 )
 
+// The values of Config.HotkeyMethod.
+const (
+	HotkeyListen    = "escuchar"  // keyboard hook: observes the key, WoW still receives it
+	HotkeyExclusive = "exclusivo" // RegisterHotKey: the key is consumed system-wide
+)
+
 // Defaults returns a Config populated with the default values.
 func Defaults() Config {
 	return Config{
 		WoWPath:            `C:\Program Files (x86)\World of Warcraft\_forever_`,
 		Account:            "",
 		Hotkey:             "Ctrl+Shift+Space",
+		HotkeyMethod:       HotkeyListen,
 		Language:           "es",
 		ProviderOrder:      []string{"antigravity", "codex", "api"},
 		AntigravityCommand: "agy",

@@ -16,6 +16,26 @@ var KeyMessages = []uint8{
 	bridge.MsgCharacter, bridge.MsgSheet, bridge.MsgQuests, bridge.MsgEquipment, bridge.MsgSession,
 }
 
+// ShareWait is the longest a question waits for the key data while the addon is streaming its
+// share window (the panel key was pressed and shareRemainingSec counts down).
+const ShareWait = 20 * time.Second
+
+// PlainWait is the longest a question waits when no share window is running: the addon then
+// sends the key data only if the player asks for it, so the wait is short.
+const PlainWait = 3 * time.Second
+
+// WaitFor returns how long a question waits for the key data. While the share window counts
+// down (remaining above 0) it is ShareWait; otherwise the configured wait, but at most PlainWait.
+func WaitFor(remaining int, configured time.Duration) time.Duration {
+	if remaining > 0 {
+		return ShareWait
+	}
+	if configured <= 0 || configured > PlainWait {
+		return PlainWait
+	}
+	return configured
+}
+
 // RecentWindow is how old a key message may be and still count as fresh, when it arrived
 // before the activation.
 const RecentWindow = 30 * time.Second

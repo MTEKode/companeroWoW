@@ -82,7 +82,13 @@ func (b *onDemandBackend) Ask(ctx context.Context, question string, withScreensh
 	defer b.ctl.EndQuestion()
 	defer ui.ReportReading("")
 	refreshSavedVariables(b.g)
-	stale, err := b.waiter.Wait(ctx, b.ctl.ActivatedAt(), b.wait, func(have, total int) {
+	// While the addon streams its share window the key data is on its way: wait up to 20 s;
+	// otherwise wait at most 3 s and go ahead with what is cached.
+	remaining := 0
+	if b.g != nil {
+		remaining = b.g.ShareRemaining()
+	}
+	stale, err := b.waiter.Wait(ctx, b.ctl.ActivatedAt(), ondemand.WaitFor(remaining, b.wait), func(have, total int) {
 		ui.ReportReading(fmt.Sprintf("Leyendo el juego… (%d/%d)", have, total))
 	})
 	if err != nil {

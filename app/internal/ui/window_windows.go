@@ -27,13 +27,14 @@ const (
 	tipQueueSize = 16
 
 	// Custom messages posted to the window from other goroutines.
-	msgAnswer = wmApp + 1
-	msgTip    = wmApp + 2
-	msgStatus = wmApp + 3
-	msgToggle = wmApp + 4
-	msgCombat = wmApp + 5 // wParam 1 while the character is in combat
-	msgTray   = wmApp + 6 // tray icon mouse events (lParam)
-	msgWizard = wmApp + 7 // setup checks finished
+	msgAnswer   = wmApp + 1
+	msgTip      = wmApp + 2
+	msgStatus   = wmApp + 3
+	msgToggle   = wmApp + 4
+	msgCombat   = wmApp + 5 // wParam 1 while the character is in combat
+	msgTray     = wmApp + 6 // tray icon mouse events (lParam)
+	msgWizard   = wmApp + 7 // setup checks finished
+	msgShareKey = wmApp + 8 // the panel key was pressed (see registerHotkey)
 
 	idCheck  = 2001
 	idSend   = 2002
@@ -112,8 +113,11 @@ type window struct {
 	wiz      *wizardView
 	wizCh    chan wizardResult
 	settings *settingsWin
-	hotkey   *hotkeyLoop
-	tray     trayIcon
+	hotkey   hotkeyListener
+	// trayOpenAt is when the panel was opened from the tray icon (not with the key); zero
+	// otherwise. The status bar hints at the key when no strip shows after it.
+	trayOpenAt time.Time
+	tray       trayIcon
 	// taskbarMsg is the "TaskbarCreated" broadcast; the tray icon is added again on it.
 	taskbarMsg uint32
 
@@ -674,6 +678,9 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			return 0
 		}
 	case wmDestroy:
+		if w.hotkey != nil {
+			w.hotkey.Close() // unhooks the keyboard (or unregisters the key) before the loop ends
+		}
 		call(procPostQuitMessage, 0)
 		return 0
 	case msgAnswer:
@@ -689,6 +696,9 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		return 0
 	case msgToggle:
 		w.toggle()
+		return 0
+	case msgShareKey:
+		w.onShareKey()
 		return 0
 	case msgCombat:
 		w.onCombat(wp != 0)
@@ -1038,6 +1048,7 @@ func (w *window) balloonFor(tip assistant.Tip) {
 
 func (w *window) hide() {
 	w.saveGeometry()
+	w.trayOpenAt = time.Time{}
 	call(procShowWindow, w.hwnd, swHide)
 	if w.opts.PanelVisibility != nil {
 		w.opts.PanelVisibility(false)
@@ -1052,13 +1063,24 @@ func wakeStatus() {
 	}
 }
 
-// toggle is the hotkey action: hide when shown, show with focus otherwise.
+// toggle is the tray icon's click: hide when shown, show with focus otherwise. Opening from
+// here is not a request for the game's data, so the reader is not activated.
 func (w *window) toggle() {
 	if isVisible(w.hwnd) {
 		w.hide()
 		return
 	}
+	w.trayOpenAt = time.Now()
 	w.show(true)
+}
+
+// onShareKey is the panel key: the panel opens with the focus in its input, which activates
+// the game reader at once (see PanelVisibility).
+// The panel does not toggle: pressing the key again only brings it to the front.
+func (w *window) onShareKey() {
+	w.trayOpenAt = time.Time{}
+	w.show(true) // PanelVisibility(true) activates the reader (see show)
+	w.refreshStatus()
 }
 
 // quit closes the panel for good; the message loop ends afterwards.
@@ -1088,8 +1110,9 @@ func (w *window) saveGeometry() {
 	}
 }
 
-// registerHotkey installs the global shortcut. Its thread posts a message to the panel,
-// so the panel is only touched from the UI thread.
+// registerHotkey starts the panel key: the keyboard hook by default, or RegisterHotKey when
+// hotkeyMethod is "exclusivo". Its thread posts a message to the panel, so the panel is only
+// touched from the UI thread.
 func (w *window) registerHotkey() {
 	hk, err := ParseHotkey(w.opts.Hotkey)
 	if err != nil {
@@ -1098,14 +1121,31 @@ func (w *window) registerHotkey() {
 		return
 	}
 	hwnd := w.hwnd
-	loop, err := startHotkey(hk, func() { postMessage(hwnd, msgToggle, 0, 0) })
-	w.hotkey = loop
-	if err != nil {
-		w.setNotice(fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en config.json.", hk))
-		log.Printf("ui: atajo %s: %v", hk, err)
+	onPress := func() { postMessage(hwnd, msgShareKey, 0, 0) }
+	method := hotkeyMethodFor(w.opts.HotkeyMethod)
+	if method == config.HotkeyExclusive {
+		loop, err := startHotkey(hk, onPress)
+		if loop != nil {
+			w.hotkey = loop
+		}
+		if err != nil {
+			w.setNotice(fmt.Sprintf("No pude registrar el atajo %s: quizá ya lo usa otra aplicación. Puedes cambiarlo en Ajustes.", hk))
+			log.Printf("ui: atajo %s (exclusivo): %v", hk, err)
+			return
+		}
+		log.Printf("ui: atajo %s registrado (exclusivo)", hk)
 		return
 	}
-	log.Printf("ui: atajo %s registrado", hk)
+	listener, err := startKeyHook(hk, onPress)
+	if listener != nil {
+		w.hotkey = listener
+	}
+	if err != nil {
+		w.setNotice(fmt.Sprintf("No pude escuchar el atajo %s: %v", hk, err))
+		log.Printf("ui: atajo %s (escuchar): %v", hk, err)
+		return
+	}
+	log.Printf("ui: atajo %s escuchado (no lo consume: WoW lo recibe)", hk)
 }
 
 func (w *window) loadHistory() {
@@ -1326,6 +1366,11 @@ func (w *window) refreshStatus() {
 	w.latestMu.Lock()
 	s := w.latest
 	w.latestMu.Unlock()
+	var sinceOpen time.Duration
+	if !w.trayOpenAt.IsZero() {
+		sinceOpen = time.Since(w.trayOpenAt)
+	}
+	s.shareLine = shareNotice(s, !w.trayOpenAt.IsZero(), sinceOpen, w.opts.Hotkey)
 	w.statusText = formatStatus(s, w.notice, w.busy)
 	w.statusColor = statusColour(s, w.busy)
 	cw, ch := w.clientSize()

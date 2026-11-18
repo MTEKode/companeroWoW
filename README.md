@@ -31,7 +31,7 @@ Tiene dos piezas:
    World of Warcraft\_forever_\Interface\AddOns\CompaneroWoW
    ```
 
-2. Entra al juego, activa el addon en la lista de addons y usa modo ventana sin bordes.
+2. Entra al juego, activa el addon en la lista de addons y usa modo ventana sin bordes. El addon propone la tecla **Ctrl+Shift+Espacio** para «Compañero: compartir datos» (WoW › Teclas › AddOns › Compañero WoW) si está libre; si ya la usa otra acción, no la cambia: elige otra tecla ahí.
 
 ## Compilar y ejecutar la app
 
@@ -54,7 +54,18 @@ Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ve
 
 ## Atajo de teclado
 
-Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco al campo de texto). Puedes cambiarlo con `hotkey` en `config.json`, por ejemplo `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+**Una sola tecla: Ctrl+Shift+Espacio.** Dentro del juego, pulsarla abre el panel con el foco en el campo de texto, pide tus datos y el addon los envía durante 20 segundos (la barra de estado cuenta los segundos). El addon no gasta nada fuera de ese envío: está en reposo, sin dibujar la franja ni serializar datos, y no le cuesta FPS. Si pulsas la tecla fuera del juego, el panel se abre igualmente, con los datos que ya tiene.
+
+La app solo **observa** la tecla con un hook de teclado: no la consume ni la modifica, así que WoW la recibe y el addon empieza su envío con ella. Si una aplicación la tiene reservada, la app no lo ve y la pulsación no llega a WoW.
+
+Para cambiarla hay que cambiarla en dos sitios, que deben coincidir:
+
+- **Ajustes…** de la app (`hotkey` en `config.json`): el panel escucha la combinación nueva al momento.
+- **WoW › Teclas › AddOns › Compañero WoW › «Compañero: compartir datos»**: la misma combinación dentro del juego.
+
+Ejemplos de `hotkey`: `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+
+`hotkeyMethod` en `config.json` elige cómo se escucha la tecla: `escuchar` (por defecto, el hook descrito arriba) o `exclusivo`, que la registra en el sistema (RegisterHotKey). Con `exclusivo` ninguna otra aplicación, WoW incluido, recibe la tecla: el panel sigue abriéndose, pero el envío del addon sale con `/compa enviar` o con otra tecla asignada a «Compañero: compartir datos».
 
 ## Ventana
 
@@ -82,8 +93,8 @@ El panel es una ventana nativa de Windows (sin navegador integrado): sin barra d
 
 ## Primer uso
 
-1. Abre World of Warcraft en modo **sin bordes** (Opciones de vídeo → Modo de ventana): la app lee una franja de píxeles en la esquina superior izquierda, y debe verse.
-2. Instala el addon y escribe `/compa sync` en el juego para cargar tus datos.
+1. Abre World of Warcraft en modo **sin bordes** (Opciones de vídeo → Modo de ventana): la app lee una franja de píxeles en la esquina superior izquierda. Esa franja solo aparece mientras el addon envía datos, así que no hace falta que se vea siempre.
+2. Instala el addon y escribe `/compa sync` en el juego para cargar tus datos. Después, **Ctrl+Shift+Espacio** dentro del juego envía los datos en vivo (o escribe `/compa enviar`).
 3. Sigue el asistente de configuración: marca lo que falte y pulsa **Comprobar de nuevo**.
 
 ## Inicio con WoW
@@ -113,6 +124,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
   "wowPath": "C:\\Program Files (x86)\\World of Warcraft\\_forever_",
   "account": "",
   "hotkey": "Ctrl+Shift+Space",
+  "hotkeyMethod": "escuchar",
   "language": "es",
   "providerOrder": ["antigravity", "codex", "api"],
   "antigravityCommand": "agy",
@@ -172,6 +184,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `fontSize` | Tamaño del texto del panel en puntos, de 9 a 14 (por defecto 10). |
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. El primero, `wowforevertalents.com`, es la fuente de clases, talentos, hechizos, builds, mazmorras y profesiones (ver «Fuentes web»). Las configuraciones antiguas lo reciben una vez al arrancar (`wftAdded`). |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
+| `hotkeyMethod` | `escuchar` (por defecto: un hook que observa la tecla y no la consume) o `exclusivo` (RegisterHotKey: la tecla no llega a ninguna otra aplicación). Ver [Atajo de teclado](#atajo-de-teclado). |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
 | `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas», comandos `/compa barras` y los nombres de hechizo de las macros (`/compa macro`) salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo sale con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
 | `profile` | Perfil del jugador: `goals` (`subir`, `jcj`, `mazmorras`, `profesiones`, `oro`, `explorar`), `spec` (rol preferido, hasta 60 caracteres), `notes` (estilo de juego, hasta 300), `tone` (`breve` o `detallado`) y `hardcore`. Se inyecta en cada pregunta como «Perfil del jugador: …» y lo leen `valor_misiones` (criterio por oro si el objetivo es oro y no subir de nivel), `analizar_equipo` y `optimizar_talentos`. Se edita en Ajustes → Perfil…. |
@@ -239,7 +252,10 @@ Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las l�
 
 ## Canal en vivo (franja superior)
 
-El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo: el envío refresca cada 0,2 s, y cada mensaje se reenvía cada minuto para que una app que arranque tarde se ponga al día.
+El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo solo mientras dura un envío: cada 0,2 s refresca la franja, y cada tipo de mensaje se manda una vez por envío.
+
+- **Reposo por defecto.** El addon no dibuja la franja ni serializa datos hasta que pulsas **Ctrl+Shift+Espacio** dentro del juego (o `/compa enviar`, o la tecla que asignes a «Compañero: compartir datos»). Entonces envía durante 20 segundos, primero el estado, la hoja del personaje, las misiones, el equipo y la sesión, y vuelve al reposo. Pulsar otra vez reinicia la cuenta. Fuera de ese envío, el addon solo anota eventos y guarda los combates; no cuesta FPS.
+- En la barra de estado, `Recibiendo datos del juego… Ns` cuenta el envío y, al terminar, `Datos al día (hace Xs)` indica la antigüedad de tus datos. Si abres el panel desde la bandeja, sin tecla y sin franja, la barra te pide pulsar la tecla y las respuestas usan los datos guardados, con su antigüedad.
 
 - En la barra de estado, `Canal en vivo: OK (x KB/s)` indica que llegan datos. `--diag` muestra la antigüedad de cada tipo de mensaje.
 - Solo se pide `/compa sync` la primera vez o si algo parece desactualizado. Los datos que no viajan por el canal (por ejemplo, un personaje que nunca has sincronizado) siguen dependiendo de SavedVariables.

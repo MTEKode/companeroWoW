@@ -342,8 +342,8 @@ func (g *Service) Inventory() (any, error) {
 	if fields["items"] == nil {
 		fields["items"] = []any{}
 	}
-	if live, ok := g.Live(); ok {
-		fields["freeSlots"] = float64(live.FreeBagSlots)
+	if _, ok := g.Live(); ok {
+		fields["freeSlots"] = g.freeBagSlots()
 	}
 	return available(sourceSV, at, fields), nil
 }
