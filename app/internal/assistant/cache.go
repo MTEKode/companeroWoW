@@ -15,9 +15,10 @@ import (
 // The answer cache. An exact repeat of a question, with the same context, skill and models,
 // is answered from memory for answerCacheMin minutes (the setting; 0 turns the cache off). The
 // key holds everything the answer depends on except the chat history: the normalized question,
-// the hash of the context blocks that were injected (game state, profile, player context), the
-// hash of the skill (its version) and the models of the chain. Answers with a screenshot are not
-// cached (the picture changes), and neither are answers the verifier could not back.
+// the hash of the system prompt that was sent (the intent's playbook excerpt and context blocks,
+// or the game state, the profile and the player context), the hash of the skill (its version) and
+// the models of the chain. Answers with a screenshot are not cached (the picture changes), and
+// neither are answers the verifier could not back.
 
 // cachedAnswer is one answer kept by the cache.
 type cachedAnswer struct {
