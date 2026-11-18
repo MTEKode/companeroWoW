@@ -1026,6 +1026,65 @@ function M.uninstallBars()
 end
 
 -- ---------------------------------------------------------------------------
+-- Macros (Macros.lua): GetNumMacros, GetMacroInfo, CreateMacro, EditMacro, DeleteMacro.
+-- M.MACROS.global = lista de cuenta (indices 1..120), M.MACROS.char = lista de personaje (121..138).
+-- Igual que el juego: borrar desplaza los indices siguientes. M.MACROS.noCreate = CreateMacro no crea.
+-- Requiere installBars() para PickupMacro/PlaceAction (la copia de barras es la misma).
+-- ---------------------------------------------------------------------------
+M.MACROS = nil
+
+function M.installMacros()
+    local S = { global = {}, char = {}, maxGlobal = 120, maxChar = 18, noCreate = false }
+    M.MACROS = S
+    _G.MAX_ACCOUNT_MACROS = S.maxGlobal
+    _G.MAX_CHARACTER_MACROS = S.maxChar
+    -- Lista y posicion (dentro de la lista) de un indice de macro; nil si no existe.
+    local function locate(index)
+        if index >= 1 and index <= #S.global then return S.global, index end
+        local ci = index - S.maxGlobal
+        if ci >= 1 and ci <= #S.char then return S.char, ci end
+        return nil
+    end
+    _G.GetNumMacros = function() rec("GetNumMacros"); return #S.global, #S.char end
+    _G.GetMacroInfo = function(index)
+        local list, pos = locate(index)
+        if not list then return nil end
+        local m = list[pos]
+        return m.name, m.icon, m.body
+    end
+    _G.CreateMacro = function(name, icon, body, perChar)
+        rec("CreateMacro", name, icon, body, perChar)
+        if S.noCreate then return nil end
+        local list = perChar and S.char or S.global
+        local max = perChar and S.maxChar or S.maxGlobal
+        if #list >= max then return nil end
+        list[#list + 1] = { name = name, icon = icon, body = body }
+        return (perChar and S.maxGlobal or 0) + #list
+    end
+    _G.EditMacro = function(index, name, icon, body)
+        rec("EditMacro", index, name, icon, body)
+        local list, pos = locate(index)
+        if not list then return nil end
+        list[pos] = { name = name, icon = icon, body = body }
+        return index
+    end
+    _G.DeleteMacro = function(index)
+        rec("DeleteMacro", index)
+        local list, pos = locate(index)
+        if list then table.remove(list, pos) end
+    end
+    return S
+end
+
+function M.uninstallMacros()
+    for _, name in ipairs({ "GetNumMacros", "GetMacroInfo", "CreateMacro", "EditMacro", "DeleteMacro",
+                            "MAX_ACCOUNT_MACROS", "MAX_CHARACTER_MACROS" }) do
+        _G[name] = nil
+    end
+    M.MACROS = nil
+end
+
+-- ---------------------------------------------------------------------------
 -- APIs nativas de misiones (Native.lua, QuestWindow.lua, Gear.lua): C_QuestLine, C_QuestLog de Blizzard,
 -- C_Map.GetMapInfo con padres, servicios de entrenador y Encounter Journal (opcional).
 -- Opt-in: M.installNative(opts). Sin llamarla, las APIs no existen (caso "juego incompleto").

@@ -1277,6 +1277,15 @@ func (w *window) linkClicked(text string) {
 		w.refreshStatus()
 		return
 	}
+	if body, ok := MacroBodyFromLink(text); ok {
+		if err := CopyText(body); err != nil {
+			w.setNotice("No pude copiar la macro: " + err.Error())
+		} else {
+			w.setNotice(CopiedNotice)
+		}
+		w.refreshStatus()
+		return
+	}
 	w.openLink(text)
 }
 

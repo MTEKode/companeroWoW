@@ -68,6 +68,7 @@ var MsgNames = map[uint8]string{
 	MsgCharacter: "character", MsgQuests: "quests", MsgBags: "bags", MsgEquipment: "equipment",
 	MsgProfessions: "professions", MsgCompletedQuests: "completedQuests", MsgCombat: "combat",
 	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta", MsgSheet: "sheet",
+	13: "macros", // Macros.lua: account and character macros (low priority)
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.

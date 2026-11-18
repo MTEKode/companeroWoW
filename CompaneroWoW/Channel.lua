@@ -35,7 +35,7 @@ C.HEAVY_EVERY = 3
 C.MAX_MESSAGE_BYTES = 98304 -- tope de cada mensaje JSON (mas grande -> no se envia)
 
 -- Prioridad de envio de los tipos (de mayor a menor).
-C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10 }
+C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10, 13 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 C.RANK = RANK
@@ -321,6 +321,16 @@ C.TYPES = {
             local s = c.sheet
             if type(s) ~= "table" then return nil end
             return s
+        end,
+    },
+    [13] = {
+        -- macros de cuenta y de personaje (Macros.lua). Prioridad baja: cambian poco.
+        name = "macros", period = 60, minGap = 2,
+        events = { "UPDATE_MACROS" },
+        build = function(c)
+            local m = c.macros
+            if type(m) ~= "table" then return nil end
+            return m
         end,
     },
     [11] = {
