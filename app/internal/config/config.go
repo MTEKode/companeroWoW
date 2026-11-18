@@ -87,6 +87,10 @@ type Config struct {
 	// it is shown (coordinates, quoted names, commands) and asks the provider once to correct
 	// what is not backed. Default true.
 	VerifyAnswers bool `json:"verifyAnswers"`
+	// AnswerCacheMin is how many minutes an answer stays in the answer cache: an exact repeat of
+	// a question, with the same context and models, is answered from it at once. 0 turns the
+	// cache off. Default 10.
+	AnswerCacheMin int `json:"answerCacheMin"`
 	// Profile is what the player says about how they play (see profile.go).
 	Profile Profile `json:"profile"`
 }
@@ -145,17 +149,21 @@ func Defaults() Config {
 			"forevermeta.me",
 			"forevermastery.com",
 		},
-		PixelPollMs:   250,
-		AITimeoutSec:  120,
-		HideInCombat:  true,
-		StartWithWoW:  false,
-		Opacity:       90,
-		FontSize:      10,
-		WFTAdded:      true,
-		VerifyAnswers: true,
-		Profile:       Profile{Tone: ToneBrief},
+		PixelPollMs:    250,
+		AITimeoutSec:   120,
+		HideInCombat:   true,
+		StartWithWoW:   false,
+		Opacity:        90,
+		FontSize:       10,
+		WFTAdded:       true,
+		VerifyAnswers:  true,
+		AnswerCacheMin: DefaultAnswerCacheMin,
+		Profile:        Profile{Tone: ToneBrief},
 	}
 }
+
+// DefaultAnswerCacheMin is the time an answer stays in the answer cache, in minutes.
+const DefaultAnswerCacheMin = 10
 
 // WFTHost is the site of WoW: Forever's talents, spells, builds and dungeons (client data).
 const WFTHost = "wowforevertalents.com"

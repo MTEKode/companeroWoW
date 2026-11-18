@@ -29,6 +29,10 @@ type Response struct {
 	Provider string // "antigravity:<model>" when a model of agy answered, else the provider's name
 	Model    string // the agy model that answered; empty for the other providers
 	Attempts []Attempt
+	// Cached is true when the answer came from the answer cache, not from a provider.
+	Cached bool
+	// Corrected is true when the assistant changed the provider's text (the answer verifier).
+	Corrected bool
 }
 
 // Attempt records one provider try inside a Chain.Ask call.

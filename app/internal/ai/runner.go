@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -21,6 +22,9 @@ type cmdSpec struct {
 	Dir   string   // working directory
 	Stdin string   // full prompt text
 	Env   []string // extra KEY=value pairs for the child, on top of the app's environment
+	// OnLine, when set, is called with each complete line of stdout while the process runs
+	// (stream-json output). The whole output is still returned in cmdResult.Stdout.
+	OnLine func(line []byte)
 }
 
 // cmdResult is what a finished invocation produced. A non-zero exit is reported in
@@ -54,7 +58,12 @@ func (execRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
 	}
 	cmd.Stdin = strings.NewReader(spec.Stdin)
 	var stdout, stderr bytes.Buffer
+	var lines *lineSplitter
 	cmd.Stdout = &limitWriter{buf: &stdout, max: maxCapturedBytes}
+	if spec.OnLine != nil {
+		lines = &lineSplitter{fn: spec.OnLine}
+		cmd.Stdout = io.MultiWriter(cmd.Stdout, lines)
+	}
 	cmd.Stderr = &limitWriter{buf: &stderr, max: maxCapturedBytes}
 	configureProcess(cmd)
 	cmd.Cancel = func() error {
@@ -70,6 +79,9 @@ func (execRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
 			log.Printf("ai: el proceso %s no entra en el job object (se usa taskkill): %v", filepath.Base(spec.Path), jerr)
 		}
 		err = cmd.Wait()
+	}
+	if lines != nil {
+		lines.flush()
 	}
 	res := cmdResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -88,6 +100,35 @@ func (execRunner) run(ctx context.Context, spec cmdSpec) (cmdResult, error) {
 	default:
 		return res, fmt.Errorf("start %s: %w", filepath.Base(spec.Path), err)
 	}
+}
+
+// lineSplitter calls fn with each complete line written to it. A last line without a newline
+// is passed by flush.
+type lineSplitter struct {
+	fn  func(line []byte)
+	buf []byte
+}
+
+func (l *lineSplitter) Write(p []byte) (int, error) {
+	l.buf = append(l.buf, p...)
+	for {
+		i := bytes.IndexByte(l.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := bytes.TrimRight(l.buf[:i], "\r")
+		l.fn(line)
+		l.buf = l.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+// flush passes the unfinished last line, if any.
+func (l *lineSplitter) flush() {
+	if len(bytes.TrimSpace(l.buf)) > 0 {
+		l.fn(bytes.TrimRight(l.buf, "\r"))
+	}
+	l.buf = nil
 }
 
 // limitWriter keeps the first max bytes and silently discards the rest.

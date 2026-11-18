@@ -51,7 +51,13 @@ func (a *Assistant) verifyOn() bool {
 // state and the player context, which is the evidence the answer may quote; the tool outputs
 // of the question come from the capture. It returns the answer to show.
 func (a *Assistant) askVerified(ctx context.Context, req ai.Request) (ai.Response, error) {
-	resp, calls, err := a.askCaptured(ctx, req)
+	return a.askVerifiedStream(ctx, req, ai.Stream{})
+}
+
+// askVerifiedStream is askVerified with the first answer written to s as it comes. A repair round
+// is not streamed: when it changes the answer, the response carries the final text and Corrected.
+func (a *Assistant) askVerifiedStream(ctx context.Context, req ai.Request, s ai.Stream) (ai.Response, error) {
+	resp, calls, err := a.askCaptured(ctx, req, s)
 	if err != nil {
 		return resp, err
 	}
@@ -68,12 +74,13 @@ func (a *Assistant) askVerified(ctx context.Context, req ai.Request) (ai.Respons
 
 	if canRepair(ctx) {
 		repair := repairRequest(req, resp.Text, violations)
-		r2, calls2, rerr := a.askCaptured(ctx, repair)
+		r2, calls2, rerr := a.askCaptured(ctx, repair, ai.Stream{})
 		if rerr == nil && strings.TrimSpace(r2.Text) != "" {
 			all := append(outputsOf(calls), outputsOf(calls2)...)
 			left := eval.Grounding(r2.Text, eval.EvidenceFor(all, injected))
 			if len(left) == 0 {
 				a.verifier.Add(1, found, true, false)
+				r2.Corrected = true
 				return r2, nil
 			}
 			// Still not backed: the repaired text is shown when it has fewer unbacked claims.
@@ -83,12 +90,19 @@ func (a *Assistant) askVerified(ctx context.Context, req ai.Request) (ai.Respons
 		}
 	}
 	resp.Text = withVerifyFooter(resp.Text, violations)
+	resp.Corrected = true
 	a.verifier.Add(1, found, false, true)
 	return resp, nil
 }
 
-// askCaptured asks the chain once and returns the tool calls that were made while it ran.
-func (a *Assistant) askCaptured(ctx context.Context, req ai.Request) (ai.Response, []tools.CallRecord, error) {
+// streamingAsker is implemented by the chain: its answer can be written as it comes.
+type streamingAsker interface {
+	AskStream(ctx context.Context, req ai.Request, s ai.Stream) (ai.Response, error)
+}
+
+// askCaptured asks the chain once, streaming to s when s wants it, and returns the tool calls that
+// were made while it ran.
+func (a *Assistant) askCaptured(ctx context.Context, req ai.Request, s ai.Stream) (ai.Response, []tools.CallRecord, error) {
 	if a.asker == nil {
 		return ai.Response{}, nil, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
@@ -96,7 +110,13 @@ func (a *Assistant) askCaptured(ctx context.Context, req ai.Request) (ai.Respons
 	if a.captures != nil {
 		cp = a.captures.Begin()
 	}
-	resp, err := a.asker.Ask(ctx, req)
+	var resp ai.Response
+	var err error
+	if st, ok := a.asker.(streamingAsker); ok && s.Delta != nil {
+		resp, err = st.AskStream(ctx, req, s)
+	} else {
+		resp, err = a.asker.Ask(ctx, req)
+	}
 	return resp, cp.End(), err
 }
 

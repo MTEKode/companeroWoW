@@ -59,6 +59,11 @@ type Assistant struct {
 	// verifier counts what the answer verifier did (see verify.go).
 	verifier eval.StatsKeeper
 
+	// cache keeps the answers of the last answerCacheMin minutes (see cache.go); modelKey names
+	// the models of the chain, which the cache key holds.
+	cache    *answerCache
+	modelKey string
+
 	mu      sync.Mutex
 	lastCtx string         // the player context block of the last question
 	prof    config.Profile // the player's profile, injected into every prompt (see SetProfile)
@@ -70,6 +75,8 @@ type Assistant struct {
 func New(chain *ai.Chain, g *gamedata.Service, st *store.Store, cfg *config.Config) *Assistant {
 	a := &Assistant{g: g, st: st, cfg: cfg, now: time.Now}
 	a.verify = cfg == nil || cfg.VerifyAnswers
+	a.cache = newAnswerCache(answerCacheTTL(cfg))
+	a.modelKey = chainModelKey(cfg)
 	if cfg != nil {
 		a.prof = cfg.Profile.Normalize()
 	}
@@ -91,13 +98,21 @@ func newWithAsker(ask asker, g *gamedata.Service, st *store.Store, cfg *config.C
 // On success the user question and the answer (with the provider that answered) are
 // stored in the history. On failure nothing is stored, so the question can be retried.
 func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot bool) (ai.Response, error) {
+	return a.AskStream(ctx, question, withScreenshot, ai.Stream{})
+}
+
+// AskStream is Ask with the answer written to s as the provider writes it. A repeat of a question
+// answered within answerCacheMin minutes is answered from the cache at once (resp.Cached). The
+// text written to s is the provider's first answer; when the verifier changes it, the final text
+// comes back in the response and resp.Corrected is set, so the caller replaces what it showed.
+func (a *Assistant) AskStream(ctx context.Context, question string, withScreenshot bool, s ai.Stream) (ai.Response, error) {
 	q := strings.TrimSpace(question)
 	if q == "" {
 		return ai.Response{}, errors.New("escribe una pregunta")
 	}
 	ctx, cancel := context.WithTimeout(ctx, questionDeadline)
 	defer cancel()
-	resp, err := a.ask(ctx, q, withScreenshot, a.history())
+	resp, err := a.askCached(ctx, q, withScreenshot, a.history(), s)
 	if err != nil {
 		return resp, err
 	}
@@ -118,10 +133,47 @@ func (a *Assistant) Answer(ctx context.Context, question string, withScreenshot 
 }
 
 // ask builds the request (skill, game state, history, optional screenshot) and calls the
-// chain. It stores nothing.
+// chain. It stores nothing and does not use the cache.
 func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, history []ai.Message) (ai.Response, error) {
+	req, err := a.request(q, withScreenshot, history)
+	if err != nil {
+		return ai.Response{}, err
+	}
+	return a.askVerified(ctx, req)
+}
+
+// askCached is ask with the answer cache and the stream. A cache hit is streamed whole.
+func (a *Assistant) askCached(ctx context.Context, q string, withScreenshot bool, history []ai.Message, s ai.Stream) (ai.Response, error) {
+	req, err := a.request(q, withScreenshot, history)
+	if err != nil {
+		return ai.Response{}, err
+	}
+	cacheable := a.cache.enabled() && !withScreenshot && len(req.ImagePNG) == 0
+	var key string
+	if cacheable {
+		key = answerCacheKey(q, req, a.modelKey, a.verifyOn())
+		if hit, ok := a.cache.get(key, a.now()); ok {
+			if s.Delta != nil {
+				s.Delta(hit.text)
+			}
+			return ai.Response{Text: hit.text, Provider: hit.provider, Cached: true}, nil
+		}
+	}
+	resp, err := a.askVerifiedStream(ctx, req, s)
+	if err != nil {
+		return resp, err
+	}
+	if cacheable && !strings.Contains(resp.Text, verifyWarning) {
+		a.cache.put(key, cachedAnswer{text: resp.Text, provider: resp.Provider}, a.now())
+	}
+	return resp, nil
+}
+
+// request builds the request of one question: the skill, the system prompt with the game state and
+// the player context, the history and, when asked, the screenshot.
+func (a *Assistant) request(q string, withScreenshot bool, history []ai.Message) (ai.Request, error) {
 	if a.asker == nil {
-		return ai.Response{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
+		return ai.Request{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
 	// The player context is consulted here, once, so the provider does not need a tool call
 	// for the usual "where am I / what now" questions.
@@ -139,7 +191,7 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 			req.ImagePNG = png
 		}
 	}
-	return a.askVerified(ctx, req)
+	return req, nil
 }
 
 // systemPrompt is the game state and the player context block that every question
@@ -172,8 +224,9 @@ func (a *Assistant) setLastContext(block string) {
 	a.lastCtx = block
 }
 
-// ClearHistory deletes every stored chat message.
+// ClearHistory deletes every stored chat message, and the answers kept in the cache.
 func (a *Assistant) ClearHistory() error {
+	a.cache.clear()
 	if a.st == nil {
 		return nil
 	}
