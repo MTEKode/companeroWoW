@@ -54,8 +54,8 @@ func checkOK(checks []Check, name string) (bool, bool) {
 }
 
 func TestQuestionSetMatchesSpec(t *testing.T) {
-	if len(Questions) != 20 {
-		t.Fatalf("questions = %d, want 20", len(Questions))
+	if len(Questions) != 24 {
+		t.Fatalf("questions = %d, want 24", len(Questions))
 	}
 	seen := map[string]bool{}
 	var screenshot, refusal, source, location bool

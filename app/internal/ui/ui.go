@@ -68,6 +68,9 @@ type Options struct {
 	// TipsModeChanged is called when the settings screen saves a new tips mode, so that the
 	// tip loop follows it without a restart. It may be nil.
 	TipsModeChanged func(mode string)
+	// AnswerSettingsChanged is called when the settings screen saves a new player profile or the
+	// answer verifier setting, so that the assistant follows them without a restart. It may be nil.
+	AnswerSettingsChanged func(profile config.Profile, verify bool)
 	// Avoid returns the screen rectangle the panel must never cover: the WoW pixel strip
 	// at the top-left of the client area. ok is false when WoW is not found. It may be
 	// called from any goroutine.

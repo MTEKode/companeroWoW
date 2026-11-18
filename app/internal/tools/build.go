@@ -96,6 +96,13 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(leerPagina(ws))
 	r.Add(hechizosClase(ws))
 	r.Add(buildsClase(ws))
+	r.Add(ritmoSubida(g))
+	r.Add(valorMisiones(g))
+	r.Add(infoEnemigo(g))
+	if g != nil {
+		g.SetKillTime(theoryKillTime(g, ws))
+	}
+	withProfileNotes(r)
 	return r
 }
 

@@ -30,6 +30,7 @@ const (
 	idSetBrowse       = 2012
 	idSetKey          = 2013
 	idSetWizard       = 2014
+	idSetProfile      = 2020
 	idSetModelUp      = 2015
 	idSetModelDown    = 2016
 	idSetModelDel     = 2017
@@ -70,6 +71,14 @@ type settingsWin struct {
 	models, modelUp, modelDown       uintptr // the Antigravity models in use, in the order tried
 	modelDel, avail, modelAdd        uintptr // ... the removal, the models agy offers, adding
 	modelRefresh, cooldown           uintptr // ... refreshing the offer, the cooldown minutes
+
+	// profile is the draft of the player's profile and verify the answer verifier's setting;
+	// the profile screen edits them and Guardar applies them. profileLabel shows the summary.
+	profile      config.Profile
+	verify       bool
+	profileLabel uintptr
+	profileBtn   uintptr
+	profileDlg   *profileWin
 
 	// catalog is the list of models agy offers (cached); fetching is set while `agy models`
 	// runs in the background, and its result waits in fetched for msgModelsFetched.
@@ -246,7 +255,10 @@ func (s *settingsWin) createControls() {
 	s.keyLabel = s.label("", 16, 586, 240, 20)
 	s.keyFolder = s.button("Abrir carpeta .env", 260, 582, 164, 26, 0, idSetKey)
 
-	s.status = s.label("", 16, 616, 408, 44)
+	s.status = s.label("", 16, 612, 408, 30)
+
+	s.profileLabel = s.label("", 16, 646, 300, 20)
+	s.profileBtn = s.button("Perfil…", 330, 643, 94, 26, 0, idSetProfile)
 
 	s.wizard = s.button("Asistente de configuración…", 16, 672, 210, 28, 0, idSetWizard)
 	s.cancel = s.button("Cancelar", 276, 672, 70, 28, 0, idCancel)
@@ -255,7 +267,8 @@ func (s *settingsWin) createControls() {
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
 		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
 		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn,
-		s.models, s.modelUp, s.modelDown, s.modelDel, s.avail, s.modelAdd, s.modelRefresh, s.cooldown} {
+		s.models, s.modelUp, s.modelDown, s.modelDel, s.avail, s.modelAdd, s.modelRefresh, s.cooldown,
+		s.profileLabel, s.profileBtn} {
 		call(procSendMessageW, h, wmSetFont, s.owner.fonts.ui, 1)
 	}
 	s.statusColor = colMeta
@@ -275,6 +288,9 @@ func (s *settingsWin) load(cfg config.Config) {
 	s.setTipsMode(cfg.TipsMode)
 	setCheck(s.tipsSound, cfg.TipsSound)
 	setCheck(s.startup, cfg.StartWithWoW)
+	s.profile = cfg.Profile
+	s.verify = cfg.VerifyAnswers
+	s.updateProfileLabel()
 	setWindowText(s.wowPath, cfg.WoWPath)
 	s.refreshKey(cfg)
 	s.setStatus("Cambia lo que quieras y pulsa Guardar.", colMeta)
@@ -362,6 +378,8 @@ func (s *settingsWin) save() {
 		TipsSound:         getCheck(s.tipsSound),
 		StartWithWoW:      getCheck(s.startup),
 		WoWPath:           getWindowText(s.wowPath),
+		Profile:           s.profile,
+		VerifyAnswers:     s.verify,
 	}
 	next, err := form.apply(s.owner.cfg)
 	if err != nil {
@@ -468,6 +486,9 @@ func (w *window) applySettings(next config.Config) (string, error) {
 	}
 
 	w.combat.enabled = next.HideInCombat
+	if (!old.Profile.Equal(next.Profile) || old.VerifyAnswers != next.VerifyAnswers) && w.opts.AnswerSettingsChanged != nil {
+		w.opts.AnswerSettingsChanged(next.Profile, next.VerifyAnswers)
+	}
 	if old.TipsMode != next.TipsMode && w.opts.TipsModeChanged != nil {
 		w.opts.TipsModeChanged(next.TipsMode)
 	}
@@ -515,6 +536,8 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 			s.openEnvFolder()
 		case idSetWizard:
 			s.owner.startWizard()
+		case idSetProfile:
+			s.openProfile()
 		}
 		return 0
 	case wmCtlColorEdit, wmCtlColorList:
@@ -532,6 +555,9 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case wmDestroy:
 		if s.owner.settings == s {
 			s.owner.settings = nil
+		}
+		if s.profileDlg != nil {
+			call(procDestroyWindow, s.profileDlg.hwnd)
 		}
 		settingsCur = nil
 		return 0

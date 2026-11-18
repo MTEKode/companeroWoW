@@ -83,6 +83,12 @@ type Config struct {
 	Opacity int `json:"opacity"`
 	// FontSize is the panel's text size in points, from MinFontSize to MaxFontSize.
 	FontSize float64 `json:"fontSize"`
+	// VerifyAnswers checks each answer against the tool outputs and the player context before
+	// it is shown (coordinates, quoted names, commands) and asks the provider once to correct
+	// what is not backed. Default true.
+	VerifyAnswers bool `json:"verifyAnswers"`
+	// Profile is what the player says about how they play (see profile.go).
+	Profile Profile `json:"profile"`
 }
 
 // The ways proactive tips reach the player (TipsMode).
@@ -139,13 +145,15 @@ func Defaults() Config {
 			"forevermeta.me",
 			"forevermastery.com",
 		},
-		PixelPollMs:  250,
-		AITimeoutSec: 120,
-		HideInCombat: true,
-		StartWithWoW: false,
-		Opacity:      90,
-		FontSize:     10,
-		WFTAdded:     true,
+		PixelPollMs:   250,
+		AITimeoutSec:  120,
+		HideInCombat:  true,
+		StartWithWoW:  false,
+		Opacity:       90,
+		FontSize:      10,
+		WFTAdded:      true,
+		VerifyAnswers: true,
+		Profile:       Profile{Tone: ToneBrief},
 	}
 }
 
@@ -208,6 +216,13 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &raw)
 	_, hasKey := raw["hideInCombat"]
+	// Files from before the answer verifier or the player profile get those keys written once.
+	if _, has := raw["verifyAnswers"]; !has {
+		hasKey = false
+	}
+	if _, has := raw["profile"]; !has {
+		hasKey = false
+	}
 	_, hasModels := raw["antigravityModels"]
 	modelsChanged := d.migrateAntigravityModels(hasModels)
 	if _, has := raw["wftAdded"]; !has {
@@ -265,6 +280,9 @@ func (c *Config) migrate() bool {
 		if !slices.ContainsFunc(c.WebSources, isWFTEntry) {
 			c.WebSources = append([]string{WFTHost}, c.WebSources...)
 		}
+	}
+	if c.migrateProfile() {
+		changed = true
 	}
 	return changed
 }

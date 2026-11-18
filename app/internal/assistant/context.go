@@ -56,6 +56,7 @@ func compactContext(v any, limit int) string {
 		{"ubicacion", m["ubicacion"]},
 		{"personaje", m["personaje"]},
 		{"misionRastreada", m["misionRastreada"]},
+		{"ritmo", m["ritmo"]},
 		{"datos", m["datos"]},
 		{"avisos", m["avisos"]},
 		{"dinero", m["dinero"]},

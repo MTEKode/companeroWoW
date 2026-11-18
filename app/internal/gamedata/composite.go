@@ -142,6 +142,10 @@ func (g *Service) PlayerContext() (any, error) {
 			notes = append(notes, "Questie no exportó coordenadas de misiones: la guía no tiene coordenadas exactas.")
 		}
 	}
+	// The leveling pace in one line, so that "¿cuánto me falta?" needs no extra call.
+	if rt := g.paceSummary(); rt != nil {
+		out["ritmo"] = rt
+	}
 	// The addon routes: counts and the top item of each, so that the answer stays short.
 	if tr := trainingSummary(g); tr != nil {
 		out["entrenamiento"] = tr

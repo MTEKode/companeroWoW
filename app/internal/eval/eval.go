@@ -75,6 +75,9 @@ type Question struct {
 	// Command means the answer must give a "/compa barras aplicar" command that the game accepts:
 	// known spell ids, slots from 1 to 120, at most 40 pairs and at most 255 characters.
 	Command bool
+	// Estimate means the answer gives a figure the tools only estimate (minutes, XP per minute, a
+	// verdict without fights): it must say so.
+	Estimate bool
 }
 
 // webTools are the tools that search or read the web: a question that uses them gets the
@@ -103,6 +106,10 @@ var Questions = []Question{
 	{ID: "q18", Text: "¿Qué estoy haciendo mal en los combates?", List: true, Tools: []string{"revisar_combates"}},
 	{ID: "q19", Text: "¿Por qué he muerto?", List: true, Tools: []string{"revisar_combates"}},
 	{ID: "q20", Text: "Colócame las barras", List: true, Command: true, Tools: []string{"consejo_barras"}},
+	{ID: "q21", Text: "¿Cuánto me falta para subir de nivel?", Estimate: true, Tools: []string{"ritmo_subida", "contexto_jugador"}},
+	{ID: "q22", Text: "¿Qué misiones dan más XP por minuto?", Location: true, List: true, Estimate: true, Tools: []string{"valor_misiones"}},
+	{ID: "q23", Text: "¿Puedo con este élite?", Estimate: true, Tools: []string{"info_enemigo", "obtener_objetivo"}},
+	{ID: "q24", Text: "¿Cuánto tardo en llegar al nivel 40?", Estimate: true, Tools: []string{"ritmo_subida"}},
 }
 
 // Asker answers one question as the first of a conversation (the assistant's Answer).
@@ -171,6 +178,10 @@ type Record struct {
 	Error       string     `json:"error,omitempty"`
 	Checks      []Check    `json:"checks"`
 	Passed      bool       `json:"passed"`
+	// Claims is the number of unbacked claims the verifier found in this answer; Repaired is true
+	// when the repair round made it grounded.
+	Claims   int  `json:"afirmacionesSinRespaldo,omitempty"`
+	Repaired bool `json:"reparada,omitempty"`
 }
 
 // Report is the whole run.
@@ -181,18 +192,36 @@ type Report struct {
 	Total           int       `json:"total"`
 	Passed          int       `json:"passed"`
 	Records         []Record  `json:"records"`
+	// Verifier is what the answer verifier did during the run, when the asker runs one.
+	Verifier *VerifierStats `json:"verificador,omitempty"`
 }
 
 // Run asks every question in order and checks each answer. drain returns the tool calls
 // made since its last call; use a Recorder. The provider name is recorded for the report.
 func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs []Question, requested, skillVersion string) Report {
 	rep := Report{StartedAt: time.Now(), RequestProvider: requested, SkillVersion: skillVersion}
+	vr, hasVR := asker.(verifyReporter)
+	var first VerifierStats
+	if hasVR {
+		first = vr.VerifyStats()
+	}
 	for _, q := range qs {
 		if drain != nil {
 			drain()
 		}
+		var before VerifierStats
+		if hasVR {
+			before = vr.VerifyStats()
+		}
 		start := time.Now()
 		resp, err := asker.Answer(ctx, q.Text, q.Screenshot)
+		var claims int
+		var repaired bool
+		if hasVR {
+			after := vr.VerifyStats()
+			claims = after.Claims - before.Claims
+			repaired = after.Repaired > before.Repaired
+		}
 		rec := Record{
 			ID:          q.ID,
 			Question:    q.Text,
@@ -200,6 +229,8 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 			Model:       modelOf(resp),
 			DurationSec: round2(time.Since(start).Seconds()),
 			Answer:      resp.Text,
+			Claims:      claims,
+			Repaired:    repaired,
 		}
 		if err != nil {
 			rec.Error = err.Error()
@@ -226,6 +257,13 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 		rep.Total++
 		if rec.Passed {
 			rep.Passed++
+		}
+	}
+	if hasVR {
+		last := vr.VerifyStats()
+		rep.Verifier = &VerifierStats{
+			Answers: last.Answers - first.Answers, Violations: last.Violations - first.Violations,
+			Claims: last.Claims - first.Claims, Repaired: last.Repaired - first.Repaired, Flagged: last.Flagged - first.Flagged,
 		}
 	}
 	return rep
@@ -329,7 +367,19 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 	}
 	out = append(out, quotedNamesCheck(answer, ev))
 	out = append(out, groundingCheck(answer, ev))
+	if q.Estimate {
+		out = append(out, estimateCheck(answer))
+	}
 	return out
+}
+
+// estimateWords mark an answer as an estimate.
+var estimateWords = []string{"estim", "aprox", "calcul", "supon", "unos", "unas"}
+
+// estimateCheck fails when a figure the tools only estimate is given without saying so.
+func estimateCheck(answer string) Check {
+	return Check{Name: "estimado", OK: containsAny(strings.ToLower(answer), estimateWords),
+		Detail: "debe marcar las cifras calculadas como estimadas (estimado, aprox., calculado)"}
 }
 
 // gearSectionsCheck fails when a gear analysis does not separate what is reachable now ("Ya")
@@ -786,6 +836,9 @@ func Markdown(rep Report) string {
 	fmt.Fprintf(&b, "- Versión de la skill: %s\n", rep.SkillVersion)
 	fmt.Fprintf(&b, "- Resultado: %d de %d preguntas superan todas las comprobaciones\n\n", rep.Passed, rep.Total)
 
+	if v := rep.Verifier; v != nil {
+		fmt.Fprintf(&b, "- Verificador: %d respuestas; %d con datos sin respaldo (%d afirmaciones); %d reparadas; %d con aviso en pantalla\n\n", v.Answers, v.Violations, v.Claims, v.Repaired, v.Flagged)
+	}
 	b.WriteString("| Pregunta | Proveedor | Modelo | Segundos | Herramientas | Resultado |\n")
 	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, r := range rep.Records {

@@ -16,8 +16,10 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/eval"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
+	"github.com/MTEKode/companeroWoW/app/internal/tools"
 )
 
 // historyTurns is how many previous messages are sent with each question.
@@ -52,14 +54,25 @@ type Assistant struct {
 	cfg   *config.Config
 	now   func() time.Time
 
+	// captures records the tool calls of each question for the answer verifier (see SetCaptures).
+	captures *tools.Captures
+	// verifier counts what the answer verifier did (see verify.go).
+	verifier eval.StatsKeeper
+
 	mu      sync.Mutex
-	lastCtx string // the player context block of the last question
+	lastCtx string         // the player context block of the last question
+	prof    config.Profile // the player's profile, injected into every prompt (see SetProfile)
+	verify  bool           // whether answers are verified (the verifyAnswers setting, see SetAnswerSettings)
 }
 
 // New creates the assistant over the provider chain, the game data, the store and the
 // configuration. Any of them may be nil; the assistant then works with less context.
 func New(chain *ai.Chain, g *gamedata.Service, st *store.Store, cfg *config.Config) *Assistant {
 	a := &Assistant{g: g, st: st, cfg: cfg, now: time.Now}
+	a.verify = cfg == nil || cfg.VerifyAnswers
+	if cfg != nil {
+		a.prof = cfg.Profile.Normalize()
+	}
 	if chain != nil {
 		a.asker = chain
 	}
@@ -126,7 +139,7 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 			req.ImagePNG = png
 		}
 	}
-	return a.asker.Ask(ctx, req)
+	return a.askVerified(ctx, req)
 }
 
 // systemPrompt is the game state and the player context block that every question
@@ -134,6 +147,9 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 // does not need a tool call for the usual "where am I / what now" questions.
 func (a *Assistant) systemPrompt() string {
 	system := a.stateBlock()
+	if p := a.profileBlock(); p != "" {
+		system += "\n\n" + p
+	}
 	block := a.playerContextBlock()
 	a.setLastContext(block)
 	if block != "" {

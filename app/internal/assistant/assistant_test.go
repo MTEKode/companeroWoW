@@ -449,3 +449,12 @@ func TestToolAdapterNilRegistry(t *testing.T) {
 		t.Error("nil registry should offer no specs")
 	}
 }
+
+// newTestProactorUnverified is newTestProactor with the answer verifier off, for tests whose
+// fake answers quote coordinates on purpose and are not about grounding.
+func newTestProactorUnverified(t *testing.T, fake *fakeAsker, clock *fakeClock, inCombat *bool, got *[]Tip) *proactor {
+	t.Helper()
+	p := newTestProactor(t, fake, clock, inCombat, got)
+	p.ask = func(ctx context.Context, req ai.Request) (ai.Response, error) { return fake.Ask(ctx, req) }
+	return p
+}

@@ -48,6 +48,7 @@ type Registry struct {
 	defs     []Def
 	index    map[string]int
 	observer func(CallRecord)
+	extra    []func(CallRecord) // see AddObserver
 }
 
 // NewRegistry returns an empty registry.
@@ -79,12 +80,21 @@ func (r *Registry) SetObserver(f func(CallRecord)) {
 	r.observer = f
 }
 
+// AddObserver adds f next to the observer set by SetObserver. Several observers can watch the
+// calls: the evaluation harness and the per-question captures of the answer verifier. Set them
+// before the registry serves calls.
+func (r *Registry) AddObserver(f func(CallRecord)) {
+	if f != nil {
+		r.extra = append(r.extra, f)
+	}
+}
+
 // Call runs the named tool. An unknown name is an error. Errors and panics raised by
 // the handler are returned as a Result with IsError set and a Spanish message.
 func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) (Result, error) {
 	start := time.Now()
 	res, err := r.call(ctx, name, args)
-	if r.observer != nil {
+	if r.observer != nil || len(r.extra) > 0 {
 		rec := CallRecord{Name: name, Args: string(args), IsError: res.IsError, Duration: time.Since(start)}
 		for _, c := range res.Content {
 			if c.Type == "text" {
@@ -94,7 +104,12 @@ func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) 
 		if err != nil {
 			rec.Err = err.Error()
 		}
-		r.observer(rec)
+		if r.observer != nil {
+			r.observer(rec)
+		}
+		for _, f := range r.extra {
+			f(rec)
+		}
 	}
 	return res, err
 }

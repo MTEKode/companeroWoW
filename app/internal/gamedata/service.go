@@ -40,6 +40,8 @@ type Service struct {
 	watcher  *bridge.SVWatcher
 	store    *store.Store
 	sessions *session.Tracker // optional: the running session, see SetSessions
+	pace     *PaceSampler     // optional: live samples for the leveling pace, see SetPace
+	killTime KillTimeFunc     // optional: time-to-kill model, see SetKillTime
 
 	startOnce sync.Once
 }

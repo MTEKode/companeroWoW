@@ -71,7 +71,9 @@ func runEval(cfg *config.Config, dir, outPath, provider string) int {
 	rec := &eval.Recorder{}
 	tools.ScreenshotDir = config.ScreensDir(dir)
 	reg := tools.Build(g, websearch.New(c.WebSources, st))
-	reg.SetObserver(rec.Observe)
+	reg.AddObserver(rec.Observe)
+	captures := tools.NewCaptures()
+	reg.AddObserver(captures.Observe)
 
 	mcp := mcpserver.New(reg, version)
 	mcpErr := make(chan error, 1)
@@ -85,6 +87,8 @@ func runEval(cfg *config.Config, dir, outPath, provider string) int {
 
 	chain := ai.BuildChain(&c, dir, assistant.ToolAdapter(reg))
 	asst := assistant.New(chain, g, st, &c)
+	asst.SetCaptures(captures)
+	tools.SetProfileSource(asst.Profile)
 	rep := eval.Run(ctx, asst, rec.Drain, eval.Questions, provider, skill.Version())
 
 	base := outPath
