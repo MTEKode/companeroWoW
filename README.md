@@ -54,7 +54,27 @@ Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ve
 
 ## Atajo de teclado
 
-Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco al campo de texto). Puedes cambiarlo con `hotkey` en `config.json`, por ejemplo `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco al campo de texto), en el modo ventana. En el modo juego (`uiMode: "juego"`, por defecto) solo activa la lectura del canal y no abre nada: ver [Modo juego](#modo-juego-preguntas-dentro-del-juego). Puedes cambiarlo con `hotkey` en `config.json`, por ejemplo `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+
+## Modo juego: preguntas dentro del juego
+
+Por defecto (`uiMode: "juego"`) la app no muestra ventana: solo el icono de la bandeja. Las preguntas se escriben en el marco de Compañero, dentro de WoW, y la respuesta llega sin salir del juego:
+
+1. Escribe la pregunta en el marco de Compañero del juego y envíala. El addon la manda a la app.
+2. La app responde con la misma IA de siempre (las mismas herramientas, verificación y proveedores) y no muestra nada fuera del juego.
+3. Al terminar, la respuesta queda en el **portapapeles** como un bloque `[CWOW1 #id …]…[/CWOW1]`, y suena el aviso **«Respuesta lista»** (o un pitido, según `answerSound`).
+4. Vuelve al marco de Compañero y pulsa **Ctrl+V** en su caja de respuesta. El addon muestra la respuesta con sus botones: **Marcar** (pone una marca en el mapa), **Colocar barras** (fuera de combate) y **Crear macro**.
+
+Detalles:
+
+- **El atajo** (Ctrl+Shift+Espacio) no abre nada en este modo: solo activa la lectura del canal con el juego. El icono de la bandeja ofrece **Ajustes…**, **Abrir panel (ventana)**, **Resumen de sesión** y **Salir**; un clic izquierdo en el icono abre el mismo menú.
+- **Consejos**: en este modo no abren el panel ni muestran avisos; quedan en la conversación del panel, y el icono de la bandeja cuenta los nuevos.
+- **Una pregunta a la vez, la última gana**: si envías otra pregunta mientras una responde, la anterior se cancela y solo llega al portapapeles la respuesta de la última. Una pregunta ya respondida (mismo id) no se vuelve a contestar, tampoco después de reiniciar la app: los ids se guardan en `questions.json`, por personaje.
+- **Errores**: si ningún proveedor responde, el portapapeles recibe un bloque con un aviso corto en castellano y suena el aviso de error.
+- **Límites**: el bloque mide como mucho 4000 caracteres; una respuesta más larga se recorta y acaba en «(respuesta recortada)». La respuesta no se escribe en el chat del juego: solo la pegas tú con Ctrl+V.
+- **Probar el aviso y el portapapeles** sin jugar: `CompaneroWoW.exe --test-answer` pone una respuesta de ejemplo en el portapapeles, suena el aviso, escribe el resultado en la consola y en `companero.log`, y sale.
+- **Primera vez**: el asistente de configuración se abre en el panel la primera vez (cuando se crea `config.json`) y con `--setup`.
+- Para ver el panel de siempre, elige **Ventana** en los ajustes (`uiMode: "ventana"`) o usa **Abrir panel (ventana)** en la bandeja.
 
 ## Ventana
 
@@ -163,6 +183,9 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
 | `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
 | `tipsSound` | `true` reproduce el sonido de Windows con el aviso de un consejo. Por defecto, `false`. |
+| `uiMode` | `juego` (por defecto): la app no abre el panel por sí sola; las respuestas van al portapapeles y suena el aviso ([Modo juego](#modo-juego-preguntas-dentro-del-juego)). `ventana`: el panel de siempre. Las configuraciones anteriores usan `juego`. |
+| `answerSound` | Cómo se avisa de una respuesta lista: `voz` (por defecto, dice «Respuesta lista» con la voz de Windows), `pitido` (un tono corto) o `ninguno`. Si la voz falla, se usa el pitido. |
+| `answerVolume` | Volumen del aviso, de 0 a 100. Por defecto, `80`. Con `0` no suena nada. |
 | `proactive` | Refleja `tipsMode` (`false` solo con `off`); se mantiene por compatibilidad. Si `tipsMode` existe, manda `tipsMode`. |
 | `hideInCombat` | `true` (por defecto) oculta el panel mientras el personaje está en combate. |
 | `startWithWoW` | `true` registra la app para arrancar al iniciar sesión, minimizada en la bandeja. Por defecto `false`. |

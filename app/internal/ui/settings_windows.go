@@ -89,6 +89,9 @@ type settingsWin struct {
 	fetchErr                        error
 	tipsPanel, tipsBandeja, tipsOff uintptr // the three ways tips reach the player
 	tipsSound                       uintptr
+	uiGame, uiWindow                uintptr // the interface: inside the game, or the external panel
+	ansVoice, ansBeep, ansNone      uintptr // the answer announcement: voice, tone or nothing
+	volume                          uintptr // the announcement's volume, percent
 	startup, wowPath, browseBtn     uintptr
 	keyLabel, keyFolder, status     uintptr
 	wizard, cancel, saveBtn         uintptr
@@ -144,8 +147,8 @@ func newSettingsWin(owner *window) (*settingsWin, error) {
 	}
 	s := &settingsWin{inst: owner.inst, owner: owner, scale: owner.scale}
 	style := uintptr(wsPopup | wsCaption | wsSysMenu | wsClipChildren)
-	// The client area is 440 x 712 logical pixels; AdjustWindowRectEx adds the frame.
-	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(712))}
+	// The client area is 440 x 790 logical pixels; AdjustWindowRectEx adds the frame.
+	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(790))}
 	call(procAdjustWindowRectEx, ptrOf(&rc), style, 0, wsExAppWindow)
 	ow, oh := int(rc.Right-rc.Left), int(rc.Bottom-rc.Top)
 	screen := screenRect()
@@ -230,42 +233,54 @@ func (s *settingsWin) createControls() {
 	s.tipsSound = s.checkBox("Sonido", 200, 286, 220, 22)
 	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 312, 400, 22)
 
+	// The game mode (the default) keeps the panel closed and announces the answers with a sound.
+	s.label("Interfaz:", 16, 338, 180, 20)
+	s.uiGame = s.radio("Dentro del juego", 200, 338, 170, 22, true)
+	s.uiWindow = s.radio("Ventana", 372, 338, 60, 22, false)
+	s.label("Aviso al responder:", 16, 364, 180, 20)
+	s.ansVoice = s.radio("Voz", 200, 364, 60, 22, true)
+	s.ansBeep = s.radio("Pitido", 262, 364, 70, 22, false)
+	s.ansNone = s.radio("Ninguno", 334, 364, 90, 22, false)
+	s.label("Volumen del aviso (0-100 %)", 16, 390, 200, 20)
+	s.volume = s.edit(200, 387, 60, 24, esNumber)
+
 	// The Antigravity models: the order in use (left), the ones agy offers (below). Adding
 	// takes a model from the offer, removing puts nothing back by itself.
-	s.label("Modelos de Antigravity", 16, 342, 180, 20)
+	s.label("Modelos de Antigravity", 16, 420, 180, 20)
 	s.models = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
-		200, 340, 150, 72, 0)
-	s.modelUp = s.button("▲", 360, 340, 32, 32, 0, idSetModelUp)
-	s.modelDown = s.button("▼", 360, 378, 32, 32, 0, idSetModelDown)
-	s.modelDel = s.button("✕", 400, 340, 32, 32, 0, idSetModelDel)
+		200, 418, 150, 72, 0)
+	s.modelUp = s.button("▲", 360, 418, 32, 32, 0, idSetModelUp)
+	s.modelDown = s.button("▼", 360, 456, 32, 32, 0, idSetModelDown)
+	s.modelDel = s.button("✕", 400, 418, 32, 32, 0, idSetModelDel)
 
-	s.label("Modelos disponibles", 16, 422, 180, 20)
+	s.label("Modelos disponibles", 16, 500, 180, 20)
 	s.avail = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
-		200, 420, 150, 72, 0)
-	s.modelAdd = s.button("Añadir", 360, 420, 76, 26, 0, idSetModelAdd)
-	s.modelRefresh = s.button("Actualizar", 360, 466, 76, 26, 0, idSetModelRefresh)
+		200, 498, 150, 72, 0)
+	s.modelAdd = s.button("Añadir", 360, 498, 76, 26, 0, idSetModelAdd)
+	s.modelRefresh = s.button("Actualizar", 360, 544, 76, 26, 0, idSetModelRefresh)
 
-	s.label("Volver al primero tras (min)", 16, 502, 180, 20)
-	s.cooldown = s.edit(200, 499, 60, 24, esNumber)
+	s.label("Volver al primero tras (min)", 16, 580, 180, 20)
+	s.cooldown = s.edit(200, 577, 60, 24, esNumber)
 
-	s.label("Carpeta de WoW (_forever_)", 16, 530, 400, 20)
-	s.wowPath = s.edit(16, 552, 316, 24, 0)
-	s.browseBtn = s.button("Examinar…", 340, 551, 84, 26, 0, idSetBrowse)
+	s.label("Carpeta de WoW (_forever_)", 16, 608, 400, 20)
+	s.wowPath = s.edit(16, 630, 316, 24, 0)
+	s.browseBtn = s.button("Examinar…", 340, 629, 84, 26, 0, idSetBrowse)
 
-	s.keyLabel = s.label("", 16, 586, 240, 20)
-	s.keyFolder = s.button("Abrir carpeta .env", 260, 582, 164, 26, 0, idSetKey)
+	s.keyLabel = s.label("", 16, 664, 240, 20)
+	s.keyFolder = s.button("Abrir carpeta .env", 260, 660, 164, 26, 0, idSetKey)
 
-	s.status = s.label("", 16, 612, 408, 30)
+	s.status = s.label("", 16, 690, 408, 30)
 
-	s.profileLabel = s.label("", 16, 646, 300, 20)
-	s.profileBtn = s.button("Perfil…", 330, 643, 94, 26, 0, idSetProfile)
+	s.profileLabel = s.label("", 16, 724, 300, 20)
+	s.profileBtn = s.button("Perfil…", 330, 721, 94, 26, 0, idSetProfile)
 
-	s.wizard = s.button("Asistente de configuración…", 16, 672, 210, 28, 0, idSetWizard)
-	s.cancel = s.button("Cancelar", 276, 672, 70, 28, 0, idCancel)
-	s.saveBtn = s.button("Guardar", 354, 672, 70, 28, bsDefPushButton, idOK)
+	s.wizard = s.button("Asistente de configuración…", 16, 750, 210, 28, 0, idSetWizard)
+	s.cancel = s.button("Cancelar", 276, 750, 70, 28, 0, idCancel)
+	s.saveBtn = s.button("Guardar", 354, 750, 70, 28, bsDefPushButton, idOK)
 
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
 		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
+		s.uiGame, s.uiWindow, s.ansVoice, s.ansBeep, s.ansNone, s.volume,
 		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn,
 		s.models, s.modelUp, s.modelDown, s.modelDel, s.avail, s.modelAdd, s.modelRefresh, s.cooldown,
 		s.profileLabel, s.profileBtn} {
@@ -287,6 +302,9 @@ func (s *settingsWin) load(cfg config.Config) {
 	setCheck(s.hide, cfg.HideInCombat)
 	s.setTipsMode(cfg.TipsMode)
 	setCheck(s.tipsSound, cfg.TipsSound)
+	s.setUIMode(cfg.UIMode)
+	s.setAnswerSound(cfg.AnswerSound)
+	setWindowText(s.volume, strconv.Itoa(cfg.AnswerVolume))
 	setCheck(s.startup, cfg.StartWithWoW)
 	s.profile = cfg.Profile
 	s.verify = cfg.VerifyAnswers
@@ -302,6 +320,43 @@ func (s *settingsWin) setTipsMode(mode string) {
 	setCheck(s.tipsPanel, mode == config.TipsPanel)
 	setCheck(s.tipsBandeja, mode == config.TipsBandeja)
 	setCheck(s.tipsOff, mode == config.TipsOff)
+}
+
+// setUIMode checks the radio of the interface mode.
+func (s *settingsWin) setUIMode(mode string) {
+	setCheck(s.uiGame, mode != config.UIModeWindow)
+	setCheck(s.uiWindow, mode == config.UIModeWindow)
+}
+
+// readUIMode returns the interface mode of the checked radio ("" when none is checked).
+func (s *settingsWin) readUIMode() string {
+	switch {
+	case getCheck(s.uiGame):
+		return config.UIModeGame
+	case getCheck(s.uiWindow):
+		return config.UIModeWindow
+	}
+	return ""
+}
+
+// setAnswerSound checks the radio of the answer announcement.
+func (s *settingsWin) setAnswerSound(mode string) {
+	setCheck(s.ansVoice, mode == config.AnswerVoice)
+	setCheck(s.ansBeep, mode == config.AnswerBeep)
+	setCheck(s.ansNone, mode == config.AnswerNone)
+}
+
+// readAnswerSound returns the announcement of the checked radio ("" when none is checked).
+func (s *settingsWin) readAnswerSound() string {
+	switch {
+	case getCheck(s.ansVoice):
+		return config.AnswerVoice
+	case getCheck(s.ansBeep):
+		return config.AnswerBeep
+	case getCheck(s.ansNone):
+		return config.AnswerNone
+	}
+	return ""
 }
 
 // readTipsMode returns the tips mode of the checked radio, or "" when none is checked (the
@@ -380,6 +435,9 @@ func (s *settingsWin) save() {
 		WoWPath:           getWindowText(s.wowPath),
 		Profile:           s.profile,
 		VerifyAnswers:     s.verify,
+		UIMode:            s.readUIMode(),
+		AnswerSound:       s.readAnswerSound(),
+		AnswerVolume:      getWindowText(s.volume),
 	}
 	next, err := form.apply(s.owner.cfg)
 	if err != nil {
@@ -491,6 +549,9 @@ func (w *window) applySettings(next config.Config) (string, error) {
 	}
 	if old.TipsMode != next.TipsMode && w.opts.TipsModeChanged != nil {
 		w.opts.TipsModeChanged(next.TipsMode)
+	}
+	if (old.AnswerSound != next.AnswerSound || old.AnswerVolume != next.AnswerVolume) && w.opts.AnswerSoundChanged != nil {
+		w.opts.AnswerSoundChanged(next.AnswerSound, next.AnswerVolume)
 	}
 	w.applyOpacity()
 	if old.FontSize != next.FontSize {

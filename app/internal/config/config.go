@@ -89,7 +89,47 @@ type Config struct {
 	VerifyAnswers bool `json:"verifyAnswers"`
 	// Profile is what the player says about how they play (see profile.go).
 	Profile Profile `json:"profile"`
+	// UIMode is how the app shows itself: UIModeGame (default) keeps the panel closed and
+	// answers arrive on the clipboard with a sound; UIModeWindow opens the external panel.
+	UIMode string `json:"uiMode"`
+	// AnswerSound is how a finished answer is announced: AnswerVoice (default), AnswerBeep or
+	// AnswerNone.
+	AnswerSound string `json:"answerSound"`
+	// AnswerVolume is the volume of the answer sound, from 0 to 100.
+	AnswerVolume int `json:"answerVolume"`
 }
+
+// The interface modes (UIMode).
+const (
+	// UIModeGame keeps the app invisible: tray icon only, questions typed in the game.
+	UIModeGame = "juego"
+	// UIModeWindow shows the external panel, as before.
+	UIModeWindow = "ventana"
+)
+
+// ValidUIMode reports whether s is one of the UIMode values.
+func ValidUIMode(s string) bool { return s == UIModeGame || s == UIModeWindow }
+
+// The announcements of a finished answer (AnswerSound).
+const (
+	// AnswerVoice says "Respuesta lista" with the Windows speech voice.
+	AnswerVoice = "voz"
+	// AnswerBeep plays a short tone.
+	AnswerBeep = "pitido"
+	// AnswerNone plays nothing.
+	AnswerNone = "ninguno"
+)
+
+// ValidAnswerSound reports whether s is one of the AnswerSound values.
+func ValidAnswerSound(s string) bool {
+	return s == AnswerVoice || s == AnswerBeep || s == AnswerNone
+}
+
+// MinAnswerVolume and MaxAnswerVolume bound AnswerVolume (percent).
+const (
+	MinAnswerVolume = 0
+	MaxAnswerVolume = 100
+)
 
 // The ways proactive tips reach the player (TipsMode).
 const (
@@ -154,6 +194,9 @@ func Defaults() Config {
 		WFTAdded:      true,
 		VerifyAnswers: true,
 		Profile:       Profile{Tone: ToneBrief},
+		UIMode:        UIModeGame,
+		AnswerSound:   AnswerVoice,
+		AnswerVolume:  80,
 	}
 }
 
@@ -234,6 +277,13 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 		d.TipsMode = ""
 		hasKey = false
 	}
+	// A file from before the interface modes lacks uiMode, answerSound and answerVolume: they
+	// get their defaults and the file is rewritten once so the keys show up.
+	for _, k := range []string{"uiMode", "answerSound", "answerVolume"} {
+		if _, has := raw[k]; !has {
+			hasKey = false
+		}
+	}
 	if d.migrate() || modelsChanged || !hasKey {
 		if err := d.Save(path); err != nil {
 			return nil, false, fmt.Errorf("save migrated config %s: %w", path, err)
@@ -282,6 +332,18 @@ func (c *Config) migrate() bool {
 		}
 	}
 	if c.migrateProfile() {
+		changed = true
+	}
+	if !ValidUIMode(c.UIMode) {
+		c.UIMode = UIModeGame
+		changed = true
+	}
+	if !ValidAnswerSound(c.AnswerSound) {
+		c.AnswerSound = AnswerVoice
+		changed = true
+	}
+	if c.AnswerVolume < MinAnswerVolume || c.AnswerVolume > MaxAnswerVolume {
+		c.AnswerVolume = min(max(c.AnswerVolume, MinAnswerVolume), MaxAnswerVolume)
 		changed = true
 	}
 	return changed

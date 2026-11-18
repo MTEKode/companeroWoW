@@ -48,6 +48,8 @@ const (
 	menuWizard    = 1006
 	// Tray menu only; the other tray items reuse the header menu's commands.
 	trayToggle = 1010
+	// menuOpenPanel opens the external panel from the tray menu in the game mode.
+	menuOpenPanel = 1011
 
 	// combatPeriod is how often the combat flag is read.
 	combatPeriod = 500 * time.Millisecond
@@ -256,8 +258,9 @@ func Run(opts Options) error {
 	if opts.Setup {
 		w.startWizard()
 	}
-	// A panel started with --tray stays hidden: only the tray icon shows.
-	if !opts.StartHidden || opts.Setup {
+	// A panel started with --tray stays hidden: only the tray icon shows. In the game mode the
+	// panel stays hidden as well; the first-run wizard (Setup) still opens it.
+	if (!opts.StartHidden && !gameMode(w.cfg.UIMode)) || opts.Setup {
 		w.show(true)
 	}
 
@@ -688,7 +691,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		w.refreshStatus()
 		return 0
 	case msgToggle:
-		w.toggle()
+		w.hotkeyPressed()
 		return 0
 	case msgCombat:
 		w.onCombat(wp != 0)
@@ -858,6 +861,8 @@ func (w *window) menuCommand(id int) {
 		w.startWizard()
 	case trayToggle:
 		w.toggle()
+	case menuOpenPanel:
+		w.show(true)
 	case menuQuit:
 		w.quit()
 	case 0:
@@ -1003,6 +1008,9 @@ func (w *window) syncBadge() {
 // and a balloon announce it.
 func (w *window) deliverTip(tip assistant.Tip) {
 	route := routeTip(w.cfg.TipsMode, isVisible(w.hwnd), w.combat.InCombat())
+	if gameMode(w.cfg.UIMode) {
+		route = gameTipRoute(route)
+	}
 	if !route.Conversation {
 		log.Printf("ui: consejo descartado (consejos desactivados): %s", tip.Title)
 		return
@@ -1038,13 +1046,23 @@ func (w *window) hide() {
 	call(procShowWindow, w.hwnd, swHide)
 }
 
-// toggle is the hotkey action: hide when shown, show with focus otherwise.
+// toggle is the window mode's hotkey action: hide when shown, show with focus otherwise.
 func (w *window) toggle() {
 	if isVisible(w.hwnd) {
 		w.hide()
 		return
 	}
 	w.show(true)
+}
+
+// hotkeyPressed is the global shortcut. In the game mode it only activates the reading of the
+// game channel and never shows the panel; in the window mode it toggles the panel.
+func (w *window) hotkeyPressed() {
+	if hotkeyFor(w.cfg.UIMode) == hotkeyActivate {
+		log.Printf("ui: atajo en modo juego: el panel no se abre; la lectura del canal sigue activa")
+		return
+	}
+	w.toggle()
 }
 
 // quit closes the panel for good; the message loop ends afterwards.

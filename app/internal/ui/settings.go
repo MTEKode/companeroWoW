@@ -28,6 +28,11 @@ type settingsForm struct {
 	// Profile and VerifyAnswers come from the profile screen (see profile_settings.go).
 	Profile       config.Profile
 	VerifyAnswers bool
+	// UIMode is the interface (config.UIModeGame or UIModeWindow); AnswerSound the announcement of
+	// a finished answer; AnswerVolume its volume as text, so that a bad entry is reported.
+	UIMode       string
+	AnswerSound  string
+	AnswerVolume string
 }
 
 // formFromConfig fills the form from the saved configuration.
@@ -46,6 +51,9 @@ func formFromConfig(c config.Config) settingsForm {
 		WoWPath:           c.WoWPath,
 		Profile:           c.Profile,
 		VerifyAnswers:     c.VerifyAnswers,
+		UIMode:            c.UIMode,
+		AnswerSound:       c.AnswerSound,
+		AnswerVolume:      strconv.Itoa(c.AnswerVolume),
 	}
 }
 
@@ -132,6 +140,19 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	next.Profile = f.Profile.Normalize()
 	next.VerifyAnswers = f.VerifyAnswers
 	next.WoWPath = path
+	if !config.ValidUIMode(f.UIMode) {
+		return config.Config{}, errors.New("Interfaz: elige dentro del juego o ventana")
+	}
+	next.UIMode = f.UIMode
+	if !config.ValidAnswerSound(f.AnswerSound) {
+		return config.Config{}, errors.New("Aviso: elige voz, pitido o ninguno")
+	}
+	next.AnswerSound = f.AnswerSound
+	volume, err := strconv.Atoi(strings.TrimSpace(f.AnswerVolume))
+	if err != nil || volume < config.MinAnswerVolume || volume > config.MaxAnswerVolume {
+		return config.Config{}, fmt.Errorf("Volumen del aviso: escribe un número entre %d y %d", config.MinAnswerVolume, config.MaxAnswerVolume)
+	}
+	next.AnswerVolume = volume
 	return next, nil
 }
 
@@ -197,6 +218,12 @@ func settingsChanges(old, next config.Config) (live, restart []string) {
 	}
 	if old.TipsSound != next.TipsSound {
 		live = append(live, "sonido de los consejos")
+	}
+	if old.UIMode != next.UIMode {
+		live = append(live, "interfaz")
+	}
+	if old.AnswerSound != next.AnswerSound || old.AnswerVolume != next.AnswerVolume {
+		live = append(live, "aviso de respuesta")
 	}
 	if old.WoWPath != next.WoWPath {
 		restart = append(restart, "carpeta de WoW")
