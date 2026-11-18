@@ -330,6 +330,7 @@ local function showStatus()
         for _, line in ipairs(ns.CombatStatusLines()) do say(line) end
     end
     if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
+    if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
@@ -355,6 +356,7 @@ local function handleSlash(msg)
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
+        if ns.ExportSheetNow then ns.ExportSheetNow() end -- hoja de personaje y hechizos (Sheet.lua)
         ns.SnapshotAll()
         if ns.Channel then ns.Channel.ForceCarousel() end -- canal en vivo: reenvia todo al cargar la app
         say("Datos guardados. Recargando la interfaz...")
