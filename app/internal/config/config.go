@@ -35,9 +35,13 @@ var defaultNVIDIAProvider = APIProvider{
 
 // Config is the persisted application configuration.
 type Config struct {
-	WoWPath            string   `json:"wowPath"`
-	Account            string   `json:"account"`
-	Hotkey             string   `json:"hotkey"`
+	WoWPath string `json:"wowPath"`
+	Account string `json:"account"`
+	Hotkey  string `json:"hotkey"`
+	// HotkeyMethod is how the panel key is listened for: HotkeyListen (a keyboard hook that
+	// only observes the key, so WoW still gets it: the default) or HotkeyExclusive (the
+	// system RegisterHotKey, which takes the key away from every other application).
+	HotkeyMethod       string   `json:"hotkeyMethod"`
 	Language           string   `json:"language"`
 	ProviderOrder      []string `json:"providerOrder"`
 	AntigravityCommand string   `json:"antigravityCommand"`
@@ -89,6 +93,47 @@ type Config struct {
 	VerifyAnswers bool `json:"verifyAnswers"`
 	// Profile is what the player says about how they play (see profile.go).
 	Profile Profile `json:"profile"`
+	// Mode is how the app reads the game: ModeOnDemand (the default) reads it only while the
+	// panel is open or a question is running; ModeContinuous keeps the old background reading.
+	Mode string `json:"mode"`
+	// OnDemandWaitSec is how long a question waits for fresh game data in ModeOnDemand before
+	// it goes ahead with what is cached (1..MaxOnDemandWaitSec).
+	OnDemandWaitSec int `json:"onDemandWaitSec"`
+}
+
+// The ways the app reads the game (Mode).
+const (
+	// ModeOnDemand reads the game only while the panel is open or a question is in flight.
+	// Proactive tips are off in this mode. It is the default.
+	ModeOnDemand = "bajo_demanda"
+	// ModeContinuous reads the game all the time, as before: pixel polling, tips and the
+	// app's own session tracker. Kept for debugging.
+	ModeContinuous = "continuo"
+)
+
+// Limits and default of the on-demand wait for fresh data.
+const (
+	DefaultOnDemandWaitSec = 8
+	MaxOnDemandWaitSec     = 20
+)
+
+// ValidMode reports whether s is one of the Mode values.
+func ValidMode(s string) bool {
+	return s == ModeOnDemand || s == ModeContinuous
+}
+
+// OnDemand reports whether the app reads the game only when asked.
+func (c *Config) OnDemand() bool {
+	return c.Mode != ModeContinuous
+}
+
+// EffectiveTipsMode is the tips mode in use: in on-demand mode the tips are off, whatever
+// TipsMode says, because the app does not read the game between questions.
+func (c *Config) EffectiveTipsMode() string {
+	if c.OnDemand() {
+		return TipsOff
+	}
+	return c.TipsMode
 }
 
 // The ways proactive tips reach the player (TipsMode).
@@ -115,12 +160,19 @@ const (
 	MaxFontSize = 14.0
 )
 
+// The values of Config.HotkeyMethod.
+const (
+	HotkeyListen    = "escuchar"  // keyboard hook: observes the key, WoW still receives it
+	HotkeyExclusive = "exclusivo" // RegisterHotKey: the key is consumed system-wide
+)
+
 // Defaults returns a Config populated with the default values.
 func Defaults() Config {
 	return Config{
 		WoWPath:            `C:\Program Files (x86)\World of Warcraft\_forever_`,
 		Account:            "",
 		Hotkey:             "Ctrl+Shift+Space",
+		HotkeyMethod:       HotkeyListen,
 		Language:           "es",
 		ProviderOrder:      []string{"antigravity", "codex", "api"},
 		AntigravityCommand: "agy",
@@ -145,15 +197,17 @@ func Defaults() Config {
 			"forevermeta.me",
 			"forevermastery.com",
 		},
-		PixelPollMs:   250,
-		AITimeoutSec:  120,
-		HideInCombat:  true,
-		StartWithWoW:  false,
-		Opacity:       90,
-		FontSize:      10,
-		WFTAdded:      true,
-		VerifyAnswers: true,
-		Profile:       Profile{Tone: ToneBrief},
+		PixelPollMs:     250,
+		AITimeoutSec:    120,
+		HideInCombat:    true,
+		StartWithWoW:    false,
+		Opacity:         90,
+		FontSize:        10,
+		WFTAdded:        true,
+		VerifyAnswers:   true,
+		Profile:         Profile{Tone: ToneBrief},
+		Mode:            ModeOnDemand,
+		OnDemandWaitSec: DefaultOnDemandWaitSec,
 	}
 }
 
@@ -223,6 +277,10 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 	if _, has := raw["profile"]; !has {
 		hasKey = false
 	}
+	// A file from before the on-demand mode gets the mode written once (it is the new default).
+	if _, has := raw["mode"]; !has {
+		hasKey = false
+	}
 	_, hasModels := raw["antigravityModels"]
 	modelsChanged := d.migrateAntigravityModels(hasModels)
 	if _, has := raw["wftAdded"]; !has {
@@ -284,7 +342,36 @@ func (c *Config) migrate() bool {
 	if c.migrateProfile() {
 		changed = true
 	}
+	if c.clampMode() {
+		changed = true
+	}
 	return changed
+}
+
+// clampMode makes Mode a known value (a file from before the setting, or an unknown value,
+// gets the on-demand default) and brings OnDemandWaitSec into its range (0 gets the
+// default). It reports whether a value changed.
+func (c *Config) clampMode() bool {
+	before := *c
+	if !ValidMode(c.Mode) {
+		c.Mode = ModeOnDemand
+	}
+	if c.OnDemandWaitSec <= 0 {
+		c.OnDemandWaitSec = DefaultOnDemandWaitSec
+	}
+	c.OnDemandWaitSec = min(c.OnDemandWaitSec, MaxOnDemandWaitSec)
+	return before.Mode != c.Mode || before.OnDemandWaitSec != c.OnDemandWaitSec
+}
+
+// ClampMode is clampMode for values set by the settings screen.
+func (c *Config) ClampMode() { c.clampMode() }
+
+// OnDemandWait returns OnDemandWaitSec as a duration.
+func (c *Config) OnDemandWait() time.Duration {
+	if c.OnDemandWaitSec <= 0 {
+		return DefaultOnDemandWaitSec * time.Second
+	}
+	return time.Duration(min(c.OnDemandWaitSec, MaxOnDemandWaitSec)) * time.Second
 }
 
 // syncTips makes TipsMode a valid mode and Proactive agree with it. When TipsMode is missing

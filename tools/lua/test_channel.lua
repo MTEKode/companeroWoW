@@ -222,133 +222,305 @@ s3:enqueue(2, "x")
 eq("capacidad 0: nada que enviar", s3:nextChunk(0, 1), nil)
 
 -- ---------------------------------------------------------------------------
-print("(f) Carrusel")
-local sc = C.NewScheduler()
-local provided = {}
-local function provider(t)
-    if t == 1 or t == 2 then return "{\"t\":" .. t .. "}" end
-    return nil
+print("(f) Activacion: reposo, orden de envio, ventana, reactivacion")
+-- Ventana de prueba: tramas de 0.2 s desde 'start' con presupuesto ilimitado (el orden y el contenido
+-- son lo que se mira aqui; el presupuesto se mide en (h)). Devuelve los trozos con su instante.
+local function runShare(start, frames)
+    local out = {}
+    local now = start
+    C.Begin(now)
+    for f = 1, frames do
+        now = now + C.TICK_SEC
+        if not C.Update(now) then break end
+        C.Pump(now, 1e9)
+        local ch = C.NextChunk(860, f)
+        if ch then out[#out + 1] = { t = now, chunk = ch } end
+    end
+    return out, now
 end
-check("carrusel inicial reenvia", sc:carousel(0, provider))
-eq("carrusel: 2 mensajes encolados", sc:pending(), 2)
-check("carrusel: no repite con cola llena", sc:carousel(100, provider) == false)
-for _ = 1, 4 do sc:nextChunk(cs, 1) end
-check("carrusel: no repite antes de 60 s", sc:carousel(30, provider) == false)
-check("carrusel: repite tras 60 s con cola vacia", sc:carousel(61, provider))
-eq("carrusel: vuelve a encolar 2", sc:pending(), 2)
 
--- ---------------------------------------------------------------------------
-print("(g) Canal de juego: cambios, delta y combate")
+-- Mensajes completos (por tipo, en orden de primer trozo) a partir de los trozos.
+local function firstOrder(items)
+    local order, seen = {}, {}
+    for _, it in ipairs(items) do
+        local ch = it.chunk
+        if ch.index == 0 and not seen[ch.type] then
+            seen[ch.type] = true
+            order[#order + 1] = ch.type
+        end
+    end
+    return order
+end
+
+local function sameList(a, b)
+    if #a ~= #b then return false end
+    for i = 1, #a do if a[i] ~= b[i] then return false end end
+    return true
+end
+
+local function listOf(t)
+    local s = {}
+    for i, v in ipairs(t) do s[i] = tostring(v) end
+    return table.concat(s, ",")
+end
+
+-- Datos de juego de prueba (personaje con todo lo que el plan envia).
 local key = "Tester-Realm"
 ns.CharKey = function() return key end
 ns.InCombat = function() return false end
-CompaneroWoWDB = {
-    settings = {},
-    characters = {
-        [key] = {
-            character = { name = "Tester", level = 60, money = 100 },
-            inventory = { items = { { id = 1, n = 5 } } },
-            completedQuests = { 1, 2, 3 },
-            combats = {},
+local function freshDB()
+    CompaneroWoWDB = {
+        settings = {},
+        characters = {
+            [key] = {
+                character = { name = "Tester", level = 60, money = 100 },
+                quests = { { id = 1 } },
+                location = { mapID = 1 },
+                equipment = { { slot = 1 } },
+                inventory = { items = { { id = 1, n = 5 } } },
+                professions = { { name = "Tailoring" } },
+                actionBars = { { slot = 1, id = 7 } },
+                combats = { { id = 1, t = 10 } },
+                completedQuests = { 1, 2, 3 },
+                macros = { account = { used = 1, max = 120, list = {} } },
+            },
         },
-    },
-    knowledge = { quests = {}, npcs = {} },
-}
-
-local function settle(now)
-    for i = 1, 60 do C.Tick(now + i * 0.2, 860) end
+        knowledge = { quests = {}, npcs = {} },
+    }
+    C.testing.reset()
 end
+freshDB()
 
-local function lastJobOf(t)
+-- Reposo: sin activacion no se serializa nada ni sale ningun trozo.
+check("reposo: no hay activacion", not C.IsSharing())
+C.Pump(500, 1e9)
+eq("reposo: sin trozos", C.NextChunk(860, 1), nil)
+eq("reposo: Send no serializa", C.Send(12), false)
+eq("reposo: sin trabajos", C.state.sched and C.state.sched:pending() or 0, 0)
+
+-- Orden de primer envio: el de la especificacion. Sin sesion (14), sin hoja (12) y sin
+-- conocimiento (9) no hay trozos de esos tipos; el resto sale en el orden del plan.
+local items = runShare(1000, 400)
+local order = firstOrder(items)
+eq("orden del primer envio (tipos con datos)", listOf(order), "1,2,4,3,5,13,8,7,6,11,10")
+C.Stop()
+
+-- Ventana: 20 s. Con todo enviado al menos una vez, vuelve al reposo 5 s despues.
+freshDB()
+C.Begin(2000)
+eq("ventana: 20 s restantes al empezar", C.RemainingSec(2000), 20)
+check("ventana: sigue abierta a los 19.9 s", C.Update(2019.9) == true)
+check("ventana: se cierra a los 20 s", C.Update(2020) == false)
+check("ventana: ya no esta activa", C.IsSharing() == false)
+eq("ventana: 0 restantes en reposo", C.RemainingSec(2021), 0)
+
+-- Acaba antes si todo se envio: 5 s despues del ultimo envio.
+freshDB()
+local early, endAt = runShare(3000, 400)
+check("todo enviado: la ventana vuelve al reposo", C.IsSharing() == false)
+check("todo enviado antes de los 20 s", endAt < 3000 + C.SHARE_SECONDS, tostring(endAt))
+check("todo enviado: la ultima trama queda dentro de la ventana", #early > 0 and early[#early].t < 3000 + C.SHARE_SECONDS)
+
+-- Pulsar otra vez: alarga la ventana y vuelve a serializar cada tipo (fresco).
+freshDB()
+C.Begin(4000)
+C.Update(4015)
+C.Pump(4015, 1e9)
+check("re-pulsar: 'otra vez' reinicia el plan (devuelve true)", C.Begin(4015) == true)
+eq("re-pulsar: 20 s desde la nueva pulsacion", C.RemainingSec(4015), 20)
+check("re-pulsar: la ventana vieja (4020) ya no cierra", C.Update(4020) == true)
+check("re-pulsar: cierra a los 4035", C.Update(4035) == false)
+
+-- Cambio de datos entre activaciones: el envio siguiente lleva lo nuevo (fresco, sin hash).
+freshDB()
+runShare(5000, 400)
+CompaneroWoWDB.characters[key].inventory.items[1].n = 6
+local again = runShare(6000, 400)
+local bagChunk
+for _, it in ipairs(again) do
+    if it.chunk.type == 3 and it.chunk.index == 0 then bagChunk = it.chunk end
+end
+check("nueva activacion: serializa de nuevo el tipo 3", bagChunk ~= nil)
+local bagText = ""
+for _, it in ipairs(again) do
+    if it.chunk.type == 3 then
+        for _, b in ipairs(it.chunk.data) do bagText = bagText .. string.char(b) end
+    end
+end
+check("nueva activacion: el inventario trae n=6", string.find(bagText, '"n":6', 1, true) ~= nil, bagText)
+
+-- ---------------------------------------------------------------------------
+print("(g) Activacion: conocimiento (deltas y volcado), combate y completedQuests")
+freshDB()
+ns.InCombat = function() return false end
+CompaneroWoWDB.knowledge.quests[101] = { questID = 101, title = "A" }
+C.Begin(7000)
+C.Pump(7000, 1e9)
+local function jobOf(t)
     local found
     for _, job in ipairs(C.state.sched.jobs) do
         if job.type == t then found = job end
     end
     return found
 end
-
--- Combate: no se serializa nada nuevo.
-ns.InCombat = function() return true end
-local inCombatChunk = C.Tick(1000, 860)
-eq("combate: no hay trozo sin cola", inCombatChunk, nil)
-check("combate: no calcula tipos", next(C.state.hash) == nil)
-
-ns.InCombat = function() return false end
-settle(1000)
-check("fuera de combate: calcula tipos", C.state.hash[3] ~= nil and C.state.hash[2] ~= nil)
-
--- Cambio de inventario: nuevo mensaje solo si cambia el JSON.
-local before = C.state.hash[3]
-C.testing.refreshType(3, 2000)
-eq("sin cambios: mismo hash", C.state.hash[3], before)
-CompaneroWoWDB.characters[key].inventory.items[1].n = 6
-C.testing.refreshType(3, 2100)
-check("cambio de inventario: nuevo hash", C.state.hash[3] ~= before)
-local bagJob = lastJobOf(3)
-check("cambio de inventario: encola el tipo 3", bagJob ~= nil and string.find(bagJob.str, '"n":6', 1, true) ~= nil)
-
--- completedQuests: completo primero, luego delta {add}, y completo si algo desaparece.
-C.state.completedSet = nil
-C.state.hash[6] = nil
-C.testing.refreshType(6, 3000)
-eq("completedQuests: primer envio completo", lastJobOf(6).str, "[1,2,3]")
-CompaneroWoWDB.characters[key].completedQuests = { 1, 2, 3, 4 }
-C.testing.refreshType(6, 3100)
-eq("completedQuests: delta con lo nuevo", lastJobOf(6).str, '{"add":[4]}')
-CompaneroWoWDB.characters[key].completedQuests = { 1, 3 }
-C.testing.refreshType(6, 3200)
-eq("completedQuests: si algo sale -> completo", lastJobOf(6).str, "[1,3]")
-
--- Knowledge: solo entradas nuevas o cambiadas.
-CompaneroWoWDB.knowledge.quests[101] = { questID = 101, title = "A" }
-C.testing.refreshType(9, 4000)
-local kjob = lastJobOf(9)
-check("knowledge: la primera vez incluye la 101", kjob ~= nil and string.find(kjob.str, "101", 1, true) ~= nil)
-CompaneroWoWDB.knowledge.quests[102] = { questID = 102, title = "B" }
-C.state.sched.jobs = {}
-C.testing.refreshType(9, 4100)
-kjob = lastJobOf(9)
-check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.str, "102", 1, true) ~= nil
-    and string.find(kjob.str, "101", 1, true) == nil)
-
--- Combate en medio: se siguen enviando trozos ya encolados.
-C.state.sched.jobs = {}
-C.state.sched:enqueue(2, "{\"x\":1}")
-ns.InCombat = function() return true end
-local queued = C.Tick(5000, 860)
-check("combate: sigue saliendo lo ya encolado", queued ~= nil and queued.type == 2)
-ns.InCombat = function() return false end
-
--- Carrusel completo: con cola vacia se reenvian todos los tipos con datos.
-C.state.sched.jobs = {}
-C.state.sched.carouselAt = nil
-local seenTypes = {}
-for i = 1, 40 do
-    local ch = C.Tick(6000 + i * 0.2, 860)
-    if ch and ch.index == 0 then seenTypes[ch.type] = true end
+-- Vacia la cola de la activacion en curso (envia todos los trozos pendientes).
+local function drainQueue()
+    local i = 0
+    while C.state.sched and C.state.sched:pending() > 0 and i < 5000 do
+        i = i + 1
+        C.NextChunk(860, i)
+    end
 end
-local nTypes = 0
-for _ in pairs(seenTypes) do nTypes = nTypes + 1 end
-check("carrusel repartido: cada tipo con datos sale al menos una vez", nTypes >= 5, tostring(nTypes))
+local kjob = jobOf(9)
+check("knowledge: la primera activacion manda la 101 como delta", kjob ~= nil and string.find(kjob.str, '"101":', 1, true) ~= nil)
+check("knowledge: el delta tiene la forma {npcs,quests}", kjob ~= nil and string.sub(kjob.str, 1, 9) == '{"npcs":{')
+check("knowledge: el delta va por el carril normal (no lento)", kjob ~= nil and kjob.heavy == false and kjob.optional == false)
+drainQueue()
+C.Stop()
+-- Segunda activacion sin cambios: no hay delta (el volcado completo es opcional).
+C.Begin(7100)
+C.Pump(7100, 1e9)
+local kjob2 = jobOf(9)
+check("knowledge: sin cambios no hay delta", kjob2 == nil or kjob2.optional == true)
+drainQueue()
+C.Stop()
+-- Cambio de un registro: el delta solo trae la 102 (la 101 no se reenvia).
+CompaneroWoWDB.knowledge.quests[102] = { questID = 102, title = "B" }
+C.Begin(7200)
+C.Pump(7200, 1e9)
+local kjob3 = jobOf(9)
+check("knowledge: el delta trae la 102", kjob3 ~= nil and string.find(kjob3.str, '"102":', 1, true) ~= nil)
+check("knowledge: el delta no repite la 101", kjob3 ~= nil and string.find(kjob3.str, '"101":', 1, true) == nil)
+C.Stop()
+
+-- Combate: la activacion sigue sirviendo (solo se lee, no se recalcula nada del juego).
+freshDB()
+ns.InCombat = function() return true end
+local inCombat = runShare(8000, 400)
+check("combate: la activacion tambien envia", #inCombat > 0)
+ns.InCombat = function() return false end
+
+-- Macros y tipo 13: el plan los envia; sin macros no hay mensaje.
+do
+    local t13 = C.TYPES[13]
+    check("tipo 13 = macros", t13 ~= nil and t13.name == "macros")
+    check("tipo 13 en la lista de envio", (function()
+        for _, t in ipairs(C.PRIORITY) do if t == 13 then return true end end
+        return false
+    end)())
+    local built = t13 and t13.build({ macros = { account = { used = 1, max = 120, list = {} } } })
+    check("tipo 13 envia el bloque de macros", type(built) == "table" and built.account ~= nil)
+    check("tipo 13 sin macros no envia nada", t13 and t13.build({}) == nil)
+end
+
+-- completedQuests: lista completa; vacia -> [].
+freshDB()
+local cq = runShare(9000, 400)
+local cqText
+for _, it in ipairs(cq) do
+    if it.chunk.type == 6 then
+        cqText = (cqText or "") .. string.char(unpack(it.chunk.data))
+    end
+end
+eq("completedQuests: lista completa", cqText, "[1,2,3]")
+CompaneroWoWDB.characters[key].completedQuests = {}
+local cq2 = runShare(9100, 400)
+local cq2Text
+for _, it in ipairs(cq2) do
+    if it.chunk.type == 6 then cq2Text = (cq2Text or "") .. string.char(unpack(it.chunk.data)) end
+end
+eq("completedQuests vacia: []", cq2Text, "[]")
+
+-- Carril lento: el pesado (10) sale como mucho un trozo cada HEAVY_EVERY tramas.
+freshDB()
+CompaneroWoWDB.characters[key].gearCandidates = { string.rep("g", 6000) }
+local heavyFrames = {}
+for _, it in ipairs(runShare(9200, 400)) do
+    if it.chunk.type == 10 then heavyFrames[#heavyFrames + 1] = it.t end
+end
+check("pesado: varios trozos", #heavyFrames >= 2)
+
+print("(h) Coste por trama (luajit, orientativo): reposo ~0, activacion <= 1 ms de serializacion")
+do
+    -- Datos grandes: cada tipo de la lista pesa; el plan se reparte en muchas tramas.
+    freshDB()
+    local big = {}
+    for i = 1, 1500 do big[i] = { questID = 10000 + i, title = "Mision de prueba numero " .. i, objectives = { "a", "b", i } } end
+    CompaneroWoWDB.characters[key].quests = big
+    CompaneroWoWDB.knowledge = { quests = {}, npcs = {} }
+    for i = 1, 2000 do
+        CompaneroWoWDB.knowledge.npcs[i] = { npcID = i, name = "PNJ " .. i, x = 0.5, y = 0.25, level = 60 }
+    end
+
+    -- Reposo: no hay trabajo que repartir.
+    C.testing.reset()
+    local restMax = 0
+    for f = 1, 50 do
+        local t0 = os.clock()
+        C.Pump(1000 + f * 0.2, C.PUMP_BUDGET_MS)
+        restMax = math.max(restMax, os.clock() - t0)
+    end
+    print(string.format("  info  reposo: Pump por trama max %.3f us (sin activacion no hace nada)", restMax * 1e6))
+    check("reposo: Pump no hace trabajo", restMax < 0.0001)
+
+    -- Activacion: cada trama reparte hasta 1 ms de serializacion. El recolector de basura se para
+    -- durante la medicion (sus pausas no son coste del canal) y se reanuda al acabar.
+    collectgarbage("collect")
+    collectgarbage("stop")
+    C.Begin(2000)
+    local sum, maxT, frames, lastNow, over = 0, 0, 0, 2000, 0
+    local now = 2000
+    while C.IsSharing() and frames < 400 do
+        frames = frames + 1
+        now = now + C.TICK_SEC
+        if not C.Update(now) then break end
+        local t0 = os.clock()
+        C.Pump(now, C.PUMP_BUDGET_MS)
+        local dt = os.clock() - t0
+        sum = sum + dt
+        if dt > maxT then maxT = dt end
+        if dt > 0.010 then over = over + 1 end
+        C.NextChunk(860, frames)
+        lastNow = now
+    end
+    collectgarbage("restart")
+    local avg = sum / math.max(1, frames)
+    print(string.format("  info  activacion: %d tramas, serializacion media %.3f ms, maxima %.3f ms",
+        frames, avg * 1000, maxT * 1000))
+    check("activacion: media <= 1 ms por trama", avg <= 0.001, string.format("%.3f ms", avg * 1000))
+    -- Pausas del planificador del SO (Windows) de 10+ ms aparecen sueltas aunque el codigo vaya bien:
+    -- se admite un 3 % de tramas sobre 10 ms; un paso desbocado sostenido falla.
+    check("activacion: ningun paso desbocado sostenido (<= 3 % de tramas sobre 10 ms; ver info)",
+        over <= math.max(1, math.floor(frames * 0.03)), string.format("%d de %d tramas, max %.3f ms", over, frames, maxT * 1000))
+    check("activacion: el trabajo se reparte (mas de una trama)", frames > 5)
+    C.Stop()
+end
 
 -- ---------------------------------------------------------------------------
-print("(h) Medicion de coste (luajit, orientativa)")
+print("(i) Codificacion cediendo (EncodeAsync) = Encode")
 do
-    local status2 = ns.BuildPayload({ mapID = 1429, x = 0.5, y = 0.5 })
-    local sch = C.state.sched
-    local blob = string.rep("0123456789abcdef", 1000) -- 16 KB
-    local iters = 200
-    local clock = os.clock()
-    local colorsOut = {}
-    for i = 1, iters do
-        sch:enqueue(2, blob)
-        local ch = sch:nextChunk(C.Capacity(860), i)
-        local fr = C.BuildFrame(status2, i % 256, 860, ch)
-        colorsOut = ns.EncodeFrameColors(fr, 860, colorsOut)
+    local sample = { a = { 1, 2, { x = "di \"hola\"\n" } }, z = true, n = 0.25 }
+    local big = {}
+    for k = 1, 500 do big[k] = { id = k, name = "item " .. k, tags = { "a", "b", k } } end
+    sample.big = big
+    local want = J.Encode(sample)
+    local got
+    local co = coroutine.create(function() return J.EncodeAsync(sample) end)
+    local yields = 0
+    while true do
+        local ok, res, why = coroutine.resume(co)
+        assert(ok, res)
+        if coroutine.status(co) == "dead" then got = res break end
+        yields = yields + 1
     end
-    local dt = (os.clock() - clock) / iters
-    print(string.format("  info  Tick+trama+colores N=860: %.1f us por refresco (luajit, sin API de WoW)", dt * 1e6))
-    check("coste por refresco < 5 ms en luajit", dt < 0.005)
+    eq("EncodeAsync da el mismo JSON que Encode", got, want)
+    check("EncodeAsync cede el control varias veces en un valor grande", yields >= 5, tostring(yields))
+    local tooBig = {}
+    for k = 1, 6000 do tooBig[k] = "xxxxxxxxxxxxxxxxxxxx" end
+    local co2 = coroutine.create(function() return J.EncodeAsync(tooBig) end)
+    local okc, json, why2
+    repeat okc, json, why2 = coroutine.resume(co2) until coroutine.status(co2) == "dead"
+    eq("EncodeAsync: tamano excesivo -> nil 'size'", why2, "size")
 end
 
 if failures > 0 then

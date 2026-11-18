@@ -38,6 +38,8 @@ var wantNames = []string{
 	"optimizar_rotacion",
 	"consejo_barras",
 	"generar_comando_barras",
+	"crear_macro",
+	"revisar_macros",
 	"capturar_pantalla",
 	"estado_conexion",
 	"obtener_ubicacion",

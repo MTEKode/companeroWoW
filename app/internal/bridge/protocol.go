@@ -79,7 +79,7 @@ type LiveState struct {
 	LastEventCode            uint8
 	EventSeq                 uint8
 	EventArg                 uint32
-	FreeBagSlots             uint8
+	ShareRemainingSec        uint8 // share window countdown (byte 30), 0 when the addon is at rest
 	Seq                      uint8
 	ReadAt                   time.Time
 }
@@ -348,29 +348,29 @@ func EncodeForTest(s LiveState, seq uint8) [NumBlocks][3]byte {
 func parsePayload(p []byte) LiveState {
 	f := p[23]
 	return LiveState{
-		MapID:          be16(p[0:2]),
-		X:              float64(be16(p[2:4])) / 65535,
-		Y:              float64(be16(p[4:6])) / 65535,
-		Level:          p[6],
-		XPPct:          p[7],
-		Money:          be32(p[8:12]),
-		TrackedQuestID: be32(p[12:16]),
-		TargetNpcID:    be32(p[16:20]),
-		TargetLevel:    p[20],
-		HealthPct:      p[21],
-		PowerPct:       p[22],
-		InCombat:       f&(1<<0) != 0,
-		Dead:           f&(1<<1) != 0,
-		Resting:        f&(1<<2) != 0,
-		Mounted:        f&(1<<3) != 0,
-		InGroup:        f&(1<<4) != 0,
-		TargetHostile:  f&(1<<5) != 0,
-		HasTarget:      f&(1<<6) != 0,
-		InInstance:     f&(1<<7) != 0,
-		LastEventCode:  p[24],
-		EventSeq:       p[25],
-		EventArg:       be32(p[26:30]),
-		FreeBagSlots:   p[30],
+		MapID:             be16(p[0:2]),
+		X:                 float64(be16(p[2:4])) / 65535,
+		Y:                 float64(be16(p[4:6])) / 65535,
+		Level:             p[6],
+		XPPct:             p[7],
+		Money:             be32(p[8:12]),
+		TrackedQuestID:    be32(p[12:16]),
+		TargetNpcID:       be32(p[16:20]),
+		TargetLevel:       p[20],
+		HealthPct:         p[21],
+		PowerPct:          p[22],
+		InCombat:          f&(1<<0) != 0,
+		Dead:              f&(1<<1) != 0,
+		Resting:           f&(1<<2) != 0,
+		Mounted:           f&(1<<3) != 0,
+		InGroup:           f&(1<<4) != 0,
+		TargetHostile:     f&(1<<5) != 0,
+		HasTarget:         f&(1<<6) != 0,
+		InInstance:        f&(1<<7) != 0,
+		LastEventCode:     p[24],
+		EventSeq:          p[25],
+		EventArg:          be32(p[26:30]),
+		ShareRemainingSec: p[30],
 	}
 }
 
@@ -397,7 +397,7 @@ func encodePayload(s LiveState) [PayloadLen]byte {
 	p[24] = s.LastEventCode
 	p[25] = s.EventSeq
 	put32(p[26:30], s.EventArg)
-	p[30] = s.FreeBagSlots
+	p[30] = s.ShareRemainingSec
 	p[31] = CRC8(p[:crcPayloadLen])
 	return p
 }
