@@ -1,5 +1,5 @@
 // Package ui is the overlay panel: a native Win32 window (no browser engine) shown on top
-// of WoW and toggled by a global hotkey. The types, the window state file, the Markdown
+// of WoW and opened by a global key. The types, the window state file, the Markdown
 // conversion and the layout arithmetic are platform-neutral and tested everywhere; only
 // the window itself is Windows-specific.
 package ui
@@ -52,12 +52,28 @@ type Status struct {
 	// Model is the status bar's model line ("Modelo: Gemini 4 Hydrogen"); empty when agy is not
 	// in the provider order.
 	Model string `json:"model,omitempty"`
+	// Idle is true in the on-demand mode while the game is not read: the bar says so instead
+	// of the bridge state.
+	Idle bool `json:"idle,omitempty"`
+	// ShareRemainingSec is the countdown of the addon's share window (status payload byte 30);
+	// 0 while the addon is at rest.
+	ShareRemainingSec int `json:"shareRemainingSec,omitempty"`
+	// KeyKnown is true once the key data types (character, sheet, quests, equipment) have
+	// arrived; KeyAgeSec is the age of the oldest of them.
+	KeyKnown  bool  `json:"keyKnown,omitempty"`
+	KeyAgeSec int64 `json:"keyAgeSec,omitempty"`
+
+	// shareLine is the share line of the status bar, worked out by the window (see shareNotice).
+	shareLine string
 }
 
 // Options configures Run.
 type Options struct {
-	// Hotkey is the global shortcut, for example "Ctrl+Shift+Space".
+	// Hotkey is the panel key, for example "Ctrl+Shift+Space".
 	Hotkey string
+	// HotkeyMethod is config.HotkeyListen (a keyboard hook that only observes the key: the
+	// default) or config.HotkeyExclusive (RegisterHotKey). Other values mean the default.
+	HotkeyMethod string
 	// StatePath is the window.json file that remembers position and size.
 	StatePath string
 	Backend   Backend
@@ -71,6 +87,12 @@ type Options struct {
 	// AnswerSettingsChanged is called when the settings screen saves a new player profile or the
 	// answer verifier setting, so that the assistant follows them without a restart. It may be nil.
 	AnswerSettingsChanged func(profile config.Profile, verify bool)
+	// PanelVisibility is called when the panel is shown (true) or hidden (false), from the UI
+	// thread. The on-demand mode reads the game only while it is shown. It may be nil.
+	PanelVisibility func(visible bool)
+	// ModeChanged is called when the settings screen saves a new mode (config.ModeOnDemand or
+	// config.ModeContinuous), so that the app follows it without a restart. It may be nil.
+	ModeChanged func(mode string)
 	// Avoid returns the screen rectangle the panel must never cover: the WoW pixel strip
 	// at the top-left of the client area. ok is false when WoW is not found. It may be
 	// called from any goroutine.

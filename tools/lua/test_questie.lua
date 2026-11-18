@@ -375,7 +375,9 @@ S.now = S.now + 5
 S.clock = 501
 SlashCmdList.COMPA("sync")
 eq("/compa sync exporta aunque el throttle este activo", CompaneroWoWDB.characters[key].questie.exportedAt ~= before, true)
-check("/compa sync recarga la interfaz", #W.callsNamed("ReloadUI") == 1)
+check("/compa sync (sin 'reload') no recarga la interfaz", #W.callsNamed("ReloadUI") == 0)
+SlashCmdList.COMPA("sync reload")
+check("/compa sync reload recarga la interfaz", #W.callsNamed("ReloadUI") == 1)
 
 -- Estado: cuenta de misiones y de la zona.
 check("estado: 3 misiones y 1 en zona", string.find(ns.QuestieStatusLine(), "3 misiones exportadas, 1 disponibles", 1, true) ~= nil,

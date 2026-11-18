@@ -2,7 +2,8 @@
 -- (cuenta, compartido por personajes): vuelos (nodos y tiempos/costes medidos), vendedores,
 -- instructores, cadenas de misiones y consumibles. Solo por eventos: sin OnUpdate y sin trabajo
 -- por frame. Dentro de combate no se lee nada: el trabajo se aplaza hasta salir de combate.
--- Los cambios se envian por el canal en vivo (msgType 16), solo los bloques cambiados.
+-- Los cambios se envian en la ventana de compartir (msgType 16, Channel.lua), solo los bloques
+-- cambiados desde el ultimo envio.
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
@@ -32,7 +33,6 @@ W.RIDE_MAX_SEC = 3600      -- un trayecto mas largo se descarta
 W.CHANNEL_BUDGET = 50000   -- bytes de JSON por mensaje msgType 16 (Json.MAX_BYTES del canal: 98304)
 W.CHANNEL_FULL_EVERY = 600 -- s entre reenvios completos del mundo
 
-local CHANNEL_TYPE = 16
 local MAX_PENDING = 80     -- trabajo aplazado por combate (se descarta lo que sobre)
 
 -- Secciones con tope de numero de entradas (sectionOf) y las que expulsan la entrada mas antigua.
@@ -45,7 +45,7 @@ local EVICTABLE = { vendors = true, trainers = true }
 -- Estado en memoria (no se guarda). Hashes y tamanos de cada entrada, para el canal y el tope.
 local idx = {
     indexed = false, total = 0, refused = 0,
-    sizes = {}, hashes = {}, paths = {}, counts = {},
+    sizes = {}, hashes = {}, paths = {}, json = {}, counts = {},
     dirty = {}, sent = {}, fullAt = nil,
 }
 local S = {
@@ -79,11 +79,6 @@ end
 local function playerPos()
     if ns.GetPlayerPosition then return ns.GetPlayerPosition() end
     return nil, nil, nil
-end
-
-local function touchChannel()
-    local C = ns.Channel
-    if C and C.Touch then C.Touch(CHANNEL_TYPE) end
 end
 
 -- Numero de una cadena del tooltip: «1.234» y «1,234» son miles; «2,5» y «2.5» son decimales.
@@ -196,6 +191,7 @@ local function forget(flat, path)
     local sec = sectionOf(path)
     idx.total = idx.total - (idx.sizes[flat] or 0)
     idx.sizes[flat], idx.hashes[flat], idx.paths[flat], idx.sent[flat] = nil, nil, nil, nil
+    idx.json[flat] = nil
     idx.dirty[flat] = nil
     if sec and idx.counts[sec] then idx.counts[sec] = idx.counts[sec] - 1 end
     setAt(path, nil)
@@ -235,6 +231,7 @@ local function index()
         local flat = flatOf(path)
         local size = #json + #flat
         idx.sizes[flat] = size
+        idx.json[flat] = json
         idx.hashes[flat] = ns.Channel.HashText(json)
         idx.paths[flat] = copyPath(path)
         idx.total = idx.total + size
@@ -285,11 +282,11 @@ local function store(path, value)
     setAt(path, value)
     idx.total = idx.total - old + size
     idx.sizes[flat] = size
+    idx.json[flat] = json
     idx.hashes[flat] = h
     idx.paths[flat] = copyPath(path)
     if isNew and sec then idx.counts[sec] = (idx.counts[sec] or 0) + 1 end
     idx.dirty[flat] = true
-    touchChannel()
     return true
 end
 
@@ -975,36 +972,56 @@ end
 ns.WorldStatusLine = W.StatusLine
 
 -- ---------------------------------------------------------------------------
--- Canal (msgType 16): solo los bloques cambiados
+-- Ventana de compartir (msgType 16): solo los bloques cambiados
 -- ---------------------------------------------------------------------------
 
--- Pone value en root siguiendo path. Las claves van como texto: el JSON es objeto, no array.
-local function place(root, path, value)
-    local cur = root
+-- Arbol de claves -> JSON. Las hojas llevan el JSON ya codificado de su entrada (store), asi que
+-- componer el mensaje no recorre tablas vivas (la serializacion puede ceder entre tramas).
+local function treeInsert(tree, path, json)
+    local cur = tree
     for i = 1, #path - 1 do
         local k = tostring(path[i])
-        if type(cur[k]) ~= "table" then cur[k] = {} end
-        cur = cur[k]
+        local nxt = cur.kids[k]
+        if not nxt then
+            nxt = { kids = {} }
+            cur.kids[k] = nxt
+        end
+        cur = nxt
     end
-    cur[tostring(path[#path])] = value
+    cur.kids[tostring(path[#path])] = { json = json }
 end
 
--- Marca todo el mundo para reenviarlo (la siguiente vez que el canal lo pida).
+local function treeJSON(node)
+    if node.json then return node.json end
+    local keys = {}
+    for k in pairs(node.kids) do keys[#keys + 1] = k end
+    sort(keys)
+    local parts = {}
+    for i, k in ipairs(keys) do
+        parts[i] = ns.Json.Quote(k) .. ":" .. treeJSON(node.kids[k])
+    end
+    return "{" .. concat(parts, ",") .. "}"
+end
+
+-- Marca todo el mundo para reenviarlo (/compa sync): la siguiente ventana lo manda entero.
 function W.ForceFull()
     idx.fullAt = nil
     idx.sent = {}
 end
 
--- true si quedan bloques por enviar (el canal lo vuelve a pedir).
+-- true si quedan bloques por enviar (la ventana lo vuelve a pedir si tiene tiempo).
 function W.ChannelPending()
     return next(idx.dirty) ~= nil
 end
 
--- JSON con los bloques cambiados desde el ultimo envio (o nil si no hay nada). Mismo esquema que
--- CompaneroWoWDB.world, con solo las entradas cambiadas. Con presupuesto CHANNEL_BUDGET por mensaje;
--- lo que no cabe queda pendiente para el siguiente. Cada CHANNEL_FULL_EVERY s reenvia todo.
-function W.ChannelDelta(now)
+-- JSON con los bloques cambiados desde el ultimo envio, con el mismo esquema que
+-- CompaneroWoWDB.world (solo las entradas cambiadas), o nil si no hay nada. Presupuesto
+-- CHANNEL_BUDGET por mensaje; lo que no cabe queda pendiente. Cada CHANNEL_FULL_EVERY s reenvia todo.
+-- Las entradas que salen se dan por enviadas aqui: Channel.lua no construye otro mensaje 16 hasta
+-- que el anterior salga, asi que no se pierden.
+function W.ShareMessage()
     if not index() then return nil end
+    local now = nowSec()
     if idx.fullAt == nil or now - idx.fullAt >= W.CHANNEL_FULL_EVERY then
         idx.fullAt = now
         idx.sent = {}
@@ -1014,28 +1031,22 @@ function W.ChannelDelta(now)
     local list = {}
     for flat in pairs(idx.dirty) do list[#list + 1] = flat end
     sort(list)
-    local root, used = {}, 0
+    local tree, used = { kids = {} }, 0
     for _, flat in ipairs(list) do
-        local path, h = idx.paths[flat], idx.hashes[flat]
-        if path == nil or h == nil or idx.sent[flat] == h then
+        local path, h, json = idx.paths[flat], idx.hashes[flat], idx.json[flat]
+        if path == nil or h == nil or json == nil or idx.sent[flat] == h then
             idx.dirty[flat] = nil
         else
-            local value = getAt(path)
-            local json = value ~= nil and ns.Json.Encode(value) or nil
-            if json == nil then
-                idx.dirty[flat] = nil
-            else
-                local cost = #json + #flat + 8
-                if used > 0 and used + cost > W.CHANNEL_BUDGET then break end
-                place(root, path, value)
-                used = used + cost
-                idx.sent[flat] = h
-                idx.dirty[flat] = nil
-            end
+            local cost = #json + #flat + 8
+            if used > 0 and used + cost > W.CHANNEL_BUDGET then break end
+            treeInsert(tree, path, json)
+            used = used + cost
+            idx.sent[flat] = h
+            idx.dirty[flat] = nil
         end
     end
     if used == 0 then return nil end
-    return ns.Json.Encode(root)
+    return treeJSON(tree)
 end
 
 -- ---------------------------------------------------------------------------

@@ -245,6 +245,25 @@ func (g *Service) LevelingPace(target int) (any, error) {
 	in := paceInput{
 		Now: now, Level: level, XPPct: xpPct, XPMax: xpMax, Source: source, At: at, Target: target,
 	}
+	if g.onDemand.Load() {
+		// On demand the session and its rolling samples come from the addon.
+		cur, prev, samples, ok := g.addonSessions()
+		if ok {
+			in.Current = &cur
+			for _, se := range prev {
+				if !se.EndedAt.IsZero() {
+					in.Recent = append(in.Recent, se)
+				}
+			}
+			if len(samples) >= 2 {
+				in.Samples = samples
+			}
+		}
+		if in.Samples == nil && g.pace != nil {
+			in.Samples = g.pace.Window()
+		}
+		return buildPace(in), nil
+	}
 	// The running session comes from the tracker; the store's open rows are the same session
 	// and are left out of the finished ones.
 	if g.sessions != nil {

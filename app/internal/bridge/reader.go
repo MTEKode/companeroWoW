@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
@@ -37,11 +38,22 @@ func FindWoWWindow() (hwnd uintptr, rect image.Rectangle, err error) {
 // Reader polls the top-left StripWidth x StripHeight region (NumBlocks blocks, up to 16 px
 // pitch) of the WoW client area and decodes it.
 // It keeps working across WoW being closed, reopened or minimized.
+//
+// The reader can be switched off (SetActive). While it is off the poll goroutine waits on a
+// channel: no window is located, no pixel is copied and no capture is made. A new reader is
+// active, so the continuous mode and the tools that run a reader of their own are unchanged.
 type Reader struct {
 	pollEvery time.Duration
 	events    chan LiveState
 
 	startOnce sync.Once
+
+	// active gates the poll loop (see SetActive); wake ends the wait of an inactive loop.
+	activeMu sync.Mutex
+	active   bool
+	wake     chan struct{}
+	// captures counts the screen and window copies made so far (see Captures).
+	captures atomic.Int64
 
 	mu      sync.RWMutex
 	latest  LiveState
@@ -79,6 +91,8 @@ func NewReader(pollEvery time.Duration) *Reader {
 		grabScreen: capture.GrabScreen,
 		now:        time.Now,
 		channel:    NewChannel(),
+		active:     true,
+		wake:       make(chan struct{}, 1),
 	}
 	r.grabWindow = r.win.grab
 	return r
@@ -90,6 +104,34 @@ func (r *Reader) Start(ctx context.Context) {
 	r.startOnce.Do(func() {
 		go r.run(ctx)
 	})
+}
+
+// SetActive switches the poll loop on or off. While it is off no capture is made and the
+// loop only waits; switching it on polls at once. The call never blocks.
+func (r *Reader) SetActive(on bool) {
+	r.activeMu.Lock()
+	changed := r.active != on
+	r.active = on
+	r.activeMu.Unlock()
+	if changed && on {
+		select {
+		case r.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Active reports whether the poll loop is on (see SetActive).
+func (r *Reader) Active() bool {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	return r.active
+}
+
+// Captures is the number of screen or window copies the reader has made since it was
+// created. It does not move while the reader is inactive; --diag reports it.
+func (r *Reader) Captures() int64 {
+	return r.captures.Load()
 }
 
 // Channel returns the live data channel (v3 messages). Its store is safe to read from any goroutine.
@@ -123,6 +165,16 @@ func (r *Reader) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		}
+		if !r.Active() {
+			// Idle: no step, so no window lookup and no capture, until SetActive(true).
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.wake:
+			}
+			timer.Reset(0)
+			continue
 		}
 		timer.Reset(r.step())
 	}
@@ -187,6 +239,7 @@ func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) 
 		}
 		screenErr = err
 	}
+	r.captures.Add(1)
 	own, err := r.grabWindow(hwnd, rect)
 	if err != nil {
 		if screenErr != nil {
@@ -210,6 +263,7 @@ func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) 
 // decodeScreen copies the strip from the screen and decodes it.
 func (r *Reader) decodeScreen(rect image.Rectangle) (Decoded, error) {
 	strip := image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+rect.Dx(), rect.Min.Y+StripHeightV3)
+	r.captures.Add(1)
 	img, err := r.grabScreen(strip)
 	if err != nil {
 		return Decoded{}, fmt.Errorf("grab pixel strip: %w", err)

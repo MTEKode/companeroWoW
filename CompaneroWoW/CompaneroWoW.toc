@@ -20,7 +20,14 @@ Marks.lua
 Bridge.lua
 Channel.lua
 World.lua
+Share.lua
 Sheet.lua
 Events.lua
 Combat.lua
+Session.lua
 Bars.lua
+Macros.lua
+Markup.lua
+Ask.lua
+UI.lua
+Bindings.xml

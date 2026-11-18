@@ -1,0 +1,6 @@
+<Bindings xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- Compartir datos bajo demanda (Share.lua). Tecla sugerida: CTRL-SHIFT-SPACE. -->
+    <Binding name="COMPANEROWOW_SHARE" header="COMPANEROWOW" runOnUp="false">
+        CompaneroWoW_ShareKey()
+    </Binding>
+</Bindings>

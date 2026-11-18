@@ -21,6 +21,17 @@ local function recordError(err)
     ns.lastError = text
 end
 
+ns.RecordError = recordError
+
+-- Hash de 32 bits (determinista) de un texto, con su longitud. Para detectar cambios.
+function ns.HashText(s)
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + string.byte(s, i)) % 4294967296
+    end
+    return h .. ":" .. #s
+end
+
 -- Devuelve los resultados de fn si pcall tuvo exito; nada si hubo error (contado).
 local function passResults(ok, ...)
     if ok then return ... end

@@ -228,6 +228,27 @@ local function chunkText(chunk)
     return table.concat(t)
 end
 
+-- Activacion completa de la ventana (como Share.lua): devuelve los mensajes JSON del tipo 16 que
+-- salieron, reensamblados por trozos. opts: { full = true } para /compa sync.
+local function runShare(opts)
+    C.Begin(T.gettime, opts)
+    local msgs, buf = {}, nil
+    for frame = 1, 3000 do
+        local now = T.gettime
+        if not C.Update(now) then break end
+        C.Pump(now, 1000)
+        local chunk = C.NextChunk(860, frame)
+        if chunk and chunk.type == 16 then
+            if chunk.index == 0 then buf = "" end
+            buf = buf .. chunkText(chunk)
+            if chunk.index == chunk.count - 1 then msgs[#msgs + 1] = buf end
+        end
+        T.gettime = T.gettime + C.TICK_SEC
+    end
+    C.Stop()
+    return msgs
+end
+
 -- Reinicia el mundo de prueba. El reloj nunca retrocede (los modulos guardan tiempos).
 local function reset()
     CompaneroWoWDB = {}
@@ -235,6 +256,7 @@ local function reset()
     W.testing.idx.total, W.testing.idx.refused = 0, 0
     W.testing.idx.sizes, W.testing.idx.hashes, W.testing.idx.paths = {}, {}, {}
     W.testing.idx.counts, W.testing.idx.dirty, W.testing.idx.sent = {}, {}, {}
+    W.testing.idx.json = {}
     W.testing.idx.fullAt = nil
     W.testing.S.taxiOpen, W.testing.S.taxiSnap, W.testing.S.pendingRide, W.testing.S.ride = false, nil, nil, nil
     W.testing.S.merchantOpen, W.testing.S.merchant = false, nil
@@ -701,10 +723,10 @@ T.merchant = { { info = { name = "Agua", price = 2, stackCount = 1, numAvailable
 fire("MERCHANT_SHOW")
 fire("MERCHANT_CLOSED")
 local now = T.gettime
-local full = W.ChannelDelta(now)
+local full = W.ShareMessage()
 check("primer envio: mensaje completo", full ~= nil)
 check("primer envio: incluye vendedores", full and string.find(full, '"1000"', 1, true) ~= nil and string.find(full, '"1200"', 1, true) ~= nil)
-eq("sin cambios: nada que enviar", W.ChannelDelta(now), nil)
+eq("sin cambios: nada que enviar", W.ShareMessage(), nil)
 check("sin cambios: ya no queda pendiente", not W.ChannelPending())
 
 setNpc(1200, "Vendedor B")
@@ -712,17 +734,19 @@ T.merchant[1].info.price = 3
 T.time = T.time + 5
 fire("MERCHANT_SHOW")
 fire("MERCHANT_CLOSED")
-local delta = W.ChannelDelta(now)
+local delta = W.ShareMessage()
 check("cambio de un vendedor: mensaje", delta ~= nil)
 check("cambio: solo el vendedor cambiado", delta and string.find(delta, '"1200"', 1, true) ~= nil
     and string.find(delta, '"1000"', 1, true) == nil)
 check("cambio: mensaje mas corto que el completo", delta and #delta < #full)
 check("cambio: la forma es el mismo esquema (vendors)", delta and string.sub(delta, 1, 11) == '{"vendors":')
-eq("cambio: nada mas pendiente", W.ChannelDelta(now), nil)
+check("cambio: JSON valido (decodifica)", delta and J.Encode and (delta:match("^%b{}$") ~= nil))
+eq("cambio: nada mas pendiente", W.ShareMessage(), nil)
 
 -- Reenvio completo cada CHANNEL_FULL_EVERY s.
-local later = now + W.CHANNEL_FULL_EVERY + 1
-check("reenvio completo tras el plazo", W.ChannelDelta(later) ~= nil)
+T.gettime = T.gettime + W.CHANNEL_FULL_EVERY + 1
+check("reenvio completo tras el plazo", W.ShareMessage() ~= nil)
+T.gettime = T.gettime - W.CHANNEL_FULL_EVERY - 1
 
 -- Mensajes grandes: varios mensajes, cada uno dentro del presupuesto.
 reset()
@@ -738,14 +762,14 @@ for i = 1, 40 do
     fire("MERCHANT_CLOSED")
 end
 local parts, seen, maxLen = 0, {}, 0
-local msg = W.ChannelDelta(T.gettime)
+local msg = W.ShareMessage()
 while msg do
     parts = parts + 1
     if #msg > maxLen then maxLen = #msg end
     for i = 7001, 7040 do
         if string.find(msg, '"' .. i .. '"', 1, true) then seen[i] = true end
     end
-    msg = W.ChannelDelta(T.gettime)
+    msg = W.ShareMessage()
 end
 check("mensajes grandes: varios mensajes", parts > 1, tostring(parts))
 check("mensajes grandes: cada uno <= 98304 bytes", maxLen <= 98304, tostring(maxLen))
@@ -753,33 +777,61 @@ local allSeen = true
 for i = 7001, 7040 do if not seen[i] then allSeen = false end end
 check("mensajes grandes: todos los vendedores llegan", allSeen)
 
--- Trozos por el canal: el tipo 16 sale por detras y sus bytes forman el JSON.
+-- Ventana de compartir: el tipo 16 va el ultimo y sale como trozos en la activacion.
 reset()
 setNpc(1000, "Vendedor canal")
 T.merchant = { { info = { name = "Pan", price = 1, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2001|h|r" } }
 fire("MERCHANT_SHOW")
 fire("MERCHANT_CLOSED")
-C.state.dirty[16] = true
-local assembled, frames16 = nil, 0
-for _ = 1, 3000 do
-    local chunk = C.Tick(T.gettime, 860)
-    if chunk and chunk.type == 16 then
-        frames16 = frames16 + 1
-        assembled = (assembled or "") .. chunkText(chunk)
-        if chunk.index == chunk.count - 1 then break end
-    end
-    T.gettime = T.gettime + 1
-end
-check("canal: el tipo 16 se envia", frames16 > 0)
-check("canal: el JSON reensamblado contiene el vendedor", assembled and string.find(assembled, '"1000"', 1, true) ~= nil)
-local okDecode = assembled and J and string.sub(assembled, 1, 1) == "{"
-check("canal: JSON de objeto", okDecode)
+local msgs = runShare()
+check("ventana: sale un mensaje 16", #msgs >= 1, tostring(#msgs))
+check("ventana: el mensaje contiene el vendedor", msgs[1] and string.find(msgs[1], '"1000"', 1, true) ~= nil)
+check("ventana: JSON de objeto", msgs[1] and string.sub(msgs[1], 1, 1) == "{")
+eq("ventana: segunda activacion sin cambios no reenvia el mundo", #runShare(), 0)
 
--- El tipo 16 se encola sin reemplazar otro en curso.
-check("canal: 16 esta en la prioridad", (function()
-    for _, t in ipairs(C.PRIORITY) do if t == 16 then return true end end
-    return false
-end)())
+-- Cambio posterior: la siguiente activacion manda solo ese bloque.
+setNpc(1000, "Vendedor canal")
+T.merchant[1].info.price = 9
+T.time = T.time + 5
+fire("MERCHANT_SHOW")
+fire("MERCHANT_CLOSED")
+local msgs2 = runShare()
+eq("ventana: un cambio, un mensaje", #msgs2, 1)
+check("ventana: el cambio es el vendedor 1000", msgs2[1] and string.find(msgs2[1], '"price":9', 1, true) ~= nil)
+
+-- /compa sync: todo el mundo sale aunque no haya cambiado.
+local syncMsgs = runShare({ full = true })
+check("sync completo: reenvia el mundo", #syncMsgs >= 1)
+
+-- Overflow: mas datos que un mensaje; la ventana sigue hasta sacarlos.
+reset()
+for i = 1, 30 do
+    T.time = T.time + 1
+    setNpc(8000 + i, "Vendedor grande " .. i)
+    T.merchant = {}
+    for j = 1, 80 do
+        T.merchant[j] = { info = { name = "Art " .. j, price = j, stackCount = 1, numAvailable = -1 },
+            link = "|Hitem:" .. (30000 * i + j) .. "|h|r" }
+    end
+    fire("MERCHANT_SHOW")
+    fire("MERCHANT_CLOSED")
+end
+-- Una ventana dura SHARE_SECONDS: el resto sale en las siguientes activaciones.
+local big, activations, got = 0, 0, ""
+for _ = 1, 10 do
+    activations = activations + 1
+    local msgs = runShare()
+    big = big + #msgs
+    got = got .. table.concat(msgs, "|")
+    if not W.ChannelPending() then break end
+end
+local missing = 0
+for i = 1, 30 do
+    if not string.find(got, '"' .. (8000 + i) .. '"', 1, true) then missing = missing + 1 end
+end
+eq("sobrante: ningun vendedor se pierde entre mensajes", missing, 0)
+check("sobrante: varios mensajes entre activaciones", big >= 2, tostring(big))
+check("sobrante: no queda nada pendiente tras drenar", not W.ChannelPending(), tostring(activations))
 
 eq("sin errores capturados (canal)", ns.errorCount, 0)
 
