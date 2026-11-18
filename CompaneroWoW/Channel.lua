@@ -14,9 +14,14 @@
 -- Capacidad de datos por trama: floor(3*(N-5)/2) - 47 bytes (N = 860 -> 1235 bytes).
 --
 -- Activacion (C.Begin): ventana de SHARE_SECONDS. El plan recorre C.PRIORITY en orden; cada tipo se
--- serializa una vez por activacion (fresco), de forma troceada: C.Pump reparte el trabajo en tramas
--- con un presupuesto de PUMP_BUDGET_MS por trama. Los trozos salen por el planificador (C.NextChunk).
--- C.Update devuelve false al acabar la ventana (o 5 s despues de que todo se haya enviado al menos una vez).
+-- serializa una vez por activacion, de forma troceada: C.Pump reparte el trabajo en tramas con un
+-- presupuesto de PUMP_BUDGET_MS por trama. Los trozos salen por el planificador (C.NextChunk).
+-- Solo se encola lo que cambio: por tipo se guarda el hash del ultimo envio (S.sent). Los tipos clave
+-- (KEY_TYPES) y el volcado de conocimiento se reenvian si el ultimo envio tiene mas de KEY_RESEND_SEC.
+-- C.Begin(now, { full = true }) (/compa sync) envia todo sin saltarse nada.
+-- Pregunta (msgType 15, C.SendQuestion): prioridad maxima, reenviada cada QUESTION_RESEND_SEC.
+-- C.Update devuelve false al acabar la ventana: a los SHARE_SECONDS, o antes si la cola esta vacia
+-- y han pasado al menos SHARE_MIN_SEC.
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
@@ -36,8 +41,11 @@ C.STATUS_LEN = 32
 C.CHUNK_HEADER_LEN = 9
 C.OVERHEAD = 4 + 32 + 9 + 2 -- cabecera + estado + cabecera de trozo + CRC-16
 C.CALIB_BLOCKS = 5
-C.SHARE_SECONDS = 20        -- duracion de una activacion (se alarga si se vuelve a pulsar)
-C.SHARE_EARLY_SEC = 5       -- si todo se envio al menos una vez, se vuelve al reposo tras estos segundos
+C.SHARE_SECONDS = 20        -- duracion maxima de una activacion (se alarga si se vuelve a pulsar)
+C.SHARE_MIN_SEC = 3         -- minimo de una activacion: no acaba antes aunque la cola este vacia
+C.KEY_RESEND_SEC = 600      -- tipos clave y volcado de conocimiento: se reenvian si pasan 10 min
+C.QUESTION_TYPE = 15        -- pregunta del jugador (contrato in-game): msgType 15, prioridad maxima
+C.QUESTION_RESEND_SEC = 2   -- la pregunta se reenvia cada 2 s durante la ventana
 C.PUMP_BUDGET_MS = 1        -- presupuesto de serializacion por trama
 C.HEAVY_TYPE = 10           -- tipo pesado: como mucho un trozo cada HEAVY_EVERY tramas
 C.HEAVY_EVERY = 3
@@ -49,10 +57,16 @@ C.KNOW_SLICE_BYTES = 16384  -- tamano objetivo de cada mensaje de knowledge (tip
 -- Orden de envio de una activacion (de mayor a menor prioridad en el planificador).
 -- Personaje, hoja, misiones, equipo, sesion, bolsas, profesiones, macros, barras, combate,
 -- misiones completadas, conocimiento (deltas y volcado), metadatos y, al final, el pesado (10).
+-- La pregunta (15) no esta aqui: va por delante de todo (RANK[15] = 0, ver SendQuestion).
 C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 13, 8, 7, 6, 9, 11, 10 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
+-- La pregunta no pasa por el plan: va al frente de la cola (rango 0) en cuanto se encola.
+RANK[C.QUESTION_TYPE] = 0
 C.RANK = RANK
+-- Tipos clave: se reenvian cada KEY_RESEND_SEC aunque no hayan cambiado.
+-- character (1), quests (2), equipment (4), sheet (12).
+C.KEY_TYPES = { [1] = true, [2] = true, [4] = true, [12] = true }
 
 -- ---------------------------------------------------------------------------
 -- CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, sin reflexion, sin xorout)
@@ -362,7 +376,11 @@ local S = {
     share = nil,          -- activacion en curso (nil = reposo)
     cur = nil,            -- unidad de serializacion en curso { t, co }
     cache = { quests = {}, npcs = {} }, -- conocimiento: [tipo][id] = JSON del registro en el ultimo envio
-    know = { scan = nil, out = newQueue(), snap = nil, snapDone = false },
+    know = { scan = nil, out = newQueue(), snap = nil, snapDone = false, dumpAt = nil },
+    sent = {},            -- [msgType] = hash del ultimo mensaje encolado (solo se reenvia si cambia)
+    sentAt = {},          -- [msgType] = GetTime del ultimo encolado de ese tipo
+    skipped = 0,          -- mensajes que no se encolaron por no haber cambiado (estadistica)
+    question = nil,       -- ultima pregunta { json, nextAt }: se reenvia durante la ventana
     sentCount = 0,        -- mensajes serializados (estadistica para /compa estado)
     errors = 0,
     lastError = nil,
@@ -417,6 +435,14 @@ local function startUnit(t)
 end
 
 -- Reanuda la unidad en curso. "yield" si sigue; "done" si acabo (encola su JSON si lo hay).
+-- Un tipo ya enviado con el mismo hash se omite. Completo (/compa sync): nunca se omite. Tipo clave:
+-- se reenvia si el ultimo envio tiene KEY_RESEND_SEC o mas.
+local function unchanged(t, h, now, full)
+    if full or S.sent[t] ~= h then return false end
+    if C.KEY_TYPES[t] and now - (S.sentAt[t] or now) >= C.KEY_RESEND_SEC then return false end
+    return true
+end
+
 local function resumeUnit()
     local u = S.cur
     local ok, json, why = coresume(u.co)
@@ -426,8 +452,16 @@ local function resumeUnit()
         ns.RecordError(json)
         recordFailure(json)
     elseif json then
-        ensureScheduler():enqueue(u.t, json)
-        S.sentCount = S.sentCount + 1
+        local sh = S.share
+        local now = sh and sh.now or 0
+        local h = ns.HashText(json)
+        if unchanged(u.t, h, now, sh and sh.full) then
+            S.skipped = S.skipped + 1
+        else
+            ensureScheduler():enqueue(u.t, json)
+            S.sent[u.t], S.sentAt[u.t] = h, now
+            S.sentCount = S.sentCount + 1
+        end
     elseif why then
         recordFailure(why)
     end
@@ -574,11 +608,22 @@ local function knowledgeStep(sh)
 end
 
 -- Volcado completo optativo (fuera del plan, si queda ventana y el tipo 9 esta libre).
+-- Solo en /compa sync o si el ultimo volcado tiene KEY_RESEND_SEC o mas.
+local function dumpDue(sh)
+    if sh.full then return true end
+    return S.know.dumpAt == nil or sh.now - S.know.dumpAt >= C.KEY_RESEND_SEC
+end
+
 local function snapshotStep()
     local know = S.know
     if know.snapDone then return false end
     if S.sched and S.sched:has(9) then return false end
     if not know.snap then
+        if not dumpDue(S.share) then
+            know.snapDone = true
+            return false
+        end
+        know.dumpAt = S.share.now
         local items = {}
         for _, kind in ipairs(KNOW_KINDS) do
             for id in pairs(S.cache[kind]) do items[#items + 1] = { kind = kind, id = id } end
@@ -620,19 +665,40 @@ local function planStep(sh)
 end
 
 -- Empieza una activacion (o la reinicia si ya hay una: pulsar otra vez alarga la ventana y
--- vuelve a serializar cada tipo). now: segundos (GetTime). Devuelve true si era una reactivacion.
-function C.Begin(now)
+-- vuelve a serializar cada tipo; solo encola lo que cambio). now: segundos (GetTime).
+-- opts.full = true: envia todo (/compa sync). Devuelve true si era una reactivacion.
+function C.Begin(now, opts)
     local again = S.share ~= nil
     S.share = {
         startAt = now, endAt = now + C.SHARE_SECONDS, now = now,
-        plan = {}, pos = 1, planDone = false, planDoneAt = nil, allSentAt = nil, know = nil,
+        full = (opts and opts.full) and true or false,
+        plan = {}, pos = 1, planDone = false, planDoneAt = nil,
     }
     for i, t in ipairs(C.PRIORITY) do S.share.plan[i] = t end
     S.cur = nil
     S.know.scan = nil
     S.know.snap = nil
     S.know.snapDone = false
+    -- Si hay una pregunta, sale de nuevo al principio de la ventana.
+    if S.question then
+        ensureScheduler():enqueue(C.QUESTION_TYPE, S.question.json)
+        S.question.nextAt = now + C.QUESTION_RESEND_SEC
+    end
     return again
+end
+
+-- Pregunta del jugador: se encola ya (prioridad maxima) y se reenvia cada QUESTION_RESEND_SEC
+-- mientras dure la ventana, hasta que llegue una pregunta nueva. json: el mensaje 15 ya codificado.
+function C.SendQuestion(json, now)
+    if type(json) ~= "string" then return false end
+    S.question = { json = json, nextAt = (now or 0) + C.QUESTION_RESEND_SEC }
+    ensureScheduler():enqueue(C.QUESTION_TYPE, json)
+    return true
+end
+
+-- Ultima pregunta enviada (JSON) o nil.
+function C.LastQuestion()
+    return S.question and S.question.json or nil
 end
 
 -- Vuelve al reposo. Los trozos ya encolados salen en la siguiente activacion (no se pierden).
@@ -658,6 +724,8 @@ function C.RemainingSec(now)
 end
 
 -- Llamar en cada trama durante la activacion. Devuelve false si la ventana ha acabado (y para).
+-- Acaba a los SHARE_SECONDS, o antes cuando no queda nada por enviar (plan, cola, volcado y
+-- pregunta) y han pasado al menos SHARE_MIN_SEC.
 function C.Update(now)
     local sh = S.share
     if not sh then return false end
@@ -666,11 +734,15 @@ function C.Update(now)
         C.Stop()
         return false
     end
-    if not sh.allSentAt and sh.planDone and not S.cur and (S.sched == nil or S.sched:requiredPending() == 0)
-        and S.know.out.head > #S.know.out.items then
-        sh.allSentAt = now
+    local q = S.question
+    if q and now >= q.nextAt - 1e-9 then
+        ensureScheduler():enqueue(C.QUESTION_TYPE, q.json)
+        q.nextAt = now + C.QUESTION_RESEND_SEC
     end
-    if sh.allSentAt and now - sh.allSentAt >= C.SHARE_EARLY_SEC then
+    local dumping = S.know.snap ~= nil and not S.know.snapDone
+    local idle = sh.planDone and not S.cur and (S.sched == nil or S.sched:requiredPending() == 0)
+        and S.know.out.head > #S.know.out.items and not dumping
+    if idle and now - sh.startAt >= C.SHARE_MIN_SEC - 1e-9 then
         C.Stop()
         return false
     end
@@ -724,7 +796,8 @@ end
 -- Lineas para /compa estado.
 function C.StatusLines()
     local queued = S.sched and S.sched:pending() or 0
-    local lines = { string.format("Canal en vivo: %d mensaje(s) en cola, %d mensaje(s) serializados", queued, S.sentCount) }
+    local lines = { string.format("Canal en vivo: %d mensaje(s) en cola, %d mensaje(s) serializados, %d sin cambios",
+        queued, S.sentCount, S.skipped) }
     if S.errors > 0 then
         lines[#lines + 1] = string.format("Canal en vivo: %d error(es) al codificar", S.errors)
     end
@@ -743,7 +816,8 @@ C.testing = {
     reset = function()
         S.share, S.cur, S.sched = nil, nil, nil
         S.cache = { quests = {}, npcs = {} }
-        S.know = { scan = nil, out = newQueue(), snap = nil, snapDone = false }
+        S.know = { scan = nil, out = newQueue(), snap = nil, snapDone = false, dumpAt = nil }
+        S.sent, S.sentAt, S.skipped, S.question = {}, {}, 0, nil
         S.sentCount, S.errors, S.lastError = 0, 0, nil
     end,
     state = S,

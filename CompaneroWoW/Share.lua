@@ -1,5 +1,6 @@
 -- Share.lua: activacion del envio de datos bajo demanda. Se activa con la accion de teclado
--- "Compañero: compartir datos" (Bindings.xml, por defecto CTRL-SHIFT-SPACE) o con /compa enviar.
+-- "Compañero: compartir datos" (Bindings.xml, por defecto CTRL-SHIFT-SPACE; ademas abre y enfoca el
+-- marco, UI.lua) o con /compa enviar, /compa sync (todo, sin recarga).
 -- Activar: muestra la franja y sirve la ventana de SHARE_SECONDS (Channel.lua); al acabar vuelve al
 -- reposo. Tambien aqui: la asignacion de la tecla la primera vez (fuera de combate, una sola vez).
 local ADDON_NAME, ns = ...
@@ -28,10 +29,11 @@ local function nowSec()
     return ns.Now()
 end
 
--- Activa la ventana de envio, o la reactiva (pulsar otra vez la alarga y vuelve a enviar todo).
--- Antes pide una revision de datos (throttle de Core.lua: como mucho cada 120 s, fuera de combate).
--- Devuelve true si la ventana empezo. Con la franja desactivada (/compa strip off) nunca.
-function Sh.Activate(fromCommand)
+-- Activa la ventana de envio, o la reactiva (pulsar otra vez la alarga; solo sale lo que cambio).
+-- opts.full = true: envia todo (/compa sync). Antes pide una revision de datos (throttle de Core.lua:
+-- como mucho cada 120 s, fuera de combate). Devuelve true si la ventana empezo. Con la franja
+-- desactivada (/compa strip off) nunca.
+function Sh.Activate(fromCommand, opts)
     if not ns.IsStripOn() then
         if fromCommand then
             say("Compartir datos está desactivado. Usa /compa strip on para activarlo.")
@@ -42,26 +44,37 @@ function Sh.Activate(fromCommand)
     if not C then return false end
     if ns.RequestSnapshot then ns.SafeCall(ns.RequestSnapshot) end
     local now = nowSec()
-    C.Begin(now)
+    C.Begin(now, opts)
     if not ns.StripStart() then
         C.Stop()
         if fromCommand then say("No se puede compartir: no hay franja de píxeles.") end
         return false
     end
     if fromCommand then
-        say(string.format("Compartiendo datos durante %d s.", C.SHARE_SECONDS))
+        if opts and opts.full then
+            say(string.format("Sincronizando todo durante %d s (sin recargar la interfaz).", C.SHARE_SECONDS))
+        else
+            say(string.format("Compartiendo datos durante %d s.", C.SHARE_SECONDS))
+        end
     end
     return true
 end
 
--- Lo llama la tecla (Bindings.xml) y /compa enviar.
+-- Lo llama /compa enviar.
 function Sh.Command()
     return Sh.Activate(true)
 end
 
+-- Tecla (Bindings.xml): abre o enfoca el marco de Compañero (UI.lua) y empieza la ventana de envio
+-- (sin pregunta, solo datos).
+function Sh.Key()
+    if ns.UI then ns.SafeCall(ns.UI.OnShareKey) end
+    return Sh.Activate(false)
+end
+
 -- Funcion global que ejecuta la accion de teclado (Bindings.xml).
 _G.CompaneroWoW_ShareKey = function()
-    ns.SafeCall(Sh.Activate, false)
+    ns.SafeCall(Sh.Key)
 end
 
 -- Tecla actual de la accion (o nil si no tiene ninguna).
