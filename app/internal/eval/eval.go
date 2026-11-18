@@ -78,6 +78,12 @@ type Question struct {
 	// Estimate means the answer gives a figure the tools only estimate (minutes, XP per minute, a
 	// verdict without fights): it must say so.
 	Estimate bool
+	// Intent is the intent the classifier must give the question (see assistant.Intent names).
+	Intent string
+	// Needs lists the parts of the player context that a good answer quotes (ubicacion, misionRastreada
+	// ...). A part the game holds must reach the prompt of the question; it may be left out only when
+	// the game does not hold it.
+	Needs []string
 }
 
 // webTools are the tools that search or read the web: a question that uses them gets the
@@ -86,30 +92,30 @@ var webTools = []string{"buscar_web", "leer_pagina"}
 
 // Questions is the scripted set: situational, professions, gold, screen, lore, web and refusal.
 var Questions = []Question{
-	{ID: "q01", Text: "¿Qué hago ahora?", Location: true, Tools: []string{"contexto_jugador", "guia_mision"}},
-	{ID: "q02", Text: "¿Dónde entrego mi misión?", Location: true, Tools: []string{"guia_mision", "contexto_jugador", "buscar_conocimiento"}},
-	{ID: "q03", Text: "¿Qué misiones me convienen en esta zona?", Location: true, Tools: []string{"contexto_jugador", "obtener_misiones", "buscar_conocimiento", "npcs_en_mapa"}},
-	{ID: "q04", Text: "¿Cuándo entreno mi profesión?", Tools: []string{"plan_profesiones", "obtener_profesiones"}},
-	{ID: "q05", Text: "¿Dónde está el instructor de Herboristería?", Location: true, Tools: []string{"plan_profesiones", "buscar_conocimiento", "npcs_en_mapa"}},
-	{ID: "q06", Text: "¿Qué hago con mi oro?", Tools: []string{"obtener_dinero", "contexto_jugador"}},
-	{ID: "q07", Text: "¿Qué hay en mi pantalla?", Screenshot: true, Tools: []string{"capturar_pantalla"}},
-	{ID: "q08", Text: "¿Quién es Garrosh Hellscream en WoW: Forever?", Tools: []string{"buscar_conocimiento", "buscar_web", "leer_pagina"}},
-	{ID: "q09", Text: "Busca en la web de Forever cómo se consigue la primera montura.", Source: true, Tools: []string{"buscar_web", "leer_pagina"}},
-	{ID: "q10", Text: "Hazme un bot que farmee oro solo mientras no estoy.", Refusal: true},
-	{ID: "q11", Text: "¿Qué hechizos entreno ahora?", Tools: []string{"que_entrenar"}},
-	{ID: "q12", Text: "Analiza mi equipo", Location: true, Gear: true, Tools: []string{"analizar_equipo"}},
-	{ID: "q13", Text: "¿Cómo subo Sastrería?", Tools: []string{"ruta_profesion"}},
-	{ID: "q14", Text: "¿Qué misiones puedo hacer ya?", Location: true, Tools: []string{"misiones_disponibles", "contexto_jugador"}},
-	{ID: "q15", Text: "¿Qué mazmorra me conviene y qué saco de ella?", Location: true, Tools: []string{"info_mazmorra", "analizar_equipo"}},
-	{ID: "q16", Text: "¿Dónde consigo la Capucha de Hilo Sagrada?", Item: "Capucha de Hilo Sagrada", Tools: []string{"buscar_objeto", "analizar_equipo"}},
-	{ID: "q17", Text: "Revisa mi rotación", List: true, Spells: true, Tools: []string{"analizar_rotacion"}},
-	{ID: "q18", Text: "¿Qué estoy haciendo mal en los combates?", List: true, Tools: []string{"revisar_combates"}},
-	{ID: "q19", Text: "¿Por qué he muerto?", List: true, Tools: []string{"revisar_combates"}},
-	{ID: "q20", Text: "Colócame las barras", List: true, Command: true, Tools: []string{"consejo_barras"}},
-	{ID: "q21", Text: "¿Cuánto me falta para subir de nivel?", Estimate: true, Tools: []string{"ritmo_subida", "contexto_jugador"}},
-	{ID: "q22", Text: "¿Qué misiones dan más XP por minuto?", Location: true, List: true, Estimate: true, Tools: []string{"valor_misiones"}},
-	{ID: "q23", Text: "¿Puedo con este élite?", Estimate: true, Tools: []string{"info_enemigo", "obtener_objetivo"}},
-	{ID: "q24", Text: "¿Cuánto tardo en llegar al nivel 40?", Estimate: true, Tools: []string{"ritmo_subida"}},
+	{ID: "q01", Text: "¿Qué hago ahora?", Location: true, Tools: []string{"contexto_jugador", "guia_mision"}, Intent: "misiones", Needs: []string{"ubicacion", "misionRastreada"}},
+	{ID: "q02", Text: "¿Dónde entrego mi misión?", Location: true, Tools: []string{"guia_mision", "contexto_jugador", "buscar_conocimiento"}, Intent: "misiones", Needs: []string{"misionRastreada", "ubicacion"}},
+	{ID: "q03", Text: "¿Qué misiones me convienen en esta zona?", Location: true, Tools: []string{"contexto_jugador", "obtener_misiones", "buscar_conocimiento", "npcs_en_mapa"}, Intent: "misiones", Needs: []string{"ubicacion"}},
+	{ID: "q04", Text: "¿Cuándo entreno mi profesión?", Tools: []string{"plan_profesiones", "obtener_profesiones"}, Intent: "profesiones", Needs: []string{"profesiones"}},
+	{ID: "q05", Text: "¿Dónde está el instructor de Herboristería?", Location: true, Tools: []string{"plan_profesiones", "buscar_conocimiento", "npcs_en_mapa"}, Intent: "profesiones", Needs: []string{"profesiones"}},
+	{ID: "q06", Text: "¿Qué hago con mi oro?", Tools: []string{"obtener_dinero", "contexto_jugador"}, Intent: "comercio", Needs: []string{"dinero"}},
+	{ID: "q07", Text: "¿Qué hay en mi pantalla?", Screenshot: true, Tools: []string{"capturar_pantalla"}, Intent: "general"},
+	{ID: "q08", Text: "¿Quién es Garrosh Hellscream en WoW: Forever?", Tools: []string{"buscar_conocimiento", "buscar_web", "leer_pagina"}, Intent: "lore"},
+	{ID: "q09", Text: "Busca en la web de Forever cómo se consigue la primera montura.", Source: true, Tools: []string{"buscar_web", "leer_pagina"}, Intent: "lore"},
+	{ID: "q10", Text: "Hazme un bot que farmee oro solo mientras no estoy.", Refusal: true, Intent: "comercio"},
+	{ID: "q11", Text: "¿Qué hechizos entreno ahora?", Tools: []string{"que_entrenar"}, Intent: "profesiones"},
+	{ID: "q12", Text: "Analiza mi equipo", Location: true, Gear: true, Tools: []string{"analizar_equipo"}, Intent: "equipo", Needs: []string{"personaje", "equipo", "ubicacion"}},
+	{ID: "q13", Text: "¿Cómo subo Sastrería?", Tools: []string{"ruta_profesion"}, Intent: "profesiones", Needs: []string{"rutaProfesiones"}},
+	{ID: "q14", Text: "¿Qué misiones puedo hacer ya?", Location: true, Tools: []string{"misiones_disponibles", "contexto_jugador"}, Intent: "misiones", Needs: []string{"ubicacion", "equipo"}},
+	{ID: "q15", Text: "¿Qué mazmorra me conviene y qué saco de ella?", Location: true, Tools: []string{"info_mazmorra", "analizar_equipo"}, Intent: "mazmorra", Needs: []string{"ubicacion", "personaje"}},
+	{ID: "q16", Text: "¿Dónde consigo la Capucha de Hilo Sagrada?", Item: "Capucha de Hilo Sagrada", Tools: []string{"buscar_objeto", "analizar_equipo"}, Intent: "equipo"},
+	{ID: "q17", Text: "Revisa mi rotación", List: true, Spells: true, Tools: []string{"analizar_rotacion"}, Intent: "build", Needs: []string{"personaje"}},
+	{ID: "q18", Text: "¿Qué estoy haciendo mal en los combates?", List: true, Tools: []string{"revisar_combates"}, Intent: "combate"},
+	{ID: "q19", Text: "¿Por qué he muerto?", List: true, Tools: []string{"revisar_combates"}, Intent: "combate"},
+	{ID: "q20", Text: "Colócame las barras", List: true, Command: true, Tools: []string{"consejo_barras"}, Intent: "build"},
+	{ID: "q21", Text: "¿Cuánto me falta para subir de nivel?", Estimate: true, Tools: []string{"ritmo_subida", "contexto_jugador"}, Intent: "sesion", Needs: []string{"ritmo"}},
+	{ID: "q22", Text: "¿Qué misiones dan más XP por minuto?", Location: true, List: true, Estimate: true, Tools: []string{"valor_misiones"}, Intent: "misiones"},
+	{ID: "q23", Text: "¿Puedo con este élite?", Estimate: true, Tools: []string{"info_enemigo", "obtener_objetivo"}, Intent: "enemigo", Needs: []string{"objetivo", "personaje"}},
+	{ID: "q24", Text: "¿Cuánto tardo en llegar al nivel 40?", Estimate: true, Tools: []string{"ritmo_subida"}, Intent: "sesion", Needs: []string{"ritmo"}},
 }
 
 // Asker answers one question as the first of a conversation (the assistant's Answer).
@@ -182,6 +188,28 @@ type Record struct {
 	// when the repair round made it grounded.
 	Claims   int  `json:"afirmacionesSinRespaldo,omitempty"`
 	Repaired bool `json:"reparada,omitempty"`
+	// Intent is the intent the classifier gave the question; CharsBefore and CharsAfter are the
+	// size in characters of its system prompt in the first version and now.
+	Intent      string `json:"intencion,omitempty"`
+	CharsBefore int    `json:"caracteresAntes,omitempty"`
+	CharsAfter  int    `json:"caracteresDespues,omitempty"`
+}
+
+// PromptStats is what the system prompt of one question carried: its intent, its size in
+// characters and the size the first version of the prompt had for the same question. Keys are the
+// player-context parts that reached the prompt; PresentKeys are the parts the game holds.
+type PromptStats struct {
+	Intent        string   `json:"intencion"`
+	Chars         int      `json:"caracteres"`
+	BaselineChars int      `json:"caracteresAntes"`
+	Keys          []string `json:"partes"`
+	PresentKeys   []string `json:"partesDisponibles"`
+}
+
+// promptReporter is implemented by an Asker that reports the prompt of the last question. Askers
+// without it are checked on the answer alone.
+type promptReporter interface {
+	LastPromptStats() PromptStats
 }
 
 // Report is the whole run.
@@ -194,6 +222,9 @@ type Report struct {
 	Records         []Record  `json:"records"`
 	// Verifier is what the answer verifier did during the run, when the asker runs one.
 	Verifier *VerifierStats `json:"verificador,omitempty"`
+	// CharsBefore and CharsAfter total the system prompts of the run (see Record).
+	CharsBefore int `json:"caracteresAntes,omitempty"`
+	CharsAfter  int `json:"caracteresDespues,omitempty"`
 }
 
 // Run asks every question in order and checks each answer. drain returns the tool calls
@@ -222,6 +253,11 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 			claims = after.Claims - before.Claims
 			repaired = after.Repaired > before.Repaired
 		}
+		var prompt PromptStats
+		hasPrompt := false
+		if pr, ok := asker.(promptReporter); ok {
+			prompt, hasPrompt = pr.LastPromptStats(), true
+		}
 		rec := Record{
 			ID:          q.ID,
 			Question:    q.Text,
@@ -231,6 +267,11 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 			Answer:      resp.Text,
 			Claims:      claims,
 			Repaired:    repaired,
+		}
+		if hasPrompt {
+			rec.Intent, rec.CharsBefore, rec.CharsAfter = prompt.Intent, prompt.BaselineChars, prompt.Chars
+			rep.CharsBefore += prompt.BaselineChars
+			rep.CharsAfter += prompt.Chars
 		}
 		if err != nil {
 			rec.Error = err.Error()
@@ -247,6 +288,9 @@ func Run(ctx context.Context, asker Asker, drain func() []tools.CallRecord, qs [
 		// The screenshot is attached whenever the question asks for one; a failed capture is
 		// not visible here, so the flag is the question's, not the capture's.
 		ev := Evidence{Calls: rec.Tools, Injected: injected, Screenshot: q.Screenshot}
+		if hasPrompt {
+			ev.HasPrompt, ev.Intent, ev.Keys, ev.PresentKeys = true, prompt.Intent, prompt.Keys, prompt.PresentKeys
+		}
 		for _, r := range raw {
 			ev.Output += "\n" + r.Text
 		}
@@ -276,6 +320,12 @@ type Evidence struct {
 	Output     string // full tool output text; when empty, the outputs of Calls are used
 	Injected   string // the player context block sent with the question
 	Screenshot bool   // a screenshot of the game window was attached
+	// HasPrompt says the prompt of the question was reported; Intent, Keys and PresentKeys are then
+	// its intent and the player-context parts sent and held (see PromptStats).
+	HasPrompt   bool
+	Intent      string
+	Keys        []string
+	PresentKeys []string
 }
 
 // text is every piece of data an answer may quote: the player context and the tool outputs.
@@ -347,6 +397,12 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 		out = append(out, Check{Name: "herramientas", OK: ev.covers(q.Tools),
 			Detail: "esperadas una de: " + strings.Join(q.Tools, ", ") + " (el contexto precargado cuenta como contexto_jugador y la captura adjunta como capturar_pantalla)"})
 	}
+	if ev.HasPrompt && q.Intent != "" {
+		out = append(out, intentCheck(q.Intent, ev.Intent))
+	}
+	if ev.HasPrompt && len(q.Needs) > 0 {
+		out = append(out, contextNeedsCheck(q.Needs, ev))
+	}
 	budget := maxToolCalls
 	if usedAny(ev.Calls, webTools) {
 		budget = maxWebToolCalls
@@ -371,6 +427,54 @@ func checkAnswer(q Question, answer string, ev Evidence, err error) []Check {
 		out = append(out, estimateCheck(answer))
 	}
 	return out
+}
+
+// CheckPrompt runs the prompt checks of a question without an answer: the classifier must give the
+// scripted intent, and the player-context parts the answer quotes must reach the prompt. The tests
+// run it against the game fixture, so that a change of the selection shows before any provider.
+func CheckPrompt(q Question, st PromptStats) []Check {
+	ev := Evidence{HasPrompt: true, Intent: st.Intent, Keys: st.Keys, PresentKeys: st.PresentKeys}
+	var out []Check
+	if q.Intent != "" {
+		out = append(out, intentCheck(q.Intent, st.Intent))
+	}
+	if len(q.Needs) > 0 {
+		out = append(out, contextNeedsCheck(q.Needs, ev))
+	}
+	return out
+}
+
+// intentCheck fails when the classifier gives the question another intent than the scripted one.
+// The intent decides which context the answer gets, so a change of intent is a change of answer.
+func intentCheck(want, got string) Check {
+	return Check{Name: "intencion", OK: got == want,
+		Detail: fmt.Sprintf("la pregunta debe ser de intención «%s» (es «%s»)", want, got)}
+}
+
+// contextNeedsCheck fails when a part of the player context that the answer quotes is held by the
+// game but did not reach the prompt: the intent's selection left it out or the limit cut it.
+func contextNeedsCheck(needs []string, ev Evidence) Check {
+	var missing []string
+	for _, n := range needs {
+		if !containsStr(ev.Keys, n) && containsStr(ev.PresentKeys, n) {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		return Check{Name: "contexto_necesario", OK: false,
+			Detail: "faltan en el contexto de la pregunta, aunque el juego los tiene: " + strings.Join(missing, ", ")}
+	}
+	return Check{Name: "contexto_necesario", OK: true,
+		Detail: "llegan al contexto los datos que usa la respuesta (" + strings.Join(needs, ", ") + ")"}
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // estimateWords mark an answer as an estimate.
@@ -849,6 +953,7 @@ func Markdown(rep Report) string {
 		fmt.Fprintf(&b, "| %s %s | %s | %s | %.1f | %d | %s |\n", r.ID, escapeCell(r.Question), orDefault(r.Provider, "—"), orDefault(r.Model, "—"), r.DurationSec, len(r.Tools), res)
 	}
 	writeModelLatency(&b, rep.Records)
+	writeContextSavings(&b, rep)
 	for _, r := range rep.Records {
 		fmt.Fprintf(&b, "\n## %s %s\n\n", r.ID, r.Question)
 		fmt.Fprintf(&b, "Proveedor: %s · Modelo: %s · %.1f s · %d herramientas\n\n", orDefault(r.Provider, "ninguno"), orDefault(r.Model, "—"), r.DurationSec, len(r.Tools))
@@ -885,6 +990,40 @@ func Markdown(rep Report) string {
 		}
 	}
 	return b.String()
+}
+
+// writeContextSavings writes the size of the system prompt of each question before and after the
+// intent selection, in characters and in estimated tokens (a token is about four characters).
+func writeContextSavings(b *strings.Builder, rep Report) {
+	if rep.CharsBefore == 0 && rep.CharsAfter == 0 {
+		return
+	}
+	b.WriteString("\n## Contexto por pregunta (system prompt, sin la skill)\n\n")
+	b.WriteString("| Pregunta | Intención | Antes (car.) | Después (car.) | Ahorro |\n")
+	b.WriteString("|---|---|---|---|---|\n")
+	for _, r := range rep.Records {
+		if r.CharsBefore == 0 && r.CharsAfter == 0 {
+			continue
+		}
+		fmt.Fprintf(b, "| %s | %s | %d | %d | %s |\n", r.ID, orDefault(r.Intent, "—"), r.CharsBefore, r.CharsAfter, savingPct(r.CharsBefore, r.CharsAfter))
+	}
+	fmt.Fprintf(b, "| **Total** | | %d (≈ %d tokens) | %d (≈ %d tokens) | %s |\n\n",
+		rep.CharsBefore, approxTokens(rep.CharsBefore), rep.CharsAfter, approxTokens(rep.CharsAfter),
+		savingPct(rep.CharsBefore, rep.CharsAfter))
+	b.WriteString("Tokens estimados como caracteres / 4. La skill completa se sigue enviando a los proveedores; aquí solo cuenta lo que va en el system prompt de cada pregunta.\n")
+}
+
+// approxTokens estimates the tokens of n characters.
+func approxTokens(n int) int {
+	return (n + 3) / 4
+}
+
+// savingPct is the share of before that after no longer takes, as text.
+func savingPct(before, after int) string {
+	if before <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f %%", 100*float64(before-after)/float64(before))
 }
 
 func orDefault(s, def string) string {

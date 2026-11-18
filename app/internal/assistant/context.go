@@ -12,36 +12,53 @@ const contextHeader = "Contexto del jugador (ya consultado, no vuelvas a pedirlo
 // contextLimit caps the player context block, header included, in runes.
 const contextLimit = 1200
 
-// playerContextBlock runs the player-context query once, before any provider is called,
-// and returns the header and a compact JSON summary. It returns "" when there is no game
-// data, so the prompt then carries no such block.
-func (a *Assistant) playerContextBlock() string {
+// playerContext runs the player-context query once, before any provider is called. It returns
+// nil when there is no game data.
+func (a *Assistant) playerContext() any {
 	if a.g == nil {
-		return ""
+		return nil
 	}
 	v, err := a.g.PlayerContext()
 	if err != nil {
-		return ""
+		return nil
 	}
-	room := contextLimit - utf8.RuneCountInString(contextHeader) - 1
-	summary := compactContext(v, room)
+	return v
+}
+
+// playerContextBlock returns the context block of the first version: every legacy part, up to
+// contextLimit runes. It returns "" when there is no game data. The prompt itself uses the
+// block of the question's intent (see systemPrompt).
+func (a *Assistant) playerContextBlock() string {
+	block, _ := contextBlock(a.playerContext(), legacyContextKeys, contextLimit)
+	return block
+}
+
+// contextBlock is the header and the compact JSON of the given parts of the player context, at
+// most limit runes in all, and the parts it kept. It returns "" when none of the parts is there.
+func contextBlock(v any, keys []string, limit int) (string, []string) {
+	room := limit - utf8.RuneCountInString(contextHeader) - 1
+	summary, kept := compactParts(v, keys, room)
 	if summary == "" {
-		return ""
+		return "", nil
 	}
-	return contextHeader + "\n" + summary
+	return contextHeader + "\n" + summary, kept
 }
 
 // compactContext keeps the parts of the player context that most questions need, in
 // priority order, as compact JSON of at most limit runes. A part that does not fit is
 // left out; for the tracked quest the version without its objectives is tried first.
 func compactContext(v any, limit int) string {
+	s, _ := compactParts(v, legacyContextKeys, limit)
+	return s
+}
+
+// compactParts keeps the listed parts of the player context, in the order given, as compact
+// JSON of at most limit runes. It returns the JSON and the parts it kept. A part that does not
+// fit is left out; for the tracked quest the version without its objectives is tried first.
+func compactParts(v any, keys []string, limit int) (string, []string) {
 	m := asMap(v)
 	if m == nil || limit <= 0 {
-		return ""
-	}
-	type part struct {
-		key string
-		val any
+		return "", nil
 	}
 	var slimQuest map[string]any
 	if mission := asMap(m["misionRastreada"]); mission != nil {
@@ -52,45 +69,49 @@ func compactContext(v any, limit int) string {
 			}
 		}
 	}
-	parts := []part{
-		{"ubicacion", m["ubicacion"]},
-		{"personaje", m["personaje"]},
-		{"misionRastreada", m["misionRastreada"]},
-		{"ritmo", m["ritmo"]},
-		{"datos", m["datos"]},
-		{"avisos", m["avisos"]},
-		{"dinero", m["dinero"]},
-		{"objetivo", m["objetivo"]},
-		{"profesiones", m["profesiones"]},
-		{"entrenamiento", m["entrenamiento"]},
-		{"rutaProfesiones", m["rutaProfesiones"]},
-	}
 	out := map[string]any{}
-	for _, p := range parts {
-		if p.val == nil {
+	var kept []string
+	for _, key := range keys {
+		val := m[key]
+		if val == nil {
 			continue
 		}
 		with := copyFields(out)
-		with[p.key] = p.val
+		with[key] = val
 		if fitsJSON(with, limit) {
 			out = with
+			kept = append(kept, key)
 			continue
 		}
-		if p.key == "misionRastreada" && slimQuest != nil {
-			with[p.key] = slimQuest
+		if key == "misionRastreada" && slimQuest != nil {
+			with[key] = slimQuest
 			if fitsJSON(with, limit) {
 				out = with
+				kept = append(kept, key)
 			}
 		}
 	}
 	if len(out) == 0 {
-		return ""
+		return "", nil
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	return string(data)
+	return string(data), kept
+}
+
+// presentKeys lists the keys of allContextKeys that the player context holds at all, whatever the
+// limit: the data the game has for this question. The eval compares what a block carries with it.
+func presentKeys(v any) []string {
+	m := asMap(v)
+	var out []string
+	for _, k := range allContextKeys {
+		if m[k] != nil {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // copyFields returns a shallow copy of m.
