@@ -56,9 +56,10 @@ C.KNOW_SLICE_BYTES = 16384  -- tamano objetivo de cada mensaje de knowledge (tip
 
 -- Orden de envio de una activacion (de mayor a menor prioridad en el planificador).
 -- Personaje, hoja, misiones, equipo, sesion, bolsas, profesiones, macros, barras, combate,
--- misiones completadas, conocimiento (deltas y volcado), metadatos y, al final, el pesado (10).
+-- misiones completadas, conocimiento (deltas y volcado), metadatos, el pesado (10) y, al final,
+-- el mundo (16: solo los bloques cambiados, World.lua).
 -- La pregunta (15) no esta aqui: va por delante de todo (RANK[15] = 0, ver SendQuestion).
-C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 13, 8, 7, 6, 9, 11, 10 }
+C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 13, 8, 7, 6, 9, 11, 10, 16 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 -- La pregunta no pasa por el plan: va al frente de la cola (rango 0) en cuanto se encola.
@@ -362,6 +363,16 @@ C.TYPES = {
             return ns.Session.Public(c.session)
         end,
     },
+    [16] = {
+        -- mundo (World.lua): solo los bloques cambiados desde el ultimo envio. Devuelve el JSON ya
+        -- compuesto (raw): no pasa por el codificador. nil si no hay nada que enviar.
+        name = "world", raw = true, account = true, -- cuenta, no de personaje
+        build = function()
+            local W = ns.World
+            if not W or not W.ShareMessage then return nil end
+            return W.ShareMessage()
+        end,
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -422,9 +433,13 @@ end
 local function unitBody(t)
     local def = C.TYPES[t]
     local c = currentChar()
-    if not def or not def.build or not c then return nil end
+    if not def or not def.build or (not c and def.account ~= true) then return nil end
+    -- Mundo: no se construye otro mensaje mientras sale el anterior (enqueue lo reemplazaria y
+    -- los bloques marcados como enviados se perderian). Lo que queda se envia en la siguiente.
+    if def.raw and ensureScheduler():has(t) then return nil end
     local value = def.build(c, CompaneroWoWDB)
     if value == nil then return nil end
+    if def.raw then return value end -- ya es JSON (mundo)
     if t == 6 and type(value) == "table" and next(value) == nil then return "[]" end
     coroutine.yield()
     return ns.Json.EncodeAsync(value)
@@ -664,6 +679,17 @@ local function planStep(sh)
     return true
 end
 
+-- Sobrante del mundo: si tras el plan quedan bloques sin enviar (presupuesto por mensaje) y no hay
+-- otro mensaje 16 en cola, serializa otro trozo. Es trabajo obligatorio: la ventana no acaba hasta
+-- que sale, como mucho hasta SHARE_SECONDS.
+local function worldExtraStep()
+    local W = ns.World
+    if not (W and W.ChannelPending and W.ChannelPending()) then return false end
+    if S.cur or ensureScheduler():has(16) then return false end
+    startUnit(16)
+    return true
+end
+
 -- Empieza una activacion (o la reinicia si ya hay una: pulsar otra vez alarga la ventana y
 -- vuelve a serializar cada tipo; solo encola lo que cambio). now: segundos (GetTime).
 -- opts.full = true: envia todo (/compa sync). Devuelve true si era una reactivacion.
@@ -684,6 +710,8 @@ function C.Begin(now, opts)
         ensureScheduler():enqueue(C.QUESTION_TYPE, S.question.json)
         S.question.nextAt = now + C.QUESTION_RESEND_SEC
     end
+    -- /compa sync: el mundo se reenvia entero (World.lua olvida lo enviado).
+    if S.share.full and ns.World and ns.World.ForceFull then ns.World.ForceFull() end
     return again
 end
 
@@ -765,7 +793,12 @@ function C.Pump(now, budgetMs)
                 sh.planDone = true
                 sh.planDoneAt = now
             end
-            progressed = snapshotStep()
+            if S.cur then -- sobrante del mundo en curso (el plan ya acabo)
+                resumeUnit()
+                progressed = true
+            else
+                progressed = snapshotStep() or worldExtraStep()
+            end
         end
         if not progressed or clockMs() >= deadline then break end
     end

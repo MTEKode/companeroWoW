@@ -19,6 +19,7 @@ Integrations.lua
 Marks.lua
 Bridge.lua
 Channel.lua
+World.lua
 Share.lua
 Sheet.lua
 Events.lua
