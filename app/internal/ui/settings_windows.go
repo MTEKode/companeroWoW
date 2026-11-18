@@ -89,12 +89,15 @@ type settingsWin struct {
 	fetchErr                        error
 	tipsPanel, tipsBandeja, tipsOff uintptr // the three ways tips reach the player
 	tipsSound                       uintptr
-	uiGame, uiWindow                uintptr // the interface: inside the game, or the external panel
-	ansVoice, ansBeep, ansNone      uintptr // the answer announcement: voice, tone or nothing
-	volume                          uintptr // the announcement's volume, percent
-	startup, wowPath, browseBtn     uintptr
-	keyLabel, keyFolder, status     uintptr
-	wizard, cancel, saveBtn         uintptr
+	// modeOnDemand and modeContinuous pick how the game is read; modeNote says why the tips
+	// are disabled in the on-demand mode.
+	modeOnDemand, modeContinuous, modeNote uintptr
+	uiGame, uiWindow                       uintptr // the interface: inside the game, or the external panel
+	ansVoice, ansBeep, ansNone             uintptr // the answer announcement: voice, tone or nothing
+	volume                                 uintptr // the announcement's volume, percent
+	startup, wowPath, browseBtn            uintptr
+	keyLabel, keyFolder, status            uintptr
+	wizard, cancel, saveBtn                uintptr
 
 	statusColor uint32
 }
@@ -147,8 +150,8 @@ func newSettingsWin(owner *window) (*settingsWin, error) {
 	}
 	s := &settingsWin{inst: owner.inst, owner: owner, scale: owner.scale}
 	style := uintptr(wsPopup | wsCaption | wsSysMenu | wsClipChildren)
-	// The client area is 440 x 790 logical pixels; AdjustWindowRectEx adds the frame.
-	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(790))}
+	// The client area is 440 x 838 logical pixels; AdjustWindowRectEx adds the frame.
+	rc := rect{Right: int32(s.sc(440)), Bottom: int32(s.sc(838))}
 	call(procAdjustWindowRectEx, ptrOf(&rc), style, 0, wsExAppWindow)
 	ow, oh := int(rc.Right-rc.Left), int(rc.Bottom-rc.Top)
 	screen := screenRect()
@@ -226,59 +229,65 @@ func (s *settingsWin) createControls() {
 	s.down = s.button("▼", 360, 148, 32, 32, 0, idSetDown)
 
 	s.hide = s.checkBox("Ocultar el panel en combate", 16, 194, 400, 22)
-	s.label("Consejos:", 16, 218, 180, 20)
-	s.tipsPanel = s.radio("En el panel", 200, 218, 220, 22, true)
-	s.tipsBandeja = s.radio("Notificación discreta", 200, 240, 220, 22, false)
-	s.tipsOff = s.radio("Desactivados", 200, 262, 220, 22, false)
-	s.tipsSound = s.checkBox("Sonido", 200, 286, 220, 22)
-	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 312, 400, 22)
+	// How the game is read: only when asked (the default) or continuously (the old way).
+	s.label("Funcionamiento:", 16, 218, 180, 20)
+	s.modeOnDemand = s.radio("Solo al preguntar", 200, 218, 150, 22, true)
+	s.modeContinuous = s.radio("Continuo", 360, 218, 90, 22, false)
+	s.modeNote = s.label("", 16, 242, 408, 20)
+	s.label("Consejos:", 16, 266, 180, 20)
+	s.tipsPanel = s.radio("En el panel", 200, 266, 220, 22, true)
+	s.tipsBandeja = s.radio("Notificación discreta", 200, 288, 220, 22, false)
+	s.tipsOff = s.radio("Desactivados", 200, 310, 220, 22, false)
+	s.tipsSound = s.checkBox("Sonido", 200, 334, 220, 22)
+	s.startup = s.checkBox("Iniciar con WoW (minimizado en la bandeja)", 16, 360, 400, 22)
 
 	// The game mode (the default) keeps the panel closed and announces the answers with a sound.
-	s.label("Interfaz:", 16, 338, 180, 20)
-	s.uiGame = s.radio("Dentro del juego", 200, 338, 170, 22, true)
-	s.uiWindow = s.radio("Ventana", 372, 338, 60, 22, false)
-	s.label("Aviso al responder:", 16, 364, 180, 20)
-	s.ansVoice = s.radio("Voz", 200, 364, 60, 22, true)
-	s.ansBeep = s.radio("Pitido", 262, 364, 70, 22, false)
-	s.ansNone = s.radio("Ninguno", 334, 364, 90, 22, false)
-	s.label("Volumen del aviso (0-100 %)", 16, 390, 200, 20)
-	s.volume = s.edit(200, 387, 60, 24, esNumber)
+	s.label("Interfaz:", 16, 386, 180, 20)
+	s.uiGame = s.radio("Dentro del juego", 200, 386, 170, 22, true)
+	s.uiWindow = s.radio("Ventana", 372, 386, 60, 22, false)
+	s.label("Aviso al responder:", 16, 412, 180, 20)
+	s.ansVoice = s.radio("Voz", 200, 412, 60, 22, true)
+	s.ansBeep = s.radio("Pitido", 262, 412, 70, 22, false)
+	s.ansNone = s.radio("Ninguno", 334, 412, 90, 22, false)
+	s.label("Volumen del aviso (0-100 %)", 16, 438, 200, 20)
+	s.volume = s.edit(200, 435, 60, 24, esNumber)
 
 	// The Antigravity models: the order in use (left), the ones agy offers (below). Adding
 	// takes a model from the offer, removing puts nothing back by itself.
-	s.label("Modelos de Antigravity", 16, 420, 180, 20)
+	s.label("Modelos de Antigravity", 16, 468, 180, 20)
 	s.models = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
-		200, 418, 150, 72, 0)
-	s.modelUp = s.button("▲", 360, 418, 32, 32, 0, idSetModelUp)
-	s.modelDown = s.button("▼", 360, 456, 32, 32, 0, idSetModelDown)
-	s.modelDel = s.button("✕", 400, 418, 32, 32, 0, idSetModelDel)
+		200, 466, 150, 72, 0)
+	s.modelUp = s.button("▲", 360, 466, 32, 32, 0, idSetModelUp)
+	s.modelDown = s.button("▼", 360, 504, 32, 32, 0, idSetModelDown)
+	s.modelDel = s.button("✕", 400, 466, 32, 32, 0, idSetModelDel)
 
-	s.label("Modelos disponibles", 16, 500, 180, 20)
+	s.label("Modelos disponibles", 16, 548, 180, 20)
 	s.avail = s.createChild("LISTBOX", "", wsChild|wsVisible|wsTabStop|wsBorder|wsVScroll|lbsNotify,
-		200, 498, 150, 72, 0)
-	s.modelAdd = s.button("Añadir", 360, 498, 76, 26, 0, idSetModelAdd)
-	s.modelRefresh = s.button("Actualizar", 360, 544, 76, 26, 0, idSetModelRefresh)
+		200, 546, 150, 72, 0)
+	s.modelAdd = s.button("Añadir", 360, 546, 76, 26, 0, idSetModelAdd)
+	s.modelRefresh = s.button("Actualizar", 360, 592, 76, 26, 0, idSetModelRefresh)
 
-	s.label("Volver al primero tras (min)", 16, 580, 180, 20)
-	s.cooldown = s.edit(200, 577, 60, 24, esNumber)
+	s.label("Volver al primero tras (min)", 16, 628, 180, 20)
+	s.cooldown = s.edit(200, 625, 60, 24, esNumber)
 
-	s.label("Carpeta de WoW (_forever_)", 16, 608, 400, 20)
-	s.wowPath = s.edit(16, 630, 316, 24, 0)
-	s.browseBtn = s.button("Examinar…", 340, 629, 84, 26, 0, idSetBrowse)
+	s.label("Carpeta de WoW (_forever_)", 16, 656, 400, 20)
+	s.wowPath = s.edit(16, 678, 316, 24, 0)
+	s.browseBtn = s.button("Examinar…", 340, 677, 84, 26, 0, idSetBrowse)
 
-	s.keyLabel = s.label("", 16, 664, 240, 20)
-	s.keyFolder = s.button("Abrir carpeta .env", 260, 660, 164, 26, 0, idSetKey)
+	s.keyLabel = s.label("", 16, 712, 240, 20)
+	s.keyFolder = s.button("Abrir carpeta .env", 260, 708, 164, 26, 0, idSetKey)
 
-	s.status = s.label("", 16, 690, 408, 30)
+	s.status = s.label("", 16, 738, 408, 30)
 
-	s.profileLabel = s.label("", 16, 724, 300, 20)
-	s.profileBtn = s.button("Perfil…", 330, 721, 94, 26, 0, idSetProfile)
+	s.profileLabel = s.label("", 16, 772, 300, 20)
+	s.profileBtn = s.button("Perfil…", 330, 769, 94, 26, 0, idSetProfile)
 
-	s.wizard = s.button("Asistente de configuración…", 16, 750, 210, 28, 0, idSetWizard)
-	s.cancel = s.button("Cancelar", 276, 750, 70, 28, 0, idCancel)
-	s.saveBtn = s.button("Guardar", 354, 750, 70, 28, bsDefPushButton, idOK)
+	s.wizard = s.button("Asistente de configuración…", 16, 798, 210, 28, 0, idSetWizard)
+	s.cancel = s.button("Cancelar", 276, 798, 70, 28, 0, idCancel)
+	s.saveBtn = s.button("Guardar", 354, 798, 70, 28, bsDefPushButton, idOK)
 
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
+		s.modeOnDemand, s.modeContinuous, s.modeNote,
 		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
 		s.uiGame, s.uiWindow, s.ansVoice, s.ansBeep, s.ansNone, s.volume,
 		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn,
@@ -300,6 +309,7 @@ func (s *settingsWin) load(cfg config.Config) {
 	s.refreshAvailable()
 	setWindowText(s.cooldown, strconv.Itoa(cfg.AntigravityQuotaCooldownMin))
 	setCheck(s.hide, cfg.HideInCombat)
+	s.setMode(cfg.Mode)
 	s.setTipsMode(cfg.TipsMode)
 	setCheck(s.tipsSound, cfg.TipsSound)
 	s.setUIMode(cfg.UIMode)
@@ -312,6 +322,39 @@ func (s *settingsWin) load(cfg config.Config) {
 	setWindowText(s.wowPath, cfg.WoWPath)
 	s.refreshKey(cfg)
 	s.setStatus("Cambia lo que quieras y pulsa Guardar.", colMeta)
+}
+
+// setMode checks the radio of the way the game is read, and enables the tips to match.
+func (s *settingsWin) setMode(mode string) {
+	setCheck(s.modeOnDemand, mode != config.ModeContinuous)
+	setCheck(s.modeContinuous, mode == config.ModeContinuous)
+	s.refreshModeState()
+}
+
+// readMode returns the mode of the checked radio: continuous when that one is checked.
+func (s *settingsWin) readMode() string {
+	if getCheck(s.modeContinuous) {
+		return config.ModeContinuous
+	}
+	return config.ModeOnDemand
+}
+
+// refreshModeState disables the tips controls in the on-demand mode, where the app does not
+// read the game between questions, and shows the note saying so. It runs when the mode changes.
+func (s *settingsWin) refreshModeState() {
+	onDemand := getCheck(s.modeOnDemand)
+	var enabled uintptr = 1
+	if onDemand {
+		enabled = 0
+	}
+	for _, h := range []uintptr{s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound} {
+		call(procEnableWindow, h, enabled)
+	}
+	note := ""
+	if onDemand {
+		note = TipsOnDemandNote
+	}
+	setWindowText(s.modeNote, note)
 }
 
 // setTipsMode checks the radio of the tips mode. Auto radio buttons do not clear their group
@@ -429,6 +472,7 @@ func (s *settingsWin) save() {
 		AntigravityModels: s.readList(s.models),
 		QuotaCooldownMin:  getWindowText(s.cooldown),
 		HideInCombat:      getCheck(s.hide),
+		Mode:              s.readMode(),
 		TipsMode:          s.readTipsMode(),
 		TipsSound:         getCheck(s.tipsSound),
 		StartWithWoW:      getCheck(s.startup),
@@ -553,6 +597,9 @@ func (w *window) applySettings(next config.Config) (string, error) {
 	if (old.AnswerSound != next.AnswerSound || old.AnswerVolume != next.AnswerVolume) && w.opts.AnswerSoundChanged != nil {
 		w.opts.AnswerSoundChanged(next.AnswerSound, next.AnswerVolume)
 	}
+	if old.Mode != next.Mode && w.opts.ModeChanged != nil {
+		w.opts.ModeChanged(next.Mode)
+	}
 	w.applyOpacity()
 	if old.FontSize != next.FontSize {
 		w.makeFonts()
@@ -572,6 +619,8 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 	}
 	switch msg {
 	case wmCommand:
+		// A click on a mode radio enables or disables the tips at once.
+		s.refreshModeState()
 		switch loWordCmd(wp) {
 		case idOK:
 			s.save()

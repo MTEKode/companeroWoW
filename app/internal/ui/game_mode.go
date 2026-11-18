@@ -23,7 +23,7 @@ func gameMode(uiMode string) bool {
 type hotkeyAction int
 
 const (
-	// hotkeyToggle shows the panel, or hides it when shown (window mode).
+	// hotkeyToggle is the window mode: the panel key opens the panel and activates the reader (see onShareKey).
 	hotkeyToggle hotkeyAction = iota
 	// hotkeyActivate only activates the reading of the game channel; the panel stays closed (game mode).
 	hotkeyActivate

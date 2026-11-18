@@ -16,3 +16,6 @@ func startHotkey(Hotkey, func()) (*hotkeyLoop, error) {
 func (*hotkeyLoop) Change(Hotkey) error {
 	return errors.New("el atajo global solo está disponible en Windows")
 }
+
+// Close has nothing to stop outside Windows.
+func (*hotkeyLoop) Close() {}

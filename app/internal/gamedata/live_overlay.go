@@ -40,7 +40,7 @@ func (g *Service) overlayLive(ch charEntry) charEntry {
 	}
 	changed := false
 	for t, it := range items {
-		if t == bridge.MsgKnowledge || t == bridge.MsgMeta {
+		if t == bridge.MsgKnowledge || t == bridge.MsgMeta || t == bridge.MsgSession {
 			continue
 		}
 		if !ch.updatedAt.IsZero() && !it.At.After(ch.updatedAt) {
@@ -79,6 +79,13 @@ func applyLiveBlock(merged map[string]any, t uint8, v any) bool {
 			return false
 		}
 		merged["combats"] = prependCombat(merged["combats"], rec)
+		return true
+	case msgMacros:
+		// Macros (Macros.lua): the block replaces the saved one as a whole, as the sheet does.
+		if !ok || len(body) == 0 {
+			return false
+		}
+		merged["macros"] = body
 		return true
 	case bridge.MsgCharacter, bridge.MsgQuests, bridge.MsgBags, bridge.MsgEquipment,
 		bridge.MsgProfessions, bridge.MsgActionBars, bridge.MsgHeavy:

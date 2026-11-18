@@ -58,6 +58,8 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r.Add(optimizarRotacion(g, ws))
 	r.Add(consejoBarras(g))
 	r.Add(generarComandoBarras(g))
+	r.Add(crearMacro(g))
+	r.Add(revisarMacros(g))
 	r.Add(capturarPantalla())
 
 	getters := []struct {

@@ -31,7 +31,7 @@ Tiene dos piezas:
    World of Warcraft\_forever_\Interface\AddOns\CompaneroWoW
    ```
 
-2. Entra al juego, activa el addon en la lista de addons y usa modo ventana sin bordes.
+2. Entra al juego, activa el addon en la lista de addons y usa modo ventana sin bordes. El addon propone la tecla **Ctrl+Shift+Espacio** para «Compañero: compartir datos» (WoW › Teclas › AddOns › Compañero WoW) si está libre; si ya la usa otra acción, no la cambia: elige otra tecla ahí.
 
 ## Compilar y ejecutar la app
 
@@ -54,20 +54,31 @@ Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ve
 
 ## Atajo de teclado
 
-Por defecto **Ctrl+Shift+Espacio** muestra u oculta la ventana (y le da el foco al campo de texto), en el modo ventana. En el modo juego (`uiMode: "juego"`, por defecto) solo activa la lectura del canal y no abre nada: ver [Modo juego](#modo-juego-preguntas-dentro-del-juego). Puedes cambiarlo con `hotkey` en `config.json`, por ejemplo `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+**Una sola tecla: Ctrl+Shift+Espacio.** En el modo ventana, pulsarla abre el panel con el foco en el campo de texto, pide tus datos y el addon los envía durante 20 segundos (la barra de estado cuenta los segundos). En el modo juego (`uiMode: "juego"`, por defecto) no abre nada: solo activa la lectura del juego durante esos 20 segundos, para que la pregunta que escribes en el marco de Compañero tenga datos frescos (ver [Modo juego](#modo-juego-preguntas-dentro-del-juego)). El addon no gasta nada fuera de ese envío: está en reposo, sin dibujar la franja ni serializar datos, y no le cuesta FPS. Si pulsas la tecla fuera del juego, el panel se abre igualmente, con los datos que ya tiene (en modo ventana).
+
+La app solo **observa** la tecla con un hook de teclado: no la consume ni la modifica, así que WoW la recibe y el addon empieza su envío con ella. Si una aplicación la tiene reservada, la app no lo ve y la pulsación no llega a WoW.
+
+Para cambiarla hay que cambiarla en dos sitios, que deben coincidir:
+
+- **Ajustes…** de la app (`hotkey` en `config.json`): el panel escucha la combinación nueva al momento.
+- **WoW › Teclas › AddOns › Compañero WoW › «Compañero: compartir datos»**: la misma combinación dentro del juego.
+
+Ejemplos de `hotkey`: `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
+
+`hotkeyMethod` en `config.json` elige cómo se escucha la tecla: `escuchar` (por defecto, el hook descrito arriba) o `exclusivo`, que la registra en el sistema (RegisterHotKey). Con `exclusivo` ninguna otra aplicación, WoW incluido, recibe la tecla: el panel sigue abriéndose, pero el envío del addon sale con `/compa enviar` o con otra tecla asignada a «Compañero: compartir datos».
 
 ## Modo juego: preguntas dentro del juego
 
 Por defecto (`uiMode: "juego"`) la app no muestra ventana: solo el icono de la bandeja. Las preguntas se escriben en el marco de Compañero, dentro de WoW, y la respuesta llega sin salir del juego:
 
-1. Escribe la pregunta en el marco de Compañero del juego y envíala. El addon la manda a la app.
+1. Pulsa Ctrl+Shift+Espacio, escribe la pregunta en el marco de Compañero del juego y envíala. El addon la manda a la app.
 2. La app responde con la misma IA de siempre (las mismas herramientas, verificación y proveedores) y no muestra nada fuera del juego.
 3. Al terminar, la respuesta queda en el **portapapeles** como un bloque `[CWOW1 #id …]…[/CWOW1]`, y suena el aviso **«Respuesta lista»** (o un pitido, según `answerSound`).
 4. Vuelve al marco de Compañero y pulsa **Ctrl+V** en su caja de respuesta. El addon muestra la respuesta con sus botones: **Marcar** (pone una marca en el mapa), **Colocar barras** (fuera de combate) y **Crear macro**.
 
 Detalles:
 
-- **El atajo** (Ctrl+Shift+Espacio) no abre nada en este modo: solo activa la lectura del canal con el juego. El icono de la bandeja ofrece **Ajustes…**, **Abrir panel (ventana)**, **Resumen de sesión** y **Salir**; un clic izquierdo en el icono abre el mismo menú.
+- **El atajo** (Ctrl+Shift+Espacio) no abre nada en este modo: solo activa la lectura del juego durante 20 segundos. Pulsa la tecla antes de escribir la pregunta, para que el addon envíe los datos frescos y la pregunta llegue a la app. El icono de la bandeja ofrece **Ajustes…**, **Abrir panel (ventana)**, **Resumen de sesión** y **Salir**; un clic izquierdo en el icono abre el mismo menú.
 - **Consejos**: en este modo no abren el panel ni muestran avisos; quedan en la conversación del panel, y el icono de la bandeja cuenta los nuevos.
 - **Una pregunta a la vez, la última gana**: si envías otra pregunta mientras una responde, la anterior se cancela y solo llega al portapapeles la respuesta de la última. Una pregunta ya respondida (mismo id) no se vuelve a contestar, tampoco después de reiniciar la app: los ids se guardan en `questions.json`, por personaje.
 - **Errores**: si ningún proveedor responde, el portapapeles recibe un bloque con un aviso corto en castellano y suena el aviso de error.
@@ -102,8 +113,8 @@ El panel es una ventana nativa de Windows (sin navegador integrado): sin barra d
 
 ## Primer uso
 
-1. Abre World of Warcraft en modo **sin bordes** (Opciones de vídeo → Modo de ventana): la app lee una franja de píxeles en la esquina superior izquierda, y debe verse.
-2. Instala el addon y escribe `/compa sync` en el juego para cargar tus datos.
+1. Abre World of Warcraft en modo **sin bordes** (Opciones de vídeo → Modo de ventana): la app lee una franja de píxeles en la esquina superior izquierda. Esa franja solo aparece mientras el addon envía datos, así que no hace falta que se vea siempre.
+2. Instala el addon y escribe `/compa sync` en el juego para cargar tus datos. Después, **Ctrl+Shift+Espacio** dentro del juego envía los datos en vivo (o escribe `/compa enviar`).
 3. Sigue el asistente de configuración: marca lo que falte y pulsa **Comprobar de nuevo**.
 
 ## Inicio con WoW
@@ -133,6 +144,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
   "wowPath": "C:\\Program Files (x86)\\World of Warcraft\\_forever_",
   "account": "",
   "hotkey": "Ctrl+Shift+Space",
+  "hotkeyMethod": "escuchar",
   "language": "es",
   "providerOrder": ["antigravity", "codex", "api"],
   "antigravityCommand": "agy",
@@ -181,6 +193,8 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `antigravityModels` / `antigravityQuotaCooldownMin` | Orden de los modelos de Antigravity y minutos que un modelo sin cuota queda fuera (30 por defecto). Ver [Modelos de Antigravity](#modelos-de-antigravity). |
 | `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
+| `mode` | `bajo_demanda` (por defecto): la app lee el juego solo con el panel abierto o mientras respondes una pregunta (ver «Modo de lectura»). `continuo`: lectura permanente, como antes, para depurar. Las configuraciones anteriores reciben `bajo_demanda`. |
+| `onDemandWaitSec` | En modo bajo demanda, segundos que una pregunta espera a que lleguen datos frescos del juego antes de responder (por defecto 8, máximo 20). Pasado el tiempo responde con lo que hay y señala qué datos son antiguos. |
 | `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
 | `tipsSound` | `true` reproduce el sonido de Windows con el aviso de un consejo. Por defecto, `false`. |
 | `uiMode` | `juego` (por defecto): la app no abre el panel por sí sola; las respuestas van al portapapeles y suena el aviso ([Modo juego](#modo-juego-preguntas-dentro-del-juego)). `ventana`: el panel de siempre. Las configuraciones anteriores usan `juego`. |
@@ -193,10 +207,11 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `fontSize` | Tamaño del texto del panel en puntos, de 9 a 14 (por defecto 10). |
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. El primero, `wowforevertalents.com`, es la fuente de clases, talentos, hechizos, builds, mazmorras y profesiones (ver «Fuentes web»). Las configuraciones antiguas lo reciben una vez al arrancar (`wftAdded`). |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
+| `hotkeyMethod` | `escuchar` (por defecto: un hook que observa la tecla y no la consume) o `exclusivo` (RegisterHotKey: la tecla no llega a ninguna otra aplicación). Ver [Atajo de teclado](#atajo-de-teclado). |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
-| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas» y comandos `/compa barras` salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo sale con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
+| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas», comandos `/compa barras` y los nombres de hechizo de las macros (`/compa macro`) salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo sale con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
 | `profile` | Perfil del jugador: `goals` (`subir`, `jcj`, `mazmorras`, `profesiones`, `oro`, `explorar`), `spec` (rol preferido, hasta 60 caracteres), `notes` (estilo de juego, hasta 300), `tone` (`breve` o `detallado`) y `hardcore`. Se inyecta en cada pregunta como «Perfil del jugador: …» y lo leen `valor_misiones` (criterio por oro si el objetivo es oro y no subir de nivel), `analizar_equipo` y `optimizar_talentos`. Se edita en Ajustes → Perfil…. |
-| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas» y comandos /compa barras salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo se muestra con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
+| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas», comandos /compa barras y los nombres de hechizo de las macros (/compa macro) salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo se muestra con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
 | `profile` | Perfil del jugador: `goals` (`subir`, `jcj`, `mazmorras`, `profesiones`, `oro`, `explorar`), `spec` (rol preferido, hasta 60 caracteres), `notes` (estilo de juego, hasta 300), `tone` (`breve` o `detallado`) y `hardcore`. Se inyecta en cada pregunta como «Perfil del jugador: …» y lo leen `valor_misiones` (criterio por oro si el objetivo es oro y no subir de nivel), `analizar_equipo` y `optimizar_talentos`. Se edita en Ajustes → Perfil…. |
 
 Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `.env` (opcional, claves de API), `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB), y las carpetas de trabajo de las CLI: `agy\` (la skill, `.agents\mcp_config.json` y `antigravity-settings.json`) y `codex\` (solo `AGENTS.md`). La carpeta antigua `.agents\` de la raíz se borra al arrancar.
@@ -252,10 +267,18 @@ Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las l�
 - `/compa sync`: fuerza el reenvío completo por el canal en vivo y guarda en SavedVariables los datos detallados (misiones, personaje, profesiones, etc.), con recarga de la interfaz. Con el canal en vivo ya no hace falta cada día: úsalo la primera vez, o si algo parece desactualizado en la app (por ejemplo, tras un cambio que la app no refleja). Lo que se ve en vivo lo sirve el canal; el archivo SavedVariables solo se escribe al recargar o al salir.
 - `/compa strip on|off`: activa o desactiva la franja de píxeles (el canal en vivo).
 - `/compa estado`: muestra el estado actual del addon, incluido el del canal en vivo.
+- `/compa macro lista`: cuenta y nombres de tus macros (de cuenta y de personaje).
+- `/compa macro crear <nombre>|<icono>|<cuerpo>`: crea una macro de personaje, o la actualiza si ya existe (guarda una copia antes). Las líneas del cuerpo van separadas por `
+` o `;;`. El nombre tiene 16 caracteres como máximo y el cuerpo 255. Si el comando no cabe en el chat, `/compa macro parte <n>/<total> <texto>` envía trozos y la última parte crea la macro.
+- `/compa macro borrar <nombre>` y `/compa macro deshacer` (vuelve a la copia anterior: recrea, edita o retira la macro), `/compa macro barra <nombre> <ranura>` (la pone en una barra; con copia, como `/compa barras deshacer`).
+- Las macros solo cambian cuando escribes el comando, fuera de combate, y se rechazan si las macros de personaje están llenas (18). Una macro es una acción por pulsación con las reglas del juego: el addon no crea macros que jueguen por ti.
 
 ## Canal en vivo (franja superior)
 
-El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo: el envío refresca cada 0,2 s, y cada mensaje se reenvía cada minuto para que una app que arranque tarde se ponga al día.
+El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo solo mientras dura un envío: cada 0,2 s refresca la franja, y cada tipo de mensaje se manda una vez por envío.
+
+- **Reposo por defecto.** El addon no dibuja la franja ni serializa datos hasta que pulsas **Ctrl+Shift+Espacio** dentro del juego (o `/compa enviar`, o la tecla que asignes a «Compañero: compartir datos»). Entonces envía durante 20 segundos, primero el estado, la hoja del personaje, las misiones, el equipo y la sesión, y vuelve al reposo. Pulsar otra vez reinicia la cuenta. Fuera de ese envío, el addon solo anota eventos y guarda los combates; no cuesta FPS.
+- En la barra de estado, `Recibiendo datos del juego… Ns` cuenta el envío y, al terminar, `Datos al día (hace Xs)` indica la antigüedad de tus datos. Si abres el panel desde la bandeja, sin tecla y sin franja, la barra te pide pulsar la tecla y las respuestas usan los datos guardados, con su antigüedad.
 
 - En la barra de estado, `Canal en vivo: OK (x KB/s)` indica que llegan datos. `--diag` muestra la antigüedad de cada tipo de mensaje.
 - Solo se pide `/compa sync` la primera vez o si algo parece desactualizado. Los datos que no viajan por el canal (por ejemplo, un personaje que nunca has sincronizado) siguen dependiendo de SavedVariables.
@@ -295,6 +318,8 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `revisar_combates` | Últimos combates grabados (hasta 10; `ultimo`, `muertes` y `n` filtran): duración, dps, hechizos con su porcentaje, daño recibido, muertes con el asesino y los últimos golpes, y pistas calculadas sobre la ventana. Requiere `/compa sync` tras un combate. |
 | `consejo_barras` | Barras de acción: ranura, tecla, hechizos repetidos, teclas lejanas, hechizos importantes sin colocar y una propuesta de ranuras libres. |
 | `generar_comando_barras` | Convierte una distribución (ranura y hechizo) en comandos `/compa barras aplicar` válidos (hasta 40 pares, 255 caracteres cada uno). Solo se copian; la app nunca los envía al juego. |
+| `crear_macro` | Crea una macro validada. Los hechizos salen del libro del jugador en su idioma: la línea lleva `{clave}` (p. ej. `{overpower}`) o `{id:N}` y la herramienta pone el nombre que tiene el jugador. Comprueba la sintaxis (`#showtooltip`, `/cast`, `/castsequence`, `/use`, `/equip`, condiciones), los nombres, el tamaño (255 caracteres, nombre de 16) y rechaza lo que el juego no permite (`/click`, scripts, más de una acción sin condiciones). Devuelve los comandos `/compa macro crear` (partidos en `/compa macro parte` si no caben en el chat) y, si se pide, `/compa macro barra`. |
+| `revisar_macros` | Revisa las macros exportadas: hechizos u objetos que no están en el libro o en las bolsas (con la sugerencia más parecida, útil tras un cambio de nombre), líneas que no se ejecutan, condiciones desconocidas, comandos no permitidos, longitud y mejoras. |
 | `que_entrenar` | Hechizos de clase que puede aprender ahora (y del siguiente nivel) con su coste, si le alcanza el oro y el entrenador de su clase cuando se conoce. Requiere WhatsTraining. |
 | `ruta_profesion` | Cómo subir una profesión (SkillUpForever): recetas del siguiente rango, materiales, lista de la compra y entrenador. Acepta `profesion` o `skill_line_id`. Requiere SkillUpForever. |
 | `analizar_equipo` | Mejoras por ranura con lo accesible ya («ahora») o pronto (hasta 3 niveles más): objeto actual, diferencia de nivel de objeto y de stats, misión o mazmorra de origen y su `/compa marca`. Acepta `ventana` (`ahora`, `pronto`, `ambas`) y `slot`. Requiere el equipo, las misiones accesibles y los candidatos que exporta el addon (`/compa sync`). |
@@ -332,6 +357,22 @@ Para builds, talentos, rotación, stats y valor de equipo, la app no usa guías:
 - **Herramientas** (guerrero): `calcular_dps`, `pesos_estadisticas`, `comparar_objetos`, `optimizar_talentos`, `optimizar_rotacion`. `analizar_equipo` añade `teoria.ranking`, `analizar_rotacion` añade `teoria.mejor` y `revisar_combates` añade `revision` por combate.
 - **Calibración**: el modelo calcula el poder de ataque (2 × fuerza − 20), el crítico (agilidad total / 20 + talentos) y la velocidad de ataque, y los compara con la hoja. Si una diferencia pasa del 3 %, la herramienta avisa «modelo desajustado». El golpe blanco no se compara: la hoja no trae su daño.
 - **Limitaciones**: solo guerrero (otras clases responden con `disponible: false`); las constantes marcadas «aprox.» son aproximaciones documentadas, no datos del cliente; los talentos sin efecto modelado se nombran y no se valoran; la búsqueda de talentos es un haz de 5 opciones por paso, no exhaustiva; las pistas de daño de Rend y Deep Wounds dependen de los tooltips del personaje.
+
+## Modo de lectura: solo al preguntar (por defecto)
+
+Con `mode: "bajo_demanda"` (por defecto) la app no mira el juego en segundo plano:
+
+- **Lector en reposo.** No hay capturas de pantalla ni búsqueda de la ventana de WoW mientras nadie usa la app. El lector se activa mientras el panel está abierto o hay una pregunta en curso, y se apaga 20 s después de cerrar el panel si no hay ninguna pregunta. Activo, lee la franja como antes (cada 0,25 s), así que los datos se refrescan mientras escribes. Con el panel cerrado y en reposo, la app no hace capturas y su uso de CPU es despreciable.
+- **Espera de datos frescos.** Al preguntar, la app espera hasta `onDemandWaitSec` (8 s por defecto) a que lleguen el personaje, la hoja, las misiones, el equipo y la sesión del addon. El panel muestra «Leyendo el juego… (x/5)» y el botón Cancelar sigue funcionando. Si no llegan a tiempo, responde con los datos que tiene y avisa a la IA de qué bloques son antiguos y de hace cuánto («datos de hace 3 min»).
+- **SavedVariables bajo demanda.** El archivo se mira al activarse la app y antes de cada pregunta; no hay temporizador que lo lea.
+- **Sesión del addon.** La sesión de juego la lleva el addon: el mensaje 14 («session») del canal y `characters[key].session` en SavedVariables. `ritmo_subida`, `resumen_sesion` y `contexto_jugador` la leen de ahí. La app no lleva sesiones propias en este modo.
+- **Últimos datos.** Al quedar en reposo, la app guarda lo último que leyó en `%APPDATA%\CompaneroWoW\livecache.json` y lo carga al arrancar, para que una respuesta tras reiniciar tenga datos, con su antigüedad.
+- **Sin consejos proactivos.** La IA solo responde cuando preguntas. En Ajustes, el selector de consejos aparece desactivado con la nota correspondiente.
+- **Ocultar en combate** solo funciona mientras la app está activa (panel abierto o pregunta en curso). Con el panel cerrado en reposo, no puede saber si estás en combate.
+- **Barra de estado.** En reposo muestra «En reposo — abre el panel o pregunta para leer el juego».
+- **Diagnóstico.** `CompaneroWoW.exe --diag` incluye `mode`, `tipsEffective` y `runningApp`: el estado que la app en ejecución escribió en `runtime.json` en su último cambio (activa o no, y el número de capturas hechas). Con el panel cerrado ese número no cambia. `channel.captures` cuenta las capturas del propio `--diag`.
+
+`mode: "continuo"` vuelve a la lectura de siempre: captura permanente, consejos proactivos y el seguimiento de sesión propio de la app. En Ajustes, **Funcionamiento** cambia entre los dos modos al guardar, sin reiniciar.
 
 ## Ritmo, valor de misiones y enemigos
 

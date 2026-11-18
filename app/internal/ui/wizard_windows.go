@@ -23,10 +23,12 @@ type wizardResult struct {
 	forever string
 }
 
-// wizardInfo is the explanation under the checklist: the window mode WoW needs and the
-// command that loads the data.
-const wizardInfo = "En WoW, usa el modo «Sin bordes» (Opciones de vídeo → Modo de ventana): " +
-	"la franja de píxeles de la esquina superior izquierda debe verse. " +
+// wizardInfo is the explanation under the checklist: the window mode WoW needs, the one key
+// that sends the data and the command that loads it.
+const wizardInfo = "En WoW, usa el modo «Sin bordes» (Opciones de vídeo → Modo de ventana). " +
+	"Una sola tecla: Ctrl+Shift+Espacio. Dentro del juego, púlsala para abrir este panel y " +
+	"enviarle tus datos; el addon está en reposo el resto del tiempo y no gasta FPS. " +
+	"Para cambiarla, en Ajustes de este panel y en WoW › Teclas › AddOns › Compañero WoW. " +
 	"Luego escribe /compa sync en el juego para cargar tus datos."
 
 // startWizard opens the wizard in the panel and runs the checks. It shows the panel
