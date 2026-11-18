@@ -11,3 +11,6 @@ func Run(Options) error {
 
 // Activate has nothing to bring forward outside Windows.
 func Activate() bool { return false }
+
+// wakeStatus has no status bar to repaint outside Windows.
+func wakeStatus() {}

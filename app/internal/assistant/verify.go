@@ -3,12 +3,14 @@ package assistant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/eval"
+	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
 )
 
@@ -65,7 +67,7 @@ func (a *Assistant) askVerifiedStream(ctx context.Context, req ai.Request, s ai.
 		return resp, nil
 	}
 	injected := req.System
-	violations := eval.Grounding(resp.Text, eval.EvidenceFor(outputsOf(calls), injected))
+	violations := groundingOf(resp.Text, eval.EvidenceFor(outputsOf(calls), injected))
 	if len(violations) == 0 {
 		a.verifier.Add(1, 0, false, false)
 		return resp, nil
@@ -77,7 +79,7 @@ func (a *Assistant) askVerifiedStream(ctx context.Context, req ai.Request, s ai.
 		r2, calls2, rerr := a.askCaptured(ctx, repair, ai.Stream{})
 		if rerr == nil && strings.TrimSpace(r2.Text) != "" {
 			all := append(outputsOf(calls), outputsOf(calls2)...)
-			left := eval.Grounding(r2.Text, eval.EvidenceFor(all, injected))
+			left := groundingOf(r2.Text, eval.EvidenceFor(all, injected))
 			if len(left) == 0 {
 				a.verifier.Add(1, found, true, false)
 				r2.Corrected = true
@@ -93,6 +95,86 @@ func (a *Assistant) askVerifiedStream(ctx context.Context, req ai.Request, s ai.
 	resp.Corrected = true
 	a.verifier.Add(1, found, false, true)
 	return resp, nil
+}
+
+// groundingOf is eval.Grounding plus the macro rule: every spell and item that a /compa macro
+// command names must be in the evidence (the sheet, the bags or the context the tools gave).
+func groundingOf(answer string, ev eval.Evidence) []eval.Violation {
+	out := eval.Grounding(answer, ev)
+	if v, ok := macroGrounding(answer, ev); ok {
+		out = append(out, v)
+	}
+	return out
+}
+
+// macroGrounding checks the names of the macros in an answer. A macro is read from its
+// /compa macro crear line, or from its /compa macro parte lines when they are all there.
+// ok is false when the answer has no macro or every name is backed.
+func macroGrounding(answer string, ev eval.Evidence) (eval.Violation, bool) {
+	haystack := strings.ToLower(ev.Output + "\n" + ev.Injected)
+	var missing []string
+	for _, body := range macroBodiesIn(answer) {
+		for _, name := range gamedata.MacroNames(body) {
+			if !strings.Contains(haystack, strings.ToLower(name)) {
+				missing = append(missing, name)
+			}
+		}
+	}
+	if len(missing) == 0 {
+		return eval.Violation{}, false
+	}
+	return eval.Violation{
+		Check:  "macro",
+		Detail: "nombres de la macro sin respaldo en el libro de hechizos ni en las bolsas: " + strings.Join(missing, ", "),
+		Claims: len(missing),
+	}, true
+}
+
+// macroBodiesIn returns the bodies of the /compa macro crear commands of an answer, in order. The
+// parts of a chunked macro count only when all of them are in the answer.
+func macroBodiesIn(answer string) []string {
+	const create = "/compa macro crear "
+	const part = "/compa macro parte "
+	var bodies []string
+	parts := map[int]string{}
+	total := 0
+	for _, line := range strings.Split(strings.ReplaceAll(answer, "\r\n", "\n"), "\n") {
+		t := strings.TrimSpace(line)
+		if i := strings.Index(t, create); i >= 0 {
+			if body := payloadBody(t[i+len(create):]); body != "" {
+				bodies = append(bodies, body)
+			}
+			continue
+		}
+		if i := strings.Index(t, part); i >= 0 {
+			// "n/total texto": the text is everything after the first space, as the addon reads it.
+			head, text, found := strings.Cut(t[i+len(part):], " ")
+			var n, of int
+			if _, err := fmt.Sscanf(head, "%d/%d", &n, &of); found && err == nil && n >= 1 && of >= 1 {
+				parts[n] = text
+				total = of
+			}
+		}
+	}
+	if total > 0 && len(parts) == total {
+		var b strings.Builder
+		for n := 1; n <= total; n++ {
+			b.WriteString(parts[n])
+		}
+		if body := payloadBody(b.String()); body != "" {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
+}
+
+// payloadBody reads the body of a "nombre|icono|cuerpo" payload, with the literal \n as line breaks.
+func payloadBody(payload string) string {
+	parts := strings.SplitN(payload, "|", 3)
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.ReplaceAll(parts[2], "\\n", "\n")
 }
 
 // streamingAsker is implemented by the chain: its answer can be written as it comes.

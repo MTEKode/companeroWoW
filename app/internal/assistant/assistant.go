@@ -135,7 +135,7 @@ func (a *Assistant) Answer(ctx context.Context, question string, withScreenshot 
 // ask builds the request (skill, game state, history, optional screenshot) and calls the
 // chain. It stores nothing and does not use the cache.
 func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, history []ai.Message) (ai.Response, error) {
-	req, err := a.request(q, withScreenshot, history)
+	req, err := a.request(ctx, q, withScreenshot, history)
 	if err != nil {
 		return ai.Response{}, err
 	}
@@ -144,7 +144,7 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 
 // askCached is ask with the answer cache and the stream. A cache hit is streamed whole.
 func (a *Assistant) askCached(ctx context.Context, q string, withScreenshot bool, history []ai.Message, s ai.Stream) (ai.Response, error) {
-	req, err := a.request(q, withScreenshot, history)
+	req, err := a.request(ctx, q, withScreenshot, history)
 	if err != nil {
 		return ai.Response{}, err
 	}
@@ -171,7 +171,7 @@ func (a *Assistant) askCached(ctx context.Context, q string, withScreenshot bool
 
 // request builds the request of one question: the skill, the system prompt with the game state and
 // the player context, the history and, when asked, the screenshot.
-func (a *Assistant) request(q string, withScreenshot bool, history []ai.Message) (ai.Request, error) {
+func (a *Assistant) request(ctx context.Context, q string, withScreenshot bool, history []ai.Message) (ai.Request, error) {
 	if a.asker == nil {
 		return ai.Request{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
@@ -182,6 +182,10 @@ func (a *Assistant) request(q string, withScreenshot bool, history []ai.Message)
 		System:  a.systemPrompt(),
 		History: history,
 		Prompt:  q,
+	}
+	// On-demand mode: game blocks that did not refresh before the question are named with their age.
+	if note := dataNote(ctx); note != "" {
+		req.System += "\n\n" + note
 	}
 	if withScreenshot {
 		png, err := CaptureFunc()
@@ -208,6 +212,25 @@ func (a *Assistant) systemPrompt() string {
 		system += "\n\n" + block
 	}
 	return system
+}
+
+// dataNoteKey carries the stale-data note in a context (see WithDataNote).
+type dataNoteKey struct{}
+
+// WithDataNote returns ctx with a note about game data that is older than the question (blocks
+// that did not refresh in time, with their ages). The question's system prompt then carries it.
+// An empty note leaves ctx as it is.
+func WithDataNote(ctx context.Context, note string) context.Context {
+	if note == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, dataNoteKey{}, note)
+}
+
+// dataNote returns the note set by WithDataNote, or "".
+func dataNote(ctx context.Context) string {
+	s, _ := ctx.Value(dataNoteKey{}).(string)
+	return s
 }
 
 // LastContext returns the player context block that the last question carried, or "" when
