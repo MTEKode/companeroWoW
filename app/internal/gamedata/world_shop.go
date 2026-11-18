@@ -132,24 +132,36 @@ func (g *Service) BuyOptions(nombre string, itemID int64) (any, error) {
 	return available(sourceSV, w.At, out), nil
 }
 
-// knownVendorsNear lists the vendor NPCs of the player's map that the knowledge store has, without
-// their stock (the store has no items). Empty without a position.
+// knownVendorsNear lists the vendor NPCs of the player's map that the knowledge store and Questie
+// have (without their stock: neither keeps the items). Empty without a position.
 func (g *Service) knownVendorsNear(pos position) []map[string]any {
-	if !pos.OK || g.store == nil {
+	if !pos.OK {
 		return nil
 	}
-	npcs, err := g.store.NpcsOnMap(pos.MapID, 200)
-	if err != nil {
-		return nil
-	}
+	seen := map[string]bool{}
 	var out []map[string]any
-	for _, n := range npcs {
-		if !n.IsVendor || (n.X == 0 && n.Y == 0) {
-			continue
+	add := func(name string, mapID int, x, y float64) {
+		key := fmt.Sprintf("%s|%d|%.2f|%.2f", name, mapID, x, y)
+		if seen[key] || name == "" || len(out) >= worldMaxKnownNPC {
+			return
 		}
-		out = append(out, map[string]any{"nombre": n.Name, "mapId": n.MapID, "x": round1(n.X * 100), "y": round1(n.Y * 100)})
-		if len(out) == worldMaxKnownNPC {
-			break
+		seen[key] = true
+		out = append(out, map[string]any{"nombre": name, "mapId": mapID, "x": round1(x * 100), "y": round1(y * 100)})
+	}
+	if g.store != nil {
+		if npcs, err := g.store.NpcsOnMap(pos.MapID, 200); err == nil {
+			for _, n := range npcs {
+				if n.IsVendor && (n.X != 0 || n.Y != 0) {
+					add(n.Name, n.MapID, n.X, n.Y)
+				}
+			}
+		}
+	}
+	if ch, _, ok := g.activeCharacter(); ok {
+		for _, n := range readQuestie(ch.data).NPCs {
+			if n.Role == "vendor" && n.MapID == pos.MapID {
+				add(n.Name, n.MapID, n.X, n.Y)
+			}
 		}
 	}
 	return out

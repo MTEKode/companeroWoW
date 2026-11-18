@@ -278,6 +278,11 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `ritmo_subida` | XP por hora (sesión, últimas sesiones, últimos 30 min), tiempo al siguiente nivel y reparto combate/viaje/parado (estimado). |
 | `valor_misiones` | Misiones accesibles por XP (o oro) por minuto estimado, con una ruta. |
 | `info_enemigo` | Lo observado contra un enemigo, el tiempo de matarlo del modelo y un veredicto para 1 a 3 enemigos. |
+| `ruta_viaje` | Cómo llegar a un destino (zona, NPC, misión, nodo de vuelo o coordenadas): a pie o con los vuelos que el addon ha cronometrado, con tiempo total, coste en cobre, pasos y marca. Los vuelos son medidos; caminar, estimado. |
+| `donde_comprar` | Vendedores que el addon ha visto con un objeto (nombre o item_id), ordenados por precio y con el tiempo de llegar. |
+| `coste_entrenamiento` | Coste de lo que se puede aprender ahora y del siguiente nivel o rango, con el entrenador y dónde está. Sin argumentos, los entrenadores de clase; con `profesion`, los de esa profesión. |
+| `cadena_mision` | Misiones que van antes y después de una misión, cuáles le faltan al personaje y un orden sugerido (Questie y lo que el addon vio). |
+| `consumibles` | Lo que lleva el personaje, qué restaura más por cobre y por segundo, dónde comprarlo, lo que permiten Primeros auxilios y Cocina, y cuántos llevar para N peleas. |
 | `obtener_grupo` | Grupo o banda. |
 | `obtener_hechizos` | Libro de hechizos. |
 | `obtener_talentos` | Talentos guardados por el addon. |
