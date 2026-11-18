@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
@@ -22,8 +23,9 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
 )
 
-// historyTurns is how many previous messages are sent with each question.
-const historyTurns = 10
+// historyTurns is how many previous turns (a question and its answer) are sent with each
+// question. Turns about another intent are dropped once they are older than two (see pruneHistory).
+const historyTurns = 6
 
 // historyAnswerRunes caps each earlier assistant answer sent back as history; the full
 // text stays in the store and in the overlay.
@@ -60,9 +62,10 @@ type Assistant struct {
 	verifier eval.StatsKeeper
 
 	mu      sync.Mutex
-	lastCtx string         // the player context block of the last question
-	prof    config.Profile // the player's profile, injected into every prompt (see SetProfile)
-	verify  bool           // whether answers are verified (the verifyAnswers setting, see SetAnswerSettings)
+	lastCtx string           // the player context block of the last question
+	lastPr  eval.PromptStats // what the system prompt of the last question carried (see systemPrompt)
+	prof    config.Profile   // the player's profile, injected into every prompt (see SetProfile)
+	verify  bool             // whether answers are verified (the verifyAnswers setting, see SetAnswerSettings)
 }
 
 // New creates the assistant over the provider chain, the game data, the store and the
@@ -97,7 +100,7 @@ func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot boo
 	}
 	ctx, cancel := context.WithTimeout(ctx, questionDeadline)
 	defer cancel()
-	resp, err := a.ask(ctx, q, withScreenshot, a.history())
+	resp, err := a.ask(ctx, q, withScreenshot, a.historyFor(classifyIntent(q)))
 	if err != nil {
 		return resp, err
 	}
@@ -127,7 +130,7 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 	// for the usual "where am I / what now" questions.
 	req := ai.Request{
 		Skill:   SystemPrompt,
-		System:  a.systemPrompt(),
+		System:  a.systemPrompt(q),
 		History: history,
 		Prompt:  q,
 	}
@@ -142,19 +145,51 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 	return a.askVerified(ctx, req)
 }
 
-// systemPrompt is the game state and the player context block that every question
-// carries, proactive tips included. The context is consulted here, once, so the provider
-// does not need a tool call for the usual "where am I / what now" questions.
-func (a *Assistant) systemPrompt() string {
-	system := a.stateBlock()
+// systemPrompt is the per-question system text of question q, proactive tips included. It
+// starts with the playbook excerpt of the question's intent, then the player context sub-blocks
+// that the intent needs and the profile. The game state ("Estado actual") is only the fallback
+// for an intent whose context block is empty, so that the same data is not sent twice. The
+// context is consulted here, once, so the provider does not need a tool call for the usual
+// questions. The full skill is not part of it: providers get that separately.
+func (a *Assistant) systemPrompt(q string) string {
+	in := classifyIntent(q)
+	v := a.playerContext()
+	var block string
+	var kept []string
+	if keys := intentContextKeys[in]; len(keys) > 0 {
+		block, kept = contextBlock(v, keys, intentContextLimit)
+	}
+	var parts []string
+	if pb := playbookFor(in, q); pb != "" {
+		parts = append(parts, pb)
+	}
+	if in != IntentLore && block == "" {
+		parts = append(parts, a.stateBlock())
+	}
 	if p := a.profileBlock(); p != "" {
-		system += "\n\n" + p
+		parts = append(parts, p)
 	}
-	block := a.playerContextBlock()
-	a.setLastContext(block)
 	if block != "" {
-		system += "\n\n" + block
+		parts = append(parts, block)
 	}
+	system := strings.Join(parts, "\n\n")
+
+	// What the first version carried for the same question, for the eval's before and after.
+	baseline := a.stateBlock()
+	if p := a.profileBlock(); p != "" {
+		baseline += "\n\n" + p
+	}
+	if old, _ := contextBlock(v, legacyContextKeys, contextLimit); old != "" {
+		baseline += "\n\n" + old
+	}
+	a.setLastPrompt(eval.PromptStats{
+		Intent:        string(in),
+		Chars:         utf8.RuneCountInString(system),
+		BaselineChars: utf8.RuneCountInString(baseline),
+		Keys:          kept,
+		PresentKeys:   presentKeys(v),
+	})
+	a.setLastContext(block)
 	return system
 }
 
@@ -170,6 +205,21 @@ func (a *Assistant) setLastContext(block string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.lastCtx = block
+}
+
+// LastPromptStats returns what the system prompt of the last question carried: its intent, its
+// size and the size the first version of the prompt would have had. The evaluation harness
+// reports it per question.
+func (a *Assistant) LastPromptStats() eval.PromptStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastPr
+}
+
+func (a *Assistant) setLastPrompt(s eval.PromptStats) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastPr = s
 }
 
 // ClearHistory deletes every stored chat message.
@@ -188,29 +238,16 @@ func (a *Assistant) History(n int) ([]store.ChatMsg, error) {
 	return a.st.RecentMessages(n)
 }
 
-// history converts the stored messages into the chain's history format. Earlier answers
-// are cut to historyAnswerRunes so that the prompt stays small.
-func (a *Assistant) history() []ai.Message {
-	msgs, err := a.History(historyTurns)
+// historyFor is the history sent with a question of intent in: the last historyTurns turns,
+// with the old turns about other intents left out (see pruneHistory). Earlier answers are cut
+// to historyAnswerRunes so that the prompt stays small.
+func (a *Assistant) historyFor(in Intent) []ai.Message {
+	msgs, err := a.History(historyFetch)
 	if err != nil {
 		log.Printf("assistant: read history: %v", err)
 		return nil
 	}
-	out := make([]ai.Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role != "user" && m.Role != "assistant" {
-			continue
-		}
-		if strings.HasPrefix(m.Provider, proactivePrefix) {
-			continue
-		}
-		content := m.Content
-		if m.Role == "assistant" {
-			content = truncateRunes(content, historyAnswerRunes)
-		}
-		out = append(out, ai.Message{Role: m.Role, Content: content})
-	}
-	return out
+	return pruneHistory(msgs, in)
 }
 
 // truncateRunes keeps at most n runes of s, marking the cut with an ellipsis.

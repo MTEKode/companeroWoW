@@ -48,8 +48,8 @@ type proactor struct {
 	combat  func() bool
 	notify  func(Tip)
 	persist func(Tip, string)
-	// system returns the game state and player context a tip carries, as a question does.
-	system func() string
+	// system returns the system text a tip carries for its question, as a question does.
+	system func(q string) string
 	// training returns the trainable spells, added to the level-up tip only.
 	training func() string
 
@@ -151,7 +151,7 @@ func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip
 		Prompt: tipPrompts[code] + " " + proactiveInstruction,
 	}
 	if p.system != nil {
-		req.System = p.system()
+		req.System = p.system(tipPrompts[code])
 	}
 	// A level-up tip is most useful with what can be trained now (que_entrenar's data).
 	if code == levelUpCode && p.training != nil {

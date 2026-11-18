@@ -35,8 +35,8 @@ func TestRequestCarriesSkillAndStateSeparately(t *testing.T) {
 	if req.Skill != SystemPrompt {
 		t.Errorf("Skill = %q, want the skill text", req.Skill)
 	}
-	if !strings.HasPrefix(req.System, "Estado actual") {
-		t.Errorf("System = %q, want the state block", req.System)
+	if !strings.HasPrefix(req.System, "Playbook (misiones):") || !strings.Contains(req.System, "Estado actual") {
+		t.Errorf("System = %q, want the playbook of the question first, then the state block", req.System)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestHistoryTruncatesLongAnswersOnly(t *testing.T) {
 }
 
 func TestHistoryTurnsIsTen(t *testing.T) {
-	if historyTurns != 10 {
-		t.Fatalf("historyTurns = %d, the spec asks for 10", historyTurns)
+	if historyTurns != 6 {
+		t.Fatalf("historyTurns = %d, the spec asks for 6", historyTurns)
 	}
 }
 

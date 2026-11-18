@@ -22,8 +22,9 @@ func TestProactiveTipCarriesStateBlock(t *testing.T) {
 	if len(fake.reqs) != 1 {
 		t.Fatalf("asked %d times, want 1", len(fake.reqs))
 	}
-	if !strings.HasPrefix(fake.reqs[0].System, "Estado actual") {
-		t.Errorf("tip system = %q, want the state block", fake.reqs[0].System)
+	sys := fake.reqs[0].System
+	if !strings.HasPrefix(sys, "Playbook (misiones):") || !strings.Contains(sys, "Estado actual") {
+		t.Errorf("tip system = %q, want the quest playbook first, then the state block", sys)
 	}
 }
 
@@ -42,7 +43,7 @@ func TestHistoryExcludesProactiveTips(t *testing.T) {
 	must(st.AddMessage(store.ChatMsg{Role: "assistant", Content: "Ve a Elwynn.", Provider: "codex"}))
 	must(st.AddMessage(store.ChatMsg{Role: "assistant", Content: "Consejo: entrena.", Provider: "proactivo:gemini"}))
 
-	got := a.history()
+	got := a.historyFor(IntentGeneral)
 	if len(got) != 2 {
 		t.Fatalf("history has %d messages, want 2 (the tip excluded): %+v", len(got), got)
 	}
