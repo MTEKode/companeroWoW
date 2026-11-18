@@ -90,7 +90,9 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create database dir: %w", err)
 	}
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	// cache_size keeps the page cache small (512 KiB): the store is a few MB and the app is
+	// mostly idle. ShrinkMemory hands back what the cache still holds when the app goes idle.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=cache_size(-512)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database %s: %w", path, err)
@@ -107,6 +109,19 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate database %s: %w", path, err)
 	}
 	return &Store{db: db, now: time.Now}, nil
+}
+
+// ShrinkMemory asks SQLite to release the memory its page cache holds beyond what the
+// connection needs at rest. It is cheap and safe to call at any time; the app calls it when it
+// goes idle.
+func (s *Store) ShrinkMemory() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if _, err := s.db.Exec(`PRAGMA shrink_memory`); err != nil {
+		return fmt.Errorf("shrink memory: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database.
