@@ -59,6 +59,9 @@ var wantNames = []string{
 	"leer_pagina",
 	"hechizos_clase",
 	"builds_clase",
+	"ritmo_subida",
+	"valor_misiones",
+	"info_enemigo",
 }
 
 // fixtureService builds a gamedata service over the SavedVariables fixture with the

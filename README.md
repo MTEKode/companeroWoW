@@ -76,7 +76,7 @@ El panel es una ventana nativa de Windows (sin navegador integrado): sin barra d
 - **👍 / 👎**: bajo la última respuesta puedes valorarla. Con 👎 se abre una línea opcional para decir qué falló. Las valoraciones se guardan en `companero.db` con la pregunta, la respuesta, el proveedor y la versión de la skill (ver [Valoraciones](#valoraciones-y-exportación)).
 - **En combate** el panel se oculta solo (con `hideInCombat`, activado por defecto) y vuelve dos segundos después de acabar el combate. Los consejos que lleguen mientras tanto esperan en la conversación. Si abres el panel con el atajo durante un combate, se queda abierto.
 - **Bandeja**: el icono junto al reloj abre o oculta el panel con clic izquierdo; con clic derecho ofrece Mostrar/ocultar, Ajustes, Resumen de sesión y Salir. Cerrar el panel no quita el icono.
-- **Ajustes…** (menú contextual o bandeja): atajo, opacidad (60–100 %), tamaño de letra (9–14 pt), orden de proveedores, ocultar en combate, consejos (en el panel, notificación discreta o desactivados) y sonido de los consejos, iniciar con WoW, carpeta de WoW y el estado de la clave de NVIDIA. Se guardan en `config.json`. Lo que se puede, se aplica al momento (atajo, opacidad, tamaño de letra, combate, consejos, inicio con WoW); lo demás se aplica al reiniciar y la propia pantalla lo dice.
+- **Ajustes…** (menú contextual o bandeja): atajo, opacidad (60–100 %), tamaño de letra (9–14 pt), orden de proveedores, ocultar en combate, consejos (en el panel, notificación discreta o desactivados) y sonido de los consejos, iniciar con WoW, carpeta de WoW y el estado de la clave de NVIDIA. **Perfil…** abre el perfil del jugador (objetivos, rol preferido, estilo, tono breve o detallado, hardcore) y la verificación de respuestas; se aplica al guardar. Se guardan en `config.json`. Lo que se puede, se aplica al momento (atajo, opacidad, tamaño de letra, combate, consejos, inicio con WoW); lo demás se aplica al reiniciar y la propia pantalla lo dice.
 - **Asistente de configuración…** (menú contextual o bandeja): comprueba la carpeta de WoW Forever, el addon, la sesión de Antigravity y de Codex, y la clave de NVIDIA, con ✅ o ❌ por cada punto. Puede instalar el addon desde la carpeta `addon\CompaneroWoW` junto al programa, pero solo cuando pulsas «Instalar addon». Solo lee el sistema y ejecuta los comandos de estado (`agy models`, `codex login status`).
 - El asistente se abre solo la primera vez (cuando se crea `config.json`) y con `--setup`.
 
@@ -171,6 +171,10 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. El primero, `wowforevertalents.com`, es la fuente de clases, talentos, hechizos, builds, mazmorras y profesiones (ver «Fuentes web»). Las configuraciones antiguas lo reciben una vez al arrancar (`wftAdded`). |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
+| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas» y comandos `/compa barras` salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo sale con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
+| `profile` | Perfil del jugador: `goals` (`subir`, `jcj`, `mazmorras`, `profesiones`, `oro`, `explorar`), `spec` (rol preferido, hasta 60 caracteres), `notes` (estilo de juego, hasta 300), `tone` (`breve` o `detallado`) y `hardcore`. Se inyecta en cada pregunta como «Perfil del jugador: …» y lo leen `valor_misiones` (criterio por oro si el objetivo es oro y no subir de nivel), `analizar_equipo` y `optimizar_talentos`. Se edita en Ajustes → Perfil…. |
+| `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas» y comandos /compa barras salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo se muestra con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
+| `profile` | Perfil del jugador: `goals` (`subir`, `jcj`, `mazmorras`, `profesiones`, `oro`, `explorar`), `spec` (rol preferido, hasta 60 caracteres), `notes` (estilo de juego, hasta 300), `tone` (`breve` o `detallado`) y `hardcore`. Se inyecta en cada pregunta como «Perfil del jugador: …» y lo leen `valor_misiones` (criterio por oro si el objetivo es oro y no subir de nivel), `analizar_equipo` y `optimizar_talentos`. Se edita en Ajustes → Perfil…. |
 
 Ficheros de la app en `%APPDATA%\CompaneroWoW\`: `config.json`, `.env` (opcional, claves de API), `companero.db` (historial, base de conocimiento y caché web), `window.json` (posición y tamaño de la ventana), `companero.log` (se rota a 5 MB), y las carpetas de trabajo de las CLI: `agy\` (la skill, `.agents\mcp_config.json` y `antigravity-settings.json`) y `codex\` (solo `AGENTS.md`). La carpeta antigua `.agents\` de la raíz se borra al arrancar.
 
@@ -248,6 +252,9 @@ Antigravity CLI, Codex CLI y las APIs con herramientas usan estas herramientas l
 | `obtener_objetivo` | Objetivo actual (NPC, nivel, hostil o no). |
 | `obtener_inventario` | Bolsas y espacios libres. |
 | `obtener_equipo` | Equipo puesto. |
+| `ritmo_subida` | XP por hora (sesión, últimas sesiones, últimos 30 min), tiempo al siguiente nivel y reparto combate/viaje/parado (estimado). |
+| `valor_misiones` | Misiones accesibles por XP (o oro) por minuto estimado, con una ruta. |
+| `info_enemigo` | Lo observado contra un enemigo, el tiempo de matarlo del modelo y un veredicto para 1 a 3 enemigos. |
 | `obtener_grupo` | Grupo o banda. |
 | `obtener_hechizos` | Libro de hechizos. |
 | `obtener_talentos` | Talentos guardados por el addon. |
@@ -303,6 +310,16 @@ Para builds, talentos, rotación, stats y valor de equipo, la app no usa guías:
 - **Calibración**: el modelo calcula el poder de ataque (2 × fuerza − 20), el crítico (agilidad total / 20 + talentos) y la velocidad de ataque, y los compara con la hoja. Si una diferencia pasa del 3 %, la herramienta avisa «modelo desajustado». El golpe blanco no se compara: la hoja no trae su daño.
 - **Limitaciones**: solo guerrero (otras clases responden con `disponible: false`); las constantes marcadas «aprox.» son aproximaciones documentadas, no datos del cliente; los talentos sin efecto modelado se nombran y no se valoran; la búsqueda de talentos es un haz de 5 opciones por paso, no exhaustiva; las pistas de daño de Rend y Deep Wounds dependen de los tooltips del personaje.
 
+## Ritmo, valor de misiones y enemigos
+
+Tres herramientas para las preguntas de juego del día a día. Los números son estimaciones, y la respuesta lo dice:
+
+- **`ritmo_subida`** (`nivel` opcional): XP por hora de la sesión actual, de las últimas tres sesiones y de los últimos 30 minutos (muestras en vivo); cuánto falta para el siguiente nivel y, con `nivel`, para ese nivel. El reparto del tiempo (combate, viaje, parado) sale de las banderas en vivo y de la posición entre muestras. El resumen también va en `contexto_jugador` como `ritmo`.
+- **`valor_misiones`** (`ventana`, `zona`, `criterio`): misiones accesibles con XP por minuto. El XP es el que el addon vio en la misión cuando lo tiene; si no, se estima por nivel de misión frente a tu nivel («estimado»). Los minutos suman el paseo (7 yardas por segundo, una unidad del mapa ≈ 12 yardas) y las matanzas al tiempo para matar del modelo de teoría (o, sin modelo, la mediana de tus combates ganados). Trae una ruta por vecino más próximo que termina cada zona antes de cambiar.
+- **`info_enemigo`** (`nombre` o `npc_id`; sin ellos, el objetivo seleccionado; `grupo` de 1 a 3): lo observado en tus combates grabados contra ese enemigo (duración, daño recibido por segundo, muertes que causó), el tiempo de matarlo del modelo de teoría y un veredicto con sus motivos. Sin combates grabados, el veredicto usa solo nivel y clasificación y lo dice.
+
+El verificador de respuestas (`verifyAnswers`) usa las comprobaciones de la evaluación (`app/internal/eval/verify.go`). El informe de la evaluación cuenta cuántas respuestas tenían datos sin respaldo, cuántas se repararon y cuántas salieron con aviso.
+
 ## Otros addons y sesiones
 
 El addon lee dos addons opcionales a través de sus APIs públicas y los guarda en SavedVariables junto a sus datos (fuera de combate, como mucho cada 10 s, al entrar y con `/compa sync`):
@@ -334,3 +351,5 @@ El texto de la web es contenido externo: el modelo lo trata como datos y no sigu
 - La franja de píxeles necesita modo ventana o sin bordes. En pantalla completa exclusiva no se puede leer.
 - Las coordenadas de SavedVariables y de la franja se muestran como porcentaje del mapa (0 a 100).
 - La base de conocimiento se aprende de tus `/compa sync`: cuanto más juegues y sincronices, más sabe la app.
+- El tiempo de matar un enemigo del modelo de teoría (usado por `valor_misiones` e `info_enemigo`) solo existe para guerrero; con otras clases se usan los combates grabados o una cifra supuesta, y la respuesta lo dice. El veredicto de `info_enemigo` no predice el daño total: usa el daño observado en tus combates.
+- El verificador comprueba coordenadas, nombres entre «comillas» y comandos `/compa barras`; no comprueba cifras sueltas (un tiempo o un ritmo calculado no se puede comparar con una herramienta sin falsos avisos).

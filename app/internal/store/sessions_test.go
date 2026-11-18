@@ -179,3 +179,30 @@ func TestMigrationFromVersionOneKeepsMessages(t *testing.T) {
 		t.Fatalf("messages after migration = %+v, %v", msgs, err)
 	}
 }
+
+func TestRecentSessionsNewestFirstAndLimited(t *testing.T) {
+	s := openTemp(t)
+	base := time.Unix(1793880000, 0)
+	for i := 0; i < 5; i++ {
+		se := &Session{StartedAt: base.Add(time.Duration(i) * time.Hour), EndedAt: base.Add(time.Duration(i)*time.Hour + time.Minute), XPGainedPct: float64(i)}
+		if err := s.SaveSession(se); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.RecentSessions(3)
+	if err != nil {
+		t.Fatalf("RecentSessions: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d sessions, want 3", len(got))
+	}
+	for i, want := range []float64{4, 3, 2} {
+		if got[i].XPGainedPct != want {
+			t.Errorf("session %d xp = %v, want %v (newest first)", i, got[i].XPGainedPct, want)
+		}
+	}
+	none, err := s.RecentSessions(0)
+	if err != nil || len(none) != 0 {
+		t.Errorf("RecentSessions(0) = %v, %v", none, err)
+	}
+}

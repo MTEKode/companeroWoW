@@ -171,3 +171,28 @@ func nonNilZones(v []int) []int {
 	}
 	return v
 }
+
+// RecentSessions returns the n most recently started sessions, newest first. Sessions still
+// open are included; the caller decides what to do with them.
+func (s *Store) RecentSessions(n int) ([]Session, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT `+sessionCols+` FROM sessions ORDER BY started_at DESC, id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		se, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read session: %w", err)
+		}
+		out = append(out, se)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return out, nil
+}

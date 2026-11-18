@@ -68,7 +68,8 @@ func (a *Assistant) newProactor(notify func(Tip)) *proactor {
 			if a.asker == nil {
 				return ai.Response{}, errors.New("no hay proveedores de IA configurados")
 			}
-			return a.asker.Ask(ctx, req)
+			// Tips are shown too, so they pass the answer verifier like the questions do.
+			return a.askVerified(ctx, req)
 		},
 		combat: func() bool {
 			if a.g == nil {
@@ -162,7 +163,7 @@ func (p *proactor) generate(ctx context.Context, code uint8, now time.Time) (Tip
 	if err != nil {
 		return Tip{}, "", err
 	}
-	text := limitLines(resp.Text, maxTipLines)
+	text := limitTipLines(resp.Text)
 	if text == "" {
 		return Tip{}, "", errors.New("respuesta vacía")
 	}

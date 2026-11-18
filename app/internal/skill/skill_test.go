@@ -164,3 +164,19 @@ func TestDeployAllWritesOnlyIntoWorkspacesAndRemovesStaleAgents(t *testing.T) {
 		t.Errorf("agy workspace AGENTS.md missing: %v", err)
 	}
 }
+
+// The expert tools, their playbooks and the profile rules are part of the instructions the
+// providers read: each must be in the skill.
+func TestExpertToolsPlaybooksAndProfileAreInTheSkill(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"`ritmo_subida`", "`valor_misiones`", "`info_enemigo`",
+		"(x1)", "(x2)", "(x3)",
+		"## Perfil del jugador", "Perfil del jugador: …",
+		"## Estimaciones",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("SKILL.md lacks %q", want)
+		}
+	}
+}

@@ -127,7 +127,7 @@ func TestProactiveTipUsesSkillAndKeepsMarkLine(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
 	inCombat := false
 	var got []Tip
-	p := newTestProactor(t, fake, clock, &inCombat, &got)
+	p := newTestProactorUnverified(t, fake, clock, &inCombat, &got)
 	p.onEvent(event(2))
 	clock.advance(debounceWindow + time.Second)
 	p.tick(context.Background())

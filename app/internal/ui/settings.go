@@ -25,6 +25,9 @@ type settingsForm struct {
 	TipsSound        bool
 	StartWithWoW     bool
 	WoWPath          string
+	// Profile and VerifyAnswers come from the profile screen (see profile_settings.go).
+	Profile       config.Profile
+	VerifyAnswers bool
 }
 
 // formFromConfig fills the form from the saved configuration.
@@ -41,6 +44,8 @@ func formFromConfig(c config.Config) settingsForm {
 		TipsSound:         c.TipsSound,
 		StartWithWoW:      c.StartWithWoW,
 		WoWPath:           c.WoWPath,
+		Profile:           c.Profile,
+		VerifyAnswers:     c.VerifyAnswers,
 	}
 }
 
@@ -124,6 +129,8 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	next.TipsSound = f.TipsSound
 	next.SyncTips()
 	next.StartWithWoW = f.StartWithWoW
+	next.Profile = f.Profile.Normalize()
+	next.VerifyAnswers = f.VerifyAnswers
 	next.WoWPath = path
 	return next, nil
 }
@@ -194,6 +201,7 @@ func settingsChanges(old, next config.Config) (live, restart []string) {
 	if old.WoWPath != next.WoWPath {
 		restart = append(restart, "carpeta de WoW")
 	}
+	live = append(live, profileChangeText(old.Profile, next.Profile, old.VerifyAnswers, next.VerifyAnswers)...)
 	return live, restart
 }
 

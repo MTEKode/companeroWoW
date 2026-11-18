@@ -198,12 +198,20 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	sessions := session.NewTracker(time.Now, st)
 	reader.Subscribe(sessions.Observe)
 	g.SetSessions(sessions)
+	// The leveling pace (ritmo_subida, valor_misiones) keeps its own live samples.
+	pace := gamedata.NewPaceSampler(time.Now)
+	reader.Subscribe(pace.Observe)
+	g.SetPace(pace)
 	go sessions.Run(ctx)
 
 	ws := websearch.New(cfg.WebSources, st)
 	// capturar_pantalla also saves each capture where the CLI providers can read it.
 	tools.ScreenshotDir = config.ScreensDir(dir)
 	reg := tools.Build(g, ws)
+	// Each question keeps the tool calls it made, for the answer verifier. The MCP server and the
+	// API providers both pass through the registry, so one observer sees them all.
+	captures := tools.NewCaptures()
+	reg.AddObserver(captures.Observe)
 
 	mcpErrs := &errBox{}
 	mcp := mcpserver.New(reg, version)
@@ -218,6 +226,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 
 	chain := ai.BuildChain(cfg, dir, assistant.ToolAdapter(reg))
 	asst := assistant.New(chain, g, st, cfg)
+	asst.SetCaptures(captures)
+	// The player profile reaches the prompts and the ranking tools; the settings screen updates it.
+	tools.SetProfileSource(asst.Profile)
 	providers := availableProviders(providerReport(cfg, dir))
 
 	tips := make(chan assistant.Tip, tipQueueSize)
@@ -254,6 +265,7 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		TipsModeChanged: func(mode string) {
 			tipsOn.Store(mode != config.TipsOff)
 		},
+		AnswerSettingsChanged: asst.SetAnswerSettings,
 		Status: func() ui.Status {
 			s := buildStatus(g, providers, watcher, mcpErrs.get())
 			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
