@@ -80,6 +80,13 @@ func applyLiveBlock(merged map[string]any, t uint8, v any) bool {
 		}
 		merged["combats"] = prependCombat(merged["combats"], rec)
 		return true
+	case msgMacros:
+		// Macros (Macros.lua): the block replaces the saved one as a whole, as the sheet does.
+		if !ok || len(body) == 0 {
+			return false
+		}
+		merged["macros"] = body
+		return true
 	case bridge.MsgCharacter, bridge.MsgQuests, bridge.MsgBags, bridge.MsgEquipment,
 		bridge.MsgProfessions, bridge.MsgActionBars, bridge.MsgHeavy:
 		if !ok {
