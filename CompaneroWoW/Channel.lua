@@ -35,7 +35,7 @@ C.HEAVY_EVERY = 3
 C.MAX_MESSAGE_BYTES = 98304 -- tope de cada mensaje JSON (mas grande -> no se envia)
 
 -- Prioridad de envio de los tipos (de mayor a menor).
-C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10 }
+C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10, 16 } -- 16 (mundo) el ultimo: va por detras de todo
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 C.RANK = RANK
@@ -166,6 +166,14 @@ end
 
 function Sched:pending()
     return #self.jobs
+end
+
+-- true si hay un trabajo pendiente de este tipo (el mundo no encola otro hasta que salga el anterior).
+function Sched:has(msgType)
+    for _, job in ipairs(self.jobs) do
+        if job.type == msgType then return true end
+    end
+    return false
 end
 
 -- Numero de trozos de un texto de n bytes con cs bytes por trozo (al menos 1).
@@ -323,6 +331,13 @@ C.TYPES = {
             return s
         end,
     },
+    [16] = {
+        -- mundo (World.lua): vuelos, vendedores, instructores, cadenas y consumibles. Solo se envian
+        -- los bloques cambiados: lo calcula World.ChannelDelta (refreshWorld), no build.
+        name = "world", period = 30, minGap = 5,
+        events = {},
+        build = function() return nil end,
+    },
     [11] = {
         name = "meta", period = 60, minGap = 5,
         events = { "PLAYER_ENTERING_WORLD" },
@@ -412,8 +427,28 @@ local function fullJSON(t)
     return json
 end
 
+-- Mundo (tipo 16): World.ChannelDelta devuelve solo los bloques cambiados. No se calcula otro
+-- mensaje mientras sale el anterior; si quedan cambios, el tipo se marca de nuevo.
+local function refreshWorld(now)
+    S.lastBuilt[16] = now
+    local W = ns.World
+    if not W or not W.ChannelDelta then return end
+    local sched = ensureScheduler()
+    if sched:has(16) then
+        S.dirty[16] = true
+        return
+    end
+    local json = W.ChannelDelta(now)
+    if json then
+        sched:enqueue(16, json)
+        S.sentCount = S.sentCount + 1
+    end
+    if W.ChannelPending and W.ChannelPending() then S.dirty[16] = true end
+end
+
 -- Calcula el tipo t y encola si cambio. Mensajes "delta" (6 y 9) encolan solo lo nuevo.
 local function refreshType(t, now)
+    if t == 16 then return refreshWorld(now) end
     local def = C.TYPES[t]
     local c = currentChar()
     if not c and t ~= 9 then return end
@@ -562,6 +597,12 @@ function C.ForceCarousel()
     S.carouselAt = nil
     S.carouselTodo = nil
     ensureScheduler():forceCarousel()
+    if ns.World and ns.World.ForceFull then ns.World.ForceFull() end -- el mundo se reenvia entero
+end
+
+-- Marca un tipo para revisarlo en el siguiente turno (lo usa World.lua al cambiar el mundo).
+function C.Touch(t)
+    S.dirty[t] = true
 end
 
 -- Lineas para /compa estado.

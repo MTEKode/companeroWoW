@@ -331,6 +331,7 @@ local function showStatus()
     end
     if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
+    if ns.WorldStatusLine then say(ns.WorldStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
