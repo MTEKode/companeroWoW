@@ -71,8 +71,12 @@ func startHotkey(hk Hotkey, onPress func()) (*hotkeyLoop, error) {
 		procPeekMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, wmUser, wmUser, pmNoRemove)
 		h.tid = uint32(callNoArgs(procGetCurrentThreadId))
 		current := hk
-		errc <- register(current)
+		err := register(current)
+		errc <- err
 		close(h.ready)
+		if err == nil {
+			defer func() { procUnregisterHotKey.Call(0, hotkeyIDBase) }()
+		}
 
 		for {
 			ret, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
@@ -123,6 +127,15 @@ func replaceHotkey(current *Hotkey, next Hotkey) error {
 	}
 	*current = next
 	return nil
+}
+
+// Close unregisters the shortcut and ends the thread's message loop.
+func (h *hotkeyLoop) Close() {
+	if h == nil {
+		return
+	}
+	<-h.ready
+	procPostThreadMessageW.Call(uintptr(h.tid), wmQuit, 0, 0)
 }
 
 // Change replaces the shortcut with hk and reports whether the system accepted it. On

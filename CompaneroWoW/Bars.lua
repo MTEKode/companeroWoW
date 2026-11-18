@@ -444,6 +444,21 @@ function B.Command(raw)
     end
 end
 
+-- Copia de seguridad de los slots dados (la misma que usa /compa barras deshacer). false sin personaje.
+-- Lo usa Macros.lua al colocar una macro en una ranura.
+function B.BackupSlots(slots)
+    local c = charRecord()
+    if not c then return false end
+    saveBackup(c, slots)
+    return true
+end
+
+-- Tipo y id de lo que hay en un slot ("macro", "spell"... o nil si esta vacio).
+function B.SlotKindOf(slot)
+    local info = slotInfo(slot)
+    return info and info.kind or nil, info and info.id or nil
+end
+
 -- Linea para /compa estado: huecos ocupados, barras visibles y copias guardadas.
 function B.StatusLine()
     local c = charRecord()

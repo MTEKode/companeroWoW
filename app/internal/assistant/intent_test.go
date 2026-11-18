@@ -60,6 +60,8 @@ var intentCases = []struct {
 	{"Qué atajos pongo en la barra", IntentBuild},
 	{"¿Qué estadísticas priorizo?", IntentBuild},
 	{"consejo de rotacion para el guerrero", IntentBuild},
+	{"quiero una macro para el pull", IntentBuild},
+	{"revisa mis macros", IntentBuild},
 	// Combat and deaths.
 	{"¿Por qué he muerto?", IntentCombat},
 	{"Me mataron otra vez, ¿qué hice mal?", IntentCombat},
@@ -162,6 +164,17 @@ func TestNormalizeQuestionFoldsAccentsAndPunctuation(t *testing.T) {
 
 func TestEveryIntentHasAPlaybookExcerpt(t *testing.T) {
 	playbookOnce.Do(func() { playbooks = parsePlaybooks(skill.Body()) })
+	known := map[string]bool{}
+	for _, parts := range playbookParts {
+		for _, p := range parts {
+			known[p.name] = true
+		}
+	}
+	for name := range playbooks {
+		if !known[name] {
+			t.Errorf("SKILL.md marks playbook %q, which no intent uses", name)
+		}
+	}
 	for _, in := range intentOrder {
 		for _, p := range playbookParts[in] {
 			if playbooks[p.name] == "" {

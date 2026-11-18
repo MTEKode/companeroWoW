@@ -344,7 +344,8 @@ var playbookParts = map[Intent][]playbookPart{
 		{"build.talentos", regexp.MustCompile(`talent|build|especializ|stat|estadistic`)},
 		{"build.hechizos", regexp.MustCompile(`hechizo|que uso|spell`)},
 		{"build.rotacion", regexp.MustCompile(`rotacion|revisa|dps|prioridad`)},
-		{"build.barras", regexp.MustCompile(`barra|coloc|ordena|atajo|tecla|macro`)},
+		{"build.barras", regexp.MustCompile(`barra|coloc|ordena|atajo|tecla`)},
+		{"build.macros", regexp.MustCompile(`macro`)},
 	},
 	IntentCombat: {
 		{"combate.revisar", regexp.MustCompile(`mal|combate|fallo|error|revisa`)},

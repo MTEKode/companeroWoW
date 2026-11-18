@@ -134,6 +134,10 @@ func (a *Assistant) ask(ctx context.Context, q string, withScreenshot bool, hist
 		History: history,
 		Prompt:  q,
 	}
+	// On-demand mode: game blocks that did not refresh before the question are named with their age.
+	if note := dataNote(ctx); note != "" {
+		req.System += "\n\n" + note
+	}
 	if withScreenshot {
 		png, err := CaptureFunc()
 		if err != nil {
@@ -191,6 +195,25 @@ func (a *Assistant) systemPrompt(q string) string {
 	})
 	a.setLastContext(block)
 	return system
+}
+
+// dataNoteKey carries the stale-data note in a context (see WithDataNote).
+type dataNoteKey struct{}
+
+// WithDataNote returns ctx with a note about game data that is older than the question (blocks
+// that did not refresh in time, with their ages). The question's system prompt then carries it.
+// An empty note leaves ctx as it is.
+func WithDataNote(ctx context.Context, note string) context.Context {
+	if note == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, dataNoteKey{}, note)
+}
+
+// dataNote returns the note set by WithDataNote, or "".
+func dataNote(ctx context.Context) string {
+	s, _ := ctx.Value(dataNoteKey{}).(string)
+	return s
 }
 
 // LastContext returns the player context block that the last question carried, or "" when

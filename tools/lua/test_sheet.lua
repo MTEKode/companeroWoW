@@ -64,10 +64,8 @@ local function fresh()
     W.state.timers = {}
     CompaneroWoWDB = { characters = {} }
     SH.testing.reset()
-    -- Cola del canal limpia: un mensaje a medio enviar de otra seccion no debe completarse aqui.
-    C.state.sched = nil
-    C.state.carouselAt = nil
-    C.state.carouselTodo = nil
+    -- Canal limpio (reposo, sin cola): un mensaje a medio enviar de otra seccion no debe completarse aqui.
+    C.testing.reset()
     for i = #SPELLS, 1, -1 do SPELLS[i] = nil end
     for _, s in ipairs(defaultSpells()) do SPELLS[#SPELLS + 1] = s end
 end
@@ -78,6 +76,23 @@ local function sheetOf()
 end
 
 -- Fila/fila de bloques del mensaje tipo 12 reensamblado desde los trozos del canal.
+-- Activacion del canal como la hace la franja: 'frames' tramas de 0.2 s desde 'start'.
+-- Devuelve los trozos enviados (en el orden de salida).
+local function shareChunks(start, frames)
+    local out = {}
+    local now = start
+    C.Begin(now)
+    for f = 1, frames do
+        now = now + 0.2
+        if not C.Update(now) then break end
+        C.Pump(now, 1e9) -- sin presupuesto: la prueba mira el contenido, no el tiempo
+        local ch = C.NextChunk(860, f)
+        if ch then out[#out + 1] = ch end
+    end
+    C.Stop()
+    return out
+end
+
 local function type12Messages(frames)
     local out, pending = {}, {}
     for _, ch in ipairs(frames) do
@@ -356,9 +371,13 @@ end
 ns.Sheet.testing.refreshNow()
 s = sheetOf()
 check("como mucho 80 hechizos", #s.spells <= 80)
-check("100 hechizos largos: se recortan para caber en 40 KB", #s.spells > 0 and #s.spells < 80)
-local json = J.Encode(s)
-check("hoja < 40 KB", json ~= nil and #json <= 40000, "bytes=" .. tostring(json and #json))
+local stored = #s.spells
+-- El recorte para el canal se hace al serializar (ForShare), no al guardar: la hoja guardada no cambia.
+local shared = ns.Sheet.ForShare(s)
+check("100 hechizos largos: ForShare los recorta para caber en 40 KB", #shared.spells > 0 and #shared.spells < stored)
+local json = J.Encode(shared)
+check("copia para el canal < 40 KB", json ~= nil and #json <= 40000, "bytes=" .. tostring(json and #json))
+check("ForShare no toca la hoja guardada", #sheetOf().spells == stored)
 eq("tope de hechizos: 80 con descripcion corta", (function()
     fresh()
     SPELLS = {}
@@ -378,21 +397,15 @@ print("(h) Mensaje del canal tipo 12")
 fresh()
 ns.CollectSpells = function() return defaultSpells() end
 local prio = C.PRIORITY
-local pos12, pos4
+local pos12, pos1
 for i, t in ipairs(prio) do
     if t == 12 then pos12 = i end
-    if t == 4 then pos4 = i end
+    if t == 1 then pos1 = i end
 end
-eq("tipo 12 justo despues de equipment (4)", pos12, pos4 + 1)
+eq("tipo 12 justo despues de character (1), contrato ON-DEMAND", pos12, pos1 + 1)
 eq("tipo 12 en la tabla de rangos", C.RANK[12], pos12)
 ns.Sheet.testing.refreshNow()
-local chunks = {}
-local now = 1000
-for _ = 1, 400 do
-    now = now + 1
-    local ch = C.Tick(now, 860)
-    if ch then chunks[#chunks + 1] = ch end
-end
+local chunks = shareChunks(1000, 400)
 local msgs = type12Messages(chunks)
 check("mensaje tipo 12 enviado por el canal", #msgs >= 1)
 local want = J.Encode(sheetOf())
@@ -434,34 +447,27 @@ check("sin auras: sin campo buffs", SH.Collect().buffs == nil)
 -- ---------------------------------------------------------------------------
 print("(k) Tipo 12 en la tabla de tipos del canal")
 eq("nombre del tipo 12", C.TYPES[12].name, "sheet")
-check("tipo 12 sin eventos propios (lo marca Sheet.lua)", #C.TYPES[12].events == 0)
 check("la hoja cabe en el limite del mensaje del canal",
     #J.Encode(sheetOf()) <= C.MAX_MESSAGE_BYTES)
 
 -- ---------------------------------------------------------------------------
-print("(l) Carrusel: el tipo 12 solo viaja si hay hoja; sin hoja no gasta turnos")
+print("(l) Reposo: no se serializa nada; la hoja solo sale en una activacion")
 fresh()
 ns.CollectSpells = function() return defaultSpells() end
-local function drain(n)
-    local out = {}
-    for _ = 1, n do
-        now = now + 1
-        local ch = C.Tick(now, 860)
-        if ch then out[#out + 1] = ch end
-    end
-    return out
-end
-now = now + 100
-C.ForceCarousel()
-local noSheet = type12Messages(drain(400))
-eq("sin hoja: ningun mensaje tipo 12", #noSheet, 0)
 ns.Sheet.testing.refreshNow()
-C.ForceCarousel()
-local withSheet = type12Messages(drain(400))
-check("con hoja: el carrusel reenvia el tipo 12", #withSheet >= 1)
+eq("reposo: Send(12) no serializa ni encola", C.Send(12), false)
+eq("reposo: sin trozos", C.NextChunk(860, 1), nil)
+local pendingJobs = C.state.sched and C.state.sched:pending() or 0
+eq("reposo: el canal no tiene trabajos", pendingJobs, 0)
+C.Pump(100, 1e9) -- en reposo no hace nada
+eq("sin activacion: ningun trozo tras bombear", C.NextChunk(860, 2), nil)
+eq("sin activacion: nada serializado", C.state.sched and C.state.sched:pending() or 0, 0)
+ns.Sheet.testing.refreshNow() -- el contenido no cambia: no hay escritura nueva
+local withSheet = type12Messages(shareChunks(200, 400))
+check("con activacion: sale el tipo 12", #withSheet >= 1)
 local found = false
 for _, m in ipairs(withSheet) do if m == J.Encode(sheetOf()) then found = true end end
-check("carrusel: mensaje igual al JSON de la hoja", found)
+check("activacion: mensaje igual al JSON de la hoja", found)
 
 W.uninstallSheet()
 

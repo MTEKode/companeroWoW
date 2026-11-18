@@ -198,6 +198,11 @@ type SVWatcher struct {
 	startOnce sync.Once
 	changes   chan *SavedVars
 
+	// paused stops the periodic checks (SetPaused); pauseCh wakes the run loop when it changes.
+	pauseMu sync.Mutex
+	paused  bool
+	pauseCh chan struct{}
+
 	pollMu    sync.Mutex
 	attempted bool
 	lastMod   time.Time
@@ -232,6 +237,7 @@ func NewSVWatcherFunc(resolve func() (string, error), every time.Duration) *SVWa
 		resolve:      resolve,
 		resolveEvery: svResolveEvery,
 		changes:      make(chan *SavedVars, svChangeBuffer),
+		pauseCh:      make(chan struct{}, 1),
 	}
 }
 
@@ -276,15 +282,59 @@ func (w *SVWatcher) Start(ctx context.Context) {
 	})
 }
 
+// SetPaused stops the periodic checks of the file while on is true: no timer runs, and the file
+// is looked at only when Poll is called (the on-demand mode calls it when the app becomes active
+// and before each question). Clearing it resumes the checks at once.
+func (w *SVWatcher) SetPaused(on bool) {
+	w.pauseMu.Lock()
+	w.paused = on
+	w.pauseMu.Unlock()
+	if w.pauseCh == nil {
+		return
+	}
+	select {
+	case w.pauseCh <- struct{}{}:
+	default:
+	}
+}
+
+func (w *SVWatcher) isPaused() bool {
+	w.pauseMu.Lock()
+	defer w.pauseMu.Unlock()
+	return w.paused
+}
+
 func (w *SVWatcher) run(ctx context.Context) {
-	ticker := time.NewTicker(w.every)
-	defer ticker.Stop()
-	_ = w.Poll()
+	var ticker *time.Ticker
+	var tick <-chan time.Time // nil while paused: the select then never takes it
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
+	// sync starts or stops the timer to match the paused state; a first check runs when it starts.
+	sync := func() {
+		if w.isPaused() {
+			if ticker != nil {
+				ticker.Stop()
+				ticker, tick = nil, nil
+			}
+			return
+		}
+		if ticker == nil {
+			ticker = time.NewTicker(w.every)
+			tick = ticker.C
+			_ = w.Poll()
+		}
+	}
+	sync()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-w.pauseCh:
+			sync()
+		case <-tick:
 			_ = w.Poll()
 		}
 	}
