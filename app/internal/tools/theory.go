@@ -22,7 +22,7 @@ const (
 
 	descPesosEstadisticas = "Calcula el peso de cada stat para tu personaje con su equipo actual: cuántas muertes por hora (y daño por segundo) da una unidad de fuerza, agilidad, poder de ataque, crítico, precisión, habilidad, daño o velocidad del arma y armadura, y cuánto vale cada una frente al poder de ataque. Úsala para «¿qué stat me conviene?» o «¿qué priorizo?». Argumentos opcionales: peleas, nivel_enemigo."
 
-	descCompararObjetos = "Puntúa objetos candidatos (los que el addon ha visto que puedes usar, con su misión o mazmorra) por lo que cambiarían tu rendimiento en una simulación: muertes por hora y daño por segundo frente a tu equipo actual, no por el nivel de objeto. Argumentos opcionales: nombre o item_id (uno), ranura (cabeza, pecho, anillo…). Sin argumentos compara todos. Úsala para «¿me conviene X?» o para ordenar mejoras."
+	descCompararObjetos = "Puntúa objetos candidatos (los que el addon ha visto que puedes usar, con su misión o mazmorra, y los equipables de tus bolsas) por lo que cambiarían tu rendimiento en una simulación: muertes por hora y daño por segundo frente a tu equipo actual, no por el nivel de objeto. Las armas se comparan por daño y velocidad. Argumentos opcionales: nombre o item_id (uno), ranura (cabeza, pecho, anillo…). Sin argumentos compara todos. Úsala para «¿me conviene X?» o para ordenar mejoras."
 
 	descOptimizarTalentos = "Busca cómo gastar los puntos de talento que te quedan y los de los próximos niveles (uno por nivel) para más muertes por hora en tu nivel, respetando las reglas del árbol (filas, requisitos y rangos). Devuelve las mejores opciones con el orden de los puntos y los números de cada una. Úsala para «¿en qué gasto los talentos?» o «¿qué build me conviene para subir?». Argumentos opcionales: puntos (cuántos añadir, por defecto 10), haz (cuántas opciones mantener, por defecto 5), peleas."
 
@@ -107,6 +107,32 @@ func theoryClass(sh theory.Sheet) (theory.Class, bool) {
 	return c, ok
 }
 
+// calibrationLine says whether the model matches the character's sheet: "modelo calibrado ✓", or the
+// mismatch the tools show. The check runs once per exported sheet and its line is stored, so later calls
+// read it back. ok is false when there is no sheet, no model for the class, or no site data yet.
+func calibrationLine(ctx context.Context, g *gamedata.Service, ws *websearch.Client) (string, bool) {
+	if g == nil {
+		return "", false
+	}
+	key, ok := g.CalibrationKey()
+	if !ok {
+		return "", false
+	}
+	if line, ok := g.StoredCalibration(key); ok {
+		return line, true
+	}
+	cls, in, err := theoryFor(ctx, g, ws)
+	if err != nil || len(in.Data.Talents) == 0 {
+		return "", false // no site data: nothing to compare against, and nothing is stored
+	}
+	line := "modelo calibrado ✓"
+	if msg := theory.Mismatch(cls.Calibrate(in)); msg != "" {
+		line = msg
+	}
+	g.StoreCalibration(key, line)
+	return line, true
+}
+
 // theoryFor loads the sheet, the class model and the site data the calculations share.
 func theoryFor(ctx context.Context, g *gamedata.Service, ws *websearch.Client) (theory.Class, theory.Input, error) {
 	sh, err := theorySheet(g)
@@ -133,8 +159,16 @@ func theoryOptions(a argValues) theory.Options {
 	if n := a.intPtr("nivel_enemigo", "mob_level", "nivel_mob"); n != nil && *n > 0 {
 		o.MobLevel = *n
 	}
+	if n := a.intPtr("objetivos", "enemigos", "targets"); n != nil && *n > 0 {
+		o.Targets = min(*n, 2)
+	}
 	o.Elite = a.flag("elite")
 	return o
+}
+
+// theoryObjetivos is the schema of the number of enemies pulled together (1 or 2).
+func theoryObjetivos() map[string]any {
+	return intProp("Enemigos juntos en la pelea: 1 (por defecto) o 2 (Barrido, Torbellino y Hendedura pegan a los dos).", 1)
 }
 
 // theoryDelta reads the stat changes the player or the model asked for.
@@ -191,6 +225,12 @@ func theoryBuild(a argValues) (theory.Build, error) {
 	if v := a.intPtr("hs_sobre", "golpe_heroico_con_ira"); v != nil {
 		b.Params = map[string]float64{"hs_sobre": float64(*v)}
 	}
+	if v := a.intPtr("cambios_postura", "postura"); v != nil && *v > 0 {
+		if b.Params == nil {
+			b.Params = map[string]float64{}
+		}
+		b.Params["cambios_postura"] = float64(min(*v, 20))
+	}
 	b.Delta = theoryDelta(a)
 	return b, nil
 }
@@ -201,19 +241,21 @@ func calcularDPS(g *gamedata.Service, ws *websearch.Client) Def {
 		Name:        "calcular_dps",
 		Description: descCalcularDPS,
 		InputSchema: schema(map[string]any{
-			"talentos":       map[string]any{"type": "object", "description": "Talentos (nombre → rango) para el cálculo; sin él, los de la hoja."},
-			"rotacion":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Hechizos por prioridad."},
-			"hs_sobre":       intProp("Ira mínima para encolar el golpe heroico.", 0),
-			"fuerza":         map[string]any{"type": "number", "description": "Cambio de fuerza."},
-			"agilidad":       map[string]any{"type": "number", "description": "Cambio de agilidad."},
-			"poder_ataque":   map[string]any{"type": "number", "description": "Cambio de poder de ataque."},
-			"critico":        map[string]any{"type": "number", "description": "Cambio de crítico (puntos)."},
-			"precision":      map[string]any{"type": "number", "description": "Cambio de precisión (puntos)."},
-			"habilidad_arma": map[string]any{"type": "number", "description": "Cambio de habilidad con arma."},
-			"daño_arma":      map[string]any{"type": "number", "description": "Cambio del daño medio del arma."},
-			"velocidad_arma": map[string]any{"type": "number", "description": "Cambio de la velocidad del arma (negativo = más rápida)."},
-			"peleas":         intProp("Peleas simuladas (por defecto 400).", 1),
-			"nivel_enemigo":  intProp("Nivel fijo del enemigo (por defecto nivel ±2).", 1),
+			"talentos":        map[string]any{"type": "object", "description": "Talentos (nombre → rango) para el cálculo; sin él, los de la hoja."},
+			"rotacion":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Hechizos por prioridad."},
+			"hs_sobre":        intProp("Ira mínima para encolar el golpe heroico.", 0),
+			"cambios_postura": intProp("Cambios de postura por pelea (la ira se queda en lo que retiene Táctica).", 0),
+			"fuerza":          map[string]any{"type": "number", "description": "Cambio de fuerza."},
+			"agilidad":        map[string]any{"type": "number", "description": "Cambio de agilidad."},
+			"poder_ataque":    map[string]any{"type": "number", "description": "Cambio de poder de ataque."},
+			"critico":         map[string]any{"type": "number", "description": "Cambio de crítico (puntos)."},
+			"precision":       map[string]any{"type": "number", "description": "Cambio de precisión (puntos)."},
+			"habilidad_arma":  map[string]any{"type": "number", "description": "Cambio de habilidad con arma."},
+			"daño_arma":       map[string]any{"type": "number", "description": "Cambio del daño medio del arma."},
+			"velocidad_arma":  map[string]any{"type": "number", "description": "Cambio de la velocidad del arma (negativo = más rápida)."},
+			"peleas":          intProp("Peleas simuladas (por defecto 400).", 1),
+			"nivel_enemigo":   intProp("Nivel fijo del enemigo (por defecto nivel ±2).", 1),
+			"objetivos":       theoryObjetivos(),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			a, err := parseArgs(args)
@@ -335,9 +377,10 @@ func optimizarTalentos(g *gamedata.Service, ws *websearch.Client) Def {
 		Name:        "optimizar_talentos",
 		Description: descOptimizarTalentos,
 		InputSchema: schema(map[string]any{
-			"puntos": intProp("Puntos que añadir (por defecto 10, uno por nivel).", 1),
-			"haz":    intProp("Opciones que mantener en cada paso (por defecto 5).", 1),
-			"peleas": intProp("Peleas por opción final (por defecto 400).", 1),
+			"puntos":    intProp("Puntos que añadir (por defecto 10, uno por nivel).", 1),
+			"haz":       intProp("Opciones que mantener en cada paso (por defecto 5).", 1),
+			"objetivos": theoryObjetivos(),
+			"peleas":    intProp("Peleas por opción final (por defecto 400).", 1),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			a, err := parseArgs(args)
@@ -374,7 +417,8 @@ func optimizarRotacion(g *gamedata.Service, ws *websearch.Client) Def {
 		Name:        "optimizar_rotacion",
 		Description: descOptimizarRotacion,
 		InputSchema: schema(map[string]any{
-			"peleas": intProp("Peleas por lista (por defecto 400).", 1),
+			"peleas":    intProp("Peleas por lista (por defecto 400).", 1),
+			"objetivos": theoryObjetivos(),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			a, err := parseArgs(args)

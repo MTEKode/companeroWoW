@@ -39,7 +39,7 @@ var (
 // available instead of failing.
 func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	r := NewRegistry()
-	r.Add(contextoJugador(g))
+	r.Add(contextoJugador(g, ws))
 	r.Add(guiaMision(g))
 	r.Add(planProfesiones(g))
 	r.Add(queEntrenar(g, ws))

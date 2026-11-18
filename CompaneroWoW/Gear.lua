@@ -207,6 +207,118 @@ end
 G.itemCache = {}   -- [itemID] = info | false (no se pudo cargar)
 local loading = {} -- [itemID] = true mientras se pide la carga
 
+-- ---------------------------------------------------------------------------
+-- Armas: daño y velocidad leidos del tooltip sin depender del idioma del cliente. El formato viene
+-- de las cadenas globales del juego (DAMAGE_TEMPLATE, SPEED_TEMPLATE: «%s - %s Daño», «Velocidad %s»
+-- en español). Si faltan, se leen los numeros: «N - N» para el daño y un decimal al final para la velocidad.
+-- ---------------------------------------------------------------------------
+
+local weaponCache = {} -- [itemID] = { min, max, speed, dps } (solo lo que se pudo leer)
+local weaponTip = nil  -- tooltip oculto para la ruta de respaldo
+
+-- Numero de una cadena del tooltip: «1.234» y «1,234» son miles; «2,5» y «2.5» son decimales.
+function G.ToNumber(s)
+    if type(s) ~= "string" then return nil end
+    if s:match("^%d%d?%d?[%.,]%d%d%d$") or s:match("^%d%d?%d?[%.,]%d%d%d[%.,]%d%d%d$") then
+        return tonumber((s:gsub("[%.,]", "")))
+    end
+    return tonumber((s:gsub(",", ".")))
+end
+
+-- Patron de una cadena de formato del juego. Cada %s se vuelve una captura de numero. nil si no hay cadena.
+local function templatePattern(tpl)
+    if type(tpl) ~= "string" or tpl == "" then return nil end
+    local pat = tpl:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")
+    pat = pat:gsub("%%%%s", "([%%d%%.,]+)")
+    if not pat:find("(", 1, true) then return nil end
+    return pat
+end
+
+-- Lee min, max, velocidad y DPS de las lineas de un tooltip. globals son las cadenas del juego (_G por
+-- defecto). Pura: no toca la API. Devuelve nil si no hay daño y velocidad.
+function G.ParseWeaponLines(lines, globals)
+    globals = globals or _G
+    local dmgPat = templatePattern(globals.DAMAGE_TEMPLATE)
+    local spdPat = templatePattern(globals.SPEED_TEMPLATE)
+    local out = {}
+    local texts = {}
+    for _, line in ipairs(lines or {}) do
+        if type(line) == "string" and line ~= "" then texts[#texts + 1] = line end
+    end
+    for _, t in ipairs(texts) do
+        if not out.min and dmgPat then
+            local a, b = t:match(dmgPat)
+            if a and b then out.min, out.max = G.ToNumber(a), G.ToNumber(b) end
+        end
+        if not out.speed and spdPat then
+            local s = t:match(spdPat)
+            if s then out.speed = G.ToNumber(s) end
+        end
+    end
+    -- Respaldo sin cadenas del juego: el primer par «N - N» es el daño; un decimal al final, la velocidad.
+    for _, t in ipairs(texts) do
+        if not out.min then
+            local a, b = t:match("(%d[%d%.,]*)%s*%-%s*(%d[%d%.,]*)")
+            if a and b and not t:find("%%") then out.min, out.max = G.ToNumber(a), G.ToNumber(b) end
+        end
+    end
+    for _, t in ipairs(texts) do
+        if not out.speed and not t:find("%%") then
+            local s = t:match("(%d+[%.,]%d%d)%s*$")
+            if s then out.speed = G.ToNumber(s) end
+        end
+    end
+    if not (out.min and out.max and out.speed) or out.min <= 0 or out.max < out.min or out.speed <= 0 then
+        return nil
+    end
+    out.dps = (out.min + out.max) / 2 / out.speed
+    return out
+end
+
+-- Lineas del tooltip de un objeto: la API de tooltip si existe, si no el tooltip oculto.
+local function weaponTooltipLines(itemID, link)
+    local data = nil
+    if itemID and ns.Get("C_TooltipInfo.GetItemByID") then
+        data = Clean(Call("C_TooltipInfo.GetItemByID", itemID))
+    end
+    if type(data) == "table" and type(data.lines) == "table" then
+        local out = {}
+        for _, line in ipairs(data.lines) do
+            local t = Str(type(line) == "table" and line.leftText or nil)
+            if t then out[#out + 1] = t end
+        end
+        return out
+    end
+    if not weaponTip then
+        weaponTip = Call("CreateFrame", "GameTooltip", "CompaneroItemTooltip", nil, "GameTooltipTemplate")
+        if weaponTip == nil then return nil end
+        ns.Method(weaponTip, "SetOwner", _G.UIParent, "ANCHOR_NONE")
+    end
+    ns.Method(weaponTip, "ClearLines")
+    if link then
+        ns.Method(weaponTip, "SetHyperlink", link)
+    elseif itemID then
+        ns.Method(weaponTip, "SetItemByID", itemID)
+    end
+    local out = {}
+    for i = 1, 40 do
+        local fs = _G["CompaneroItemTooltipTextLeft" .. i]
+        if fs == nil then break end
+        local t = Str(ns.Method(fs, "GetText"))
+        if t then out[#out + 1] = t end
+    end
+    return out
+end
+
+-- Daño y velocidad de un arma (nil si no se pueden leer). Solo guarda lo que se leyo.
+function G.WeaponStats(itemID, link)
+    if itemID and weaponCache[itemID] then return weaponCache[itemID] end
+    local lines = weaponTooltipLines(itemID, link)
+    local w = lines and G.ParseWeaponLines(lines, _G) or nil
+    if w and itemID then weaponCache[itemID] = w end
+    return w
+end
+
 -- info del objeto o nil. Segundo valor: true si se pidio la carga (pendiente), false si no hay nada que esperar.
 local function readItem(itemID)
     local cached = G.itemCache[itemID]
@@ -227,9 +339,18 @@ local function readItem(itemID)
         className = Str(r[6]), subName = Str(r[7]), equipLoc = Str(r[9]),
         classID = Num(r[12]), subclassID = Num(r[13]),
     }
+    if info.classID == 2 then info.weapon = G.WeaponStats(itemID, link) end
     G.itemCache[itemID] = info
     loading[itemID] = nil
     return info, false
+end
+
+-- Info de un objeto de la bolsa si es equipo (armadura o arma con hueco), o nil. Pide la carga si falta.
+function G.BagItemInfo(itemID)
+    local info = readItem(itemID)
+    if not info or info.equipLoc == nil or info.equipLoc == "" then return nil end
+    if info.classID ~= 2 and info.classID ~= 4 then return nil end
+    return info
 end
 
 local function classNameEN(info)
@@ -277,7 +398,7 @@ function G.CollectGear()
                         slotID = slot, slot = SLOT_NAMES[slot], itemID = itemID, name = info.name,
                         link = info.link, itemLevel = info.itemLevel, requiredLevel = info.requiredLevel,
                         quality = info.quality, equipLoc = info.equipLoc, class = classNameEN(info),
-                        subclass = subclassNameEN(info), stats = info.stats,
+                        subclass = subclassNameEN(info), stats = info.stats, weapon = info.weapon,
                     }
                 elseif waiting then
                     pending = pending + 1
@@ -312,7 +433,7 @@ local function candidateEntry(env, itemID, sources)
     return {
         itemID = itemID, name = info.name, itemLevel = info.itemLevel, requiredLevel = info.requiredLevel,
         quality = info.quality, equipLoc = info.equipLoc, class = classNameEN(info),
-        subclass = subclassNameEN(info), stats = info.stats, sources = sources,
+        subclass = subclassNameEN(info), stats = info.stats, weapon = info.weapon, sources = sources,
     }
 end
 

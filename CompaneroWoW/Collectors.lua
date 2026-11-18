@@ -264,9 +264,29 @@ function ns.CollectQuests()
     return out
 end
 
+-- Objetos equipables de la bolsa con sus stats (y arma con daño y velocidad). El motor los puntua.
+local BAG_EQUIP_MAX = 60
+
+-- Anade a un objeto de la bolsa la info de equipo (solo los primeros BAG_EQUIP_MAX equipables).
+local function addEquipInfo(item, count)
+    local G = ns.Gear
+    if count >= BAG_EQUIP_MAX or item.itemID == nil or not G or not G.BagItemInfo then return count end
+    local info = G.BagItemInfo(item.itemID)
+    if not info then return count end
+    item.name = info.name
+    item.equipLoc = info.equipLoc
+    item.class = info.className
+    item.subclass = info.subName
+    item.itemLevel = info.itemLevel
+    item.stats = info.stats
+    item.weapon = info.weapon
+    return count + 1
+end
+
 function ns.CollectInventory()
     local out = { items = {} }
     local freeTotal, slotsTotal = nil, 0
+    local equipCount = 0
     for _, bag in ipairs(bagIndexes()) do
         local n = bagSlots(bag) or 0
         slotsTotal = slotsTotal + n
@@ -274,7 +294,10 @@ function ns.CollectInventory()
         if free then freeTotal = (freeTotal or 0) + free end
         for slot = 1, n do
             local item = containerItem(bag, slot)
-            if item then out.items[#out.items + 1] = item end
+            if item then
+                equipCount = addEquipInfo(item, equipCount)
+                out.items[#out.items + 1] = item
+            end
         end
     end
     out.freeSlots = freeTotal

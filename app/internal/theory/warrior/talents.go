@@ -47,11 +47,16 @@ var talentFX = map[string]fx{
 	"improved-whirlwind":               {15, 30}, // Whirlwind damage, percent
 	"improved-whirlwind-cd":            {1, 2},   // Whirlwind cooldown cut, seconds
 	"anger-management":                 {1, 1},   // rage every 3 s in combat
+	"improved-sunder-armor":            {-1, -3}, // Sunder Armor rage cost (only when the cost comes from the table)
+	"improved-revenge":                 {20, 60}, // Revenge damage, percent
+	"improved-bloodrage":               {25, 50}, // Bloodrage rage, percent
+	"improved-berserker-rage":          {5, 10},  // rage Berserker Rage generates at once
+	"improved-tactical-mastery":        {5, 15},  // rage kept when changing stance, on top of the base 10
 }
 
 // talentGrants are the talents that give the model an ability or a buff by themselves.
 var talentGrants = map[string]bool{
-	"mortal-strike": true, "bloodthirst": true, "death-wish": true,
+	"mortal-strike": true, "bloodthirst": true, "death-wish": true, "sweeping-strikes": true,
 }
 
 // slugOf turns a talent name into the site's slug ("Two-Handed Weapon Specialization" → two-handed-weapon-specialization).

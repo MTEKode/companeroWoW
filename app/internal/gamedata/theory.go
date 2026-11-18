@@ -7,10 +7,14 @@ package gamedata
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/theory"
 )
+
+// maxBagCandidates caps the bag items the engine scores (the addon exports up to 60 equippable ones).
+const maxBagCandidates = 60
 
 // SheetJSON returns the active character's sheet as JSON, with the time it was exported. ok is false
 // when the character has no sheet (the addon is older, or it has not exported one yet).
@@ -34,10 +38,10 @@ func (g *Service) SheetJSON() ([]byte, time.Time, bool) {
 	return raw, at, true
 }
 
-// TheoryCandidates returns the gear candidates the character can use (its class, its level), as items
-// the engine scores. Each one carries the stats of the item it would replace: the weakest item of its
-// slot group, as the gear analysis picks it. Bag items are not included: the addon exports them without
-// stats. The second result names the candidates that were left out and why.
+// TheoryCandidates returns the gear the engine can score: the candidates the character can use (its class,
+// its level), and the equippable items in its bags (with their stats and, for weapons, their damage and
+// speed). Each one carries the item it would replace: the weakest item of its slot group, as the gear
+// analysis picks it. The second result names the candidates that were left out and why.
 func (g *Service) TheoryCandidates() ([]theory.Item, []string, bool) {
 	gd, ok := g.loadGearData()
 	if !ok || !gd.CandidatesKnown {
@@ -45,8 +49,10 @@ func (g *Service) TheoryCandidates() ([]theory.Item, []string, bool) {
 	}
 	var out []theory.Item
 	var left []string
+	seen := map[int64]bool{}
 	for _, id := range gd.sortedCandidateIDs() {
 		c := gd.Candidates[id]
+		seen[c.item.ItemID] = true
 		grp, ok := groupOf(c.item)
 		if !ok {
 			left = append(left, c.item.Name+": no es una ranura de equipo")
@@ -60,23 +66,98 @@ func (g *Service) TheoryCandidates() ([]theory.Item, []string, bool) {
 		if win == "" {
 			continue
 		}
-		it := theory.Item{
-			Name:      c.item.Name,
-			ItemID:    c.item.ItemID,
-			EquipLoc:  c.item.EquipLoc,
-			ItemLevel: c.item.ItemLevel,
-			Slot:      grp.Name,
-			Stats:     c.item.Stats,
-			Source:    win,
-		}
-		if target := gd.weakest(grp); target != nil {
-			it.Replaces = target.Stats
-			it.Slot = grp.Name + " (cambia: " + target.Name + ")"
-		}
-		out = append(out, it)
+		out = append(out, gd.theoryItem(c.item, grp, win))
 	}
+	out = append(out, g.bagTheoryItems(gd, seen)...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, left, true
+}
+
+// theoryItem turns a gear item into the engine's candidate: its stats, its weapon, and the item of its slot
+// group that it would replace.
+func (gd gearData) theoryItem(gi gearItem, grp gearGroup, source string) theory.Item {
+	it := theory.Item{
+		Name:      gi.Name,
+		ItemID:    gi.ItemID,
+		EquipLoc:  gi.EquipLoc,
+		Subclass:  gi.Subclass,
+		ItemLevel: gi.ItemLevel,
+		Slot:      grp.Name,
+		Stats:     gi.Stats,
+		Source:    source,
+		Weapon:    gi.Weapon,
+	}
+	if target := gd.weakest(grp); target != nil {
+		it.Replaces = target.Stats
+		it.Slot = grp.Name + " (cambia: " + target.Name + ")"
+	}
+	return it
+}
+
+// bagTheoryItems returns the equippable bag items the engine can score, skipping the ids already listed.
+// Only items the character can use are scored; the addon exports at most maxBagCandidates of them.
+func (g *Service) bagTheoryItems(gd gearData, seen map[int64]bool) []theory.Item {
+	ch, _, ok := g.activeCharacter()
+	if !ok {
+		return nil
+	}
+	var out []theory.Item
+	for _, e := range listOf(asMap(ch.data["inventory"])["items"]) {
+		if len(out) >= maxBagCandidates {
+			break
+		}
+		gi, ok := parseGearItem(asMap(e), 0)
+		if !ok || gi.ItemID == 0 || seen[gi.ItemID] || gi.EquipLoc == "" {
+			continue
+		}
+		if len(gi.Stats) == 0 && gi.Weapon == nil {
+			continue
+		}
+		seen[gi.ItemID] = true
+		if usable, _ := gd.usable(gi); !usable {
+			continue
+		}
+		grp, ok := groupOf(gi)
+		if !ok {
+			continue
+		}
+		it := gd.theoryItem(gi, grp, "bolsa")
+		it.Slot = grp.Name + " (en la bolsa)"
+		it.Bag = true
+		out = append(out, it)
+	}
+	return out
+}
+
+// CalibrationKey names the stored calibration of the active character's sheet: the character and the time
+// the sheet was exported. ok is false when there is no sheet.
+func (g *Service) CalibrationKey() (string, bool) {
+	ch, _, ok := g.activeCharacter()
+	if !ok || asMap(ch.data["sheet"]) == nil {
+		return "", false
+	}
+	at := unixTime(numberOf(asMap(ch.data["sheet"])["exportedAt"]))
+	if at.IsZero() {
+		at = ch.updatedAt
+	}
+	return "teoria.calibracion:" + ch.key + ":" + strconv.FormatInt(at.Unix(), 10), true
+}
+
+// StoredCalibration returns the calibration line stored for a key (see CalibrationKey).
+func (g *Service) StoredCalibration(key string) (string, bool) {
+	if g.store == nil {
+		return "", false
+	}
+	v, ok, err := g.store.CacheGet(key, 0)
+	return v, ok && err == nil
+}
+
+// StoreCalibration stores the calibration line of a key, so the check runs once per exported sheet.
+func (g *Service) StoreCalibration(key, line string) {
+	if g.store == nil {
+		return
+	}
+	_ = g.store.CachePut(key, line)
 }
 
 // RecentFights returns up to n recorded fights of the active character, newest first, as the theory
@@ -97,7 +178,13 @@ func (g *Service) RecentFights(n int) []theory.FightRecord {
 		}
 		f := theory.FightRecord{Segundos: c.duration, Muerte: c.died, DanoHecho: c.damage}
 		for _, row := range c.dmg {
-			if row.name != "" && row.amount > 0 {
+			if row.amount <= 0 {
+				continue
+			}
+			if row.id > 0 {
+				f.Hechizos = append(f.Hechizos, int(row.id))
+			}
+			if row.name != "" {
 				f.Habilidades = append(f.Habilidades, row.name)
 			}
 		}

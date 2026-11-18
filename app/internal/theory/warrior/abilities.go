@@ -2,17 +2,16 @@ package warrior
 
 // Ability numbers. The source of each number is kept with it, in this order:
 //
-//  1. the client's tooltip of the spell on the character sheet (exact; it already includes the
-//     character's talents, so the talent modifiers are not applied again, and it is used only
-//     when the build is the sheet's own build);
-//  2. the site's ability table (wft:/abilities/warrior/): the rank whose level the character has,
-//     with the talent modifiers applied on top;
+//  1. the client's tooltip of the spell on the character sheet, read by position (effects.go): exact,
+//     language-independent, and it already includes the character's talents, so the talent modifiers
+//     are not applied again. It is used only when the build is the sheet's own build;
+//  2. the site's ability table (wft:/abilities/warrior/): the rank whose level the character has, read
+//     in English with the same layout, with the talent modifiers applied on top;
 //  3. the constants table (constants.go), when neither exists.
 
 import (
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/MTEKode/companeroWoW/app/internal/theory"
 )
@@ -29,15 +28,27 @@ const (
 	kWhirlwind
 	kCleave
 	kDeathWish
+	kSunder
+	kRevenge
+	kBattleShout
+	kBloodrage
+	kBerserkerRage
+	kVictoryRush
+	kRecklessness
+	kSweeping
 	nAbil
 )
 
 var abilityKeys = [nAbil]string{
 	"hs", "rend", "overpower", "execute", "mortal_strike", "bloodthirst", "slam", "whirlwind", "cleave", "death_wish",
+	"sunder", "revenge", "battle_shout", "bloodrage", "berserker_rage", "victory_rush", "recklessness", "sweeping_strikes",
 }
 
+// abilityNames are the English names: the site's table key and the report's label (the tools show the
+// Spanish names through the explanation, the numbers keep these keys).
 var abilityNames = [nAbil]string{
 	"Heroic Strike", "Rend", "Overpower", "Execute", "Mortal Strike", "Bloodthirst", "Slam", "Whirlwind", "Cleave", "Death Wish",
+	"Sunder Armor", "Revenge", "Battle Shout", "Bloodrage", "Berserker Rage", "Victory Rush", "Recklessness", "Sweeping Strikes",
 }
 
 // abilityIndex maps a rotation key to its index.
@@ -65,50 +76,24 @@ func Name(key string) string {
 	return key
 }
 
-// Regular expressions of the client text. They accept the wording of the site and of the tooltip.
+// reMeta reads the cost, cooldown and cast time of the site's "10 Rage · Melee Range · Instant · 6 sec
+// cooldown" line. The site is English on every client, so this text is never localised.
 var (
-	reIncrease = regexp.MustCompile(`increases melee damage by (\d+)`)
-	reWeapon   = regexp.MustCompile(`weapon damage plus (\d+)`)
-	reBleed    = regexp.MustCompile(`bleed for (\d+) damage over (\d+) sec`)
-	reCausing  = regexp.MustCompile(`causing (\d+) damage`)
-	reAP       = regexp.MustCompile(`(\d+)% of your Attack Power plus (\d+)`)
-	reCost     = regexp.MustCompile(`(\d+) Rage`)
-	reCD       = regexp.MustCompile(`(\d+(?:\.\d+)?) sec cooldown`)
-	reCast     = regexp.MustCompile(`(\d+(?:\.\d+)?) sec cast`)
+	reCost = regexp.MustCompile(`(\d+) Rage`)
+	reCD   = regexp.MustCompile(`(\d+(?:\.\d+)?) (sec|min) cooldown`)
+	reCast = regexp.MustCompile(`(\d+(?:\.\d+)?) sec cast`)
 )
 
-// parseText reads the numbers of an ability's client text into a. It fills only what the text says.
-func parseText(text string, a *ability) {
-	t := strings.ToLower(text)
-	if m := reBleed.FindStringSubmatch(t); m != nil {
-		a.bleed, _ = strconv.ParseFloat(m[1], 64)
-		a.bleedSec, _ = strconv.ParseFloat(m[2], 64)
-	}
-	if m := reIncrease.FindStringSubmatch(t); m != nil {
-		a.bonus, _ = strconv.ParseFloat(m[1], 64)
-		a.weapon = false
-	}
-	if m := reWeapon.FindStringSubmatch(t); m != nil {
-		a.bonus, _ = strconv.ParseFloat(m[1], 64)
-		a.weapon = true
-	}
-	if m := reCausing.FindStringSubmatch(t); m != nil {
-		a.bonus, _ = strconv.ParseFloat(m[1], 64)
-		a.weapon = false
-	}
-	if m := reAP.FindStringSubmatch(t); m != nil {
-		a.apPct, _ = strconv.ParseFloat(m[1], 64)
-		a.bonus, _ = strconv.ParseFloat(m[2], 64)
-	}
-}
-
-// parseMeta reads the cost, cooldown and cast time of a "10 Rage · Melee Range · Instant · 6 sec cooldown" line.
+// parseMeta reads the site's cost, cooldown and cast time into a.
 func parseMeta(meta string, a *ability) {
 	if m := reCost.FindStringSubmatch(meta); m != nil {
 		a.cost, _ = strconv.ParseFloat(m[1], 64)
 	}
 	if m := reCD.FindStringSubmatch(meta); m != nil {
 		a.cd, _ = strconv.ParseFloat(m[1], 64)
+		if m[2] == "min" {
+			a.cd *= 60
+		}
 	}
 	if m := reCast.FindStringSubmatch(meta); m != nil {
 		a.cast, _ = strconv.ParseFloat(m[1], 64)
@@ -128,13 +113,9 @@ func ParseRank(ranks []theory.AbilityRank, level int) (theory.AbilityRank, bool)
 	return best, ok
 }
 
-// rankMeta is the cost and cooldown the class table gives for a rank.
-func rankMeta(r theory.AbilityRank) string {
-	return r.Cost + " · " + r.Text
-}
-
-// baseFromTable fills a from the site's ability table for the rank the level allows.
-func baseFromTable(name string, data theory.Data, level int, a *ability) bool {
+// baseFromTable fills a from the site's ability table for the rank the level allows. The English text is
+// read by the same layout as the sheet's tooltip; a text that does not match leaves the numbers unset.
+func baseFromTable(name, key string, data theory.Data, level int, a *ability) bool {
 	ranks, ok := data.Abilities[name]
 	if !ok {
 		return false
@@ -144,8 +125,8 @@ func baseFromTable(name string, data theory.Data, level int, a *ability) bool {
 		return false
 	}
 	parseMeta(r.Cost, a)
-	parseText(r.Text, a)
-	a.source = "tabla"
+	readEffects(key, r.Text, a)
+	a.source = srcTable
 	return true
 }
 

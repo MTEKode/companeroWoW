@@ -377,6 +377,31 @@ local function tooltipScan(spellID)
     return table.concat(parts, " ")
 end
 
+-- Auras de beneficio del jugador: spellID de cada una. El motor lee el grito de batalla de aqui para no
+-- sumar dos veces su poder de ataque.
+local BUFF_MAX = 40
+
+local function buffSpellID(i)
+    if ns.Get("C_UnitAuras.GetBuffDataByIndex") then
+        local aura = Clean(Call("C_UnitAuras.GetBuffDataByIndex", "player", i))
+        if type(aura) ~= "table" then return false end
+        return true, Num(aura.spellId)
+    end
+    local r = { Call("UnitBuff", "player", i) }
+    if r[1] == nil then return false end
+    return true, Num(r[10])
+end
+
+local function collectBuffs()
+    local out = {}
+    for i = 1, BUFF_MAX do
+        local ok, sid = buffSpellID(i)
+        if not ok then break end
+        if sid then out[#out + 1] = sid end
+    end
+    return out
+end
+
 -- Descripcion del hechizo tal como la muestra el cliente (incluye talentos y estadisticas).
 local function spellTooltip(spellID)
     local d = cleanText(Str((Call("C_Spell.GetSpellDescription", spellID))))
@@ -465,6 +490,8 @@ function SH.Collect()
     if #weaponSkills > 0 then s.weaponSkills = weaponSkills end
     local spells = collectSpellList()
     if #spells > 0 then s.spells = spells end
+    local buffs = collectBuffs()
+    if #buffs > 0 then s.buffs = buffs end
     return s
 end
 

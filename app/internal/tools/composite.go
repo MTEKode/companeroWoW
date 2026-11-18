@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/websearch"
 )
 
 // Composite tools answer a whole question in one call. They are listed first so that the
@@ -20,7 +21,7 @@ const (
 	descPlan = "Plan de profesiones: nivel y máximo de cada profesión, si conviene entrenar el siguiente rango ya y los entrenadores conocidos de cada una con sus coordenadas. Úsala para preguntas sobre cuándo o dónde entrenar una profesión."
 )
 
-func contextoJugador(g *gamedata.Service) Def {
+func contextoJugador(g *gamedata.Service, ws *websearch.Client) Def {
 	return Def{
 		Name:        "contexto_jugador",
 		Description: descContexto,
@@ -33,7 +34,12 @@ func contextoJugador(g *gamedata.Service) Def {
 			if err != nil {
 				return Result{}, fmt.Errorf("no pude reunir el contexto del jugador: %v", err)
 			}
-			return jsonResult(v)
+			// The model's calibration against the sheet. The assistant mentions it only when it is off.
+			extras := map[string]any{}
+			if line, ok := calibrationLine(ctx, g, ws); ok {
+				extras["modeloTeoria"] = line
+			}
+			return jsonResult(withExtras(v, extras))
 		},
 	}
 }
