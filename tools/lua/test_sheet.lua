@@ -378,12 +378,12 @@ print("(h) Mensaje del canal tipo 12")
 fresh()
 ns.CollectSpells = function() return defaultSpells() end
 local prio = C.PRIORITY
-local pos12, pos4
+local pos12, pos1
 for i, t in ipairs(prio) do
     if t == 12 then pos12 = i end
-    if t == 4 then pos4 = i end
+    if t == 1 then pos1 = i end
 end
-eq("tipo 12 justo despues de equipment (4)", pos12, pos4 + 1)
+eq("tipo 12 justo despues de character (1), contrato ON-DEMAND", pos12, pos1 + 1)
 eq("tipo 12 en la tabla de rangos", C.RANK[12], pos12)
 ns.Sheet.testing.refreshNow()
 local chunks = {}

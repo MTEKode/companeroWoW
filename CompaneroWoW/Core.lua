@@ -295,6 +295,7 @@ local function showHelp()
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
     say("  /compa marca - marca el siguiente paso de tu misión (con las guías del juego; Questie si está instalado)")
     say("  /compa marca borrar - quita la marca de Compañero")
+    say("  /compa sesion - resumen de la sesión actual (XP/h, siguiente nivel, misiones, enemigos, muertes)")
     say("  /compa barras - resumen de tus barras de acción")
     say("  /compa barras aplicar <slot>:<spellID>,... - coloca hechizos conocidos (fuera de combate, con copia de seguridad)")
     say("  /compa barras deshacer - restaura la última copia de seguridad de barras")
@@ -333,6 +334,7 @@ local function showStatus()
         for _, line in ipairs(ns.CombatStatusLines()) do say(line) end
     end
     if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
+    if ns.Session then say(ns.Session.StatusLine()) end
     if ns.MacrosStatusLine then say(ns.MacrosStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
@@ -380,6 +382,12 @@ local function handleSlash(msg)
         end
     elseif cmd == "barras" then
         if ns.Bars then ns.Bars.Command(raw) else say("Barras no disponibles.") end
+    elseif cmd == "sesion" then
+        if ns.Session then
+            for _, line in ipairs(ns.Session.SummaryLines()) do say(line) end
+        else
+            say("Sesión no disponible.")
+        end
     elseif cmd == "macro" then
         if ns.Macros then ns.Macros.Command(raw) else say("Macros no disponibles.") end
     elseif cmd == "estado" then

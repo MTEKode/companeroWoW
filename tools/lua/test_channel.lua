@@ -231,11 +231,18 @@ local function provider(t)
 end
 check("carrusel inicial reenvia", sc:carousel(0, provider))
 eq("carrusel: 2 mensajes encolados", sc:pending(), 2)
-check("carrusel: no repite con cola llena", sc:carousel(100, provider) == false)
-for _ = 1, 4 do sc:nextChunk(cs, 1) end
-check("carrusel: no repite antes de 60 s", sc:carousel(30, provider) == false)
-check("carrusel: repite tras 60 s con cola vacia", sc:carousel(61, provider))
+check("carrusel: no repite antes de 15 s", sc:carousel(14, provider) == false)
+local pendingId = sc.jobs[1].id
+check("carrusel: con trabajo pendiente no lo reinicia", sc:carousel(16, provider) and sc.jobs[1].id == pendingId and sc:pending() == 2)
+sc:nextChunk(cs, 1)
+sc:nextChunk(cs, 1)
+eq("carrusel: cola vacia tras enviar los 2", sc:pending(), 0)
+check("carrusel: repite a los 15 s aunque la cola no este llena", sc:carousel(31, provider))
 eq("carrusel: vuelve a encolar 2", sc:pending(), 2)
+local hs = C.NewScheduler()
+hs:carousel(0, function(t) return "{\"t\":" .. t .. "}" end)
+check("carrusel: el pesado (10) espera 60 s", hs:carouselDue(10, 59) == false and hs:carouselDue(10, 60))
+check("carrusel: los demas tipos, 15 s", hs:carouselDue(1, 14.9) == false and hs:carouselDue(1, 15))
 
 -- ---------------------------------------------------------------------------
 print("(g) Canal de juego: cambios, delta y combate")
@@ -267,10 +274,9 @@ local function lastJobOf(t)
     return found
 end
 
--- Combate: no se serializa nada nuevo.
+-- Combate: no se revisan cambios (el carrusel si corre, un tipo por tick).
 ns.InCombat = function() return true end
-local inCombatChunk = C.Tick(1000, 860)
-eq("combate: no hay trozo sin cola", inCombatChunk, nil)
+C.Tick(1000, 860)
 check("combate: no calcula tipos", next(C.state.hash) == nil)
 
 ns.InCombat = function() return false end
@@ -299,21 +305,35 @@ CompaneroWoWDB.characters[key].completedQuests = { 1, 3 }
 C.testing.refreshType(6, 3200)
 eq("completedQuests: si algo sale -> completo", lastJobOf(6).str, "[1,3]")
 
--- Knowledge: solo entradas nuevas o cambiadas.
+-- Knowledge: revision por tandas; solo entradas nuevas o cambiadas, en {"npcs":{},"quests":{...}}.
 CompaneroWoWDB.knowledge.quests[101] = { questID = 101, title = "A" }
 C.testing.refreshType(9, 4000)
+C.testing.scanAll()
+C.testing.knowledgeStep(4000)
 local kjob = lastJobOf(9)
-check("knowledge: la primera vez incluye la 101", kjob ~= nil and string.find(kjob.str, "101", 1, true) ~= nil)
+check("knowledge: la primera vez incluye la 101", kjob ~= nil and string.find(kjob.str, '"101":', 1, true) ~= nil)
+check("knowledge: el delta tiene la forma {npcs,quests}", kjob ~= nil and string.sub(kjob.str, 1, 9) == '{"npcs":{')
+check("knowledge: el delta va por el carril normal (no lento)", kjob ~= nil and kjob.heavy == false)
 CompaneroWoWDB.knowledge.quests[102] = { questID = 102, title = "B" }
 C.state.sched.jobs = {}
 C.testing.refreshType(9, 4100)
+C.testing.scanAll()
+C.testing.knowledgeStep(4100)
 kjob = lastJobOf(9)
-check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.str, "102", 1, true) ~= nil
-    and string.find(kjob.str, "101", 1, true) == nil)
+check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.str, '"102":', 1, true) ~= nil
+    and string.find(kjob.str, '"101":', 1, true) == nil)
+-- Sin cambios: la revision no encola nada.
+C.state.sched.jobs = {}
+C.testing.refreshType(9, 4200)
+C.testing.scanAll()
+C.testing.knowledgeStep(4200)
+check("knowledge: sin cambios no encola", lastJobOf(9) == nil)
 
 -- Combate en medio: se siguen enviando trozos ya encolados.
 C.state.sched.jobs = {}
 C.state.sched:enqueue(2, "{\"x\":1}")
+C.state.sched.carouselAt = 5000 -- sin ciclo de carrusel en este tick
+C.state.carouselTodo = nil
 ns.InCombat = function() return true end
 local queued = C.Tick(5000, 860)
 check("combate: sigue saliendo lo ya encolado", queued ~= nil and queued.type == 2)

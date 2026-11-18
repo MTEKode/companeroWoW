@@ -22,5 +22,6 @@ Channel.lua
 Sheet.lua
 Events.lua
 Combat.lua
+Session.lua
 Bars.lua
 Macros.lua
