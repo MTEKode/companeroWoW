@@ -495,25 +495,57 @@ function SH.Collect()
     return s
 end
 
--- Codifica el cuerpo (sin exportedAt) y recorta hechizos del final hasta < MAX_BYTES.
--- Devuelve el JSON del cuerpo o nil si no se puede codificar.
-local function fitBody(sheet)
-    if not ns.Json then return nil end
-    local json = ns.Json.Encode(sheet)
-    while (json == nil or #json > SH.MAX_BYTES) and sheet.spells and #sheet.spells > 0 do
-        sheet.spells[#sheet.spells] = nil
-        if #sheet.spells == 0 then sheet.spells = nil end
-        json = ns.Json.Encode(sheet)
+-- Igualdad profunda de dos valores, sin codificar a JSON (en reposo no se serializa nada).
+local function sameValue(a, b, depth)
+    if a == b then return true end
+    if type(a) ~= "table" or type(b) ~= "table" or depth > 8 then return false end
+    for k, v in pairs(a) do
+        if not sameValue(v, b[k], depth + 1) then return false end
     end
-    if json == nil or #json > SH.MAX_BYTES then return nil end
-    return json
+    for k in pairs(b) do
+        if a[k] == nil then return false end
+    end
+    return true
+end
+
+-- true si la hoja guardada (con exportedAt) tiene el mismo contenido que la recien leida.
+local function sameSheet(old, new)
+    if type(old) ~= "table" then return false end
+    for k, v in pairs(old) do
+        if k ~= "exportedAt" and not sameValue(v, new[k], 0) then return false end
+    end
+    for k in pairs(new) do
+        if old[k] == nil then return false end
+    end
+    return true
+end
+
+-- Copia de la hoja para el canal (tipo 12): recorta hechizos del final hasta que quepa en MAX_BYTES.
+-- Solo se llama al serializar la activacion (no en reposo). No toca la hoja guardada.
+-- Devuelve la copia, o nil si no hay hoja.
+function SH.ForShare(sheet)
+    if type(sheet) ~= "table" then return nil end
+    local copy = {}
+    for k, v in pairs(sheet) do copy[k] = v end
+    if type(sheet.spells) == "table" then
+        local spells = {}
+        for i, s in ipairs(sheet.spells) do spells[i] = s end
+        copy.spells = spells
+    end
+    if not ns.Json then return copy end
+    local json = ns.Json.Encode(copy)
+    while (json == nil or #json > SH.MAX_BYTES) and copy.spells and #copy.spells > 0 do
+        copy.spells[#copy.spells] = nil
+        if #copy.spells == 0 then copy.spells = nil end
+        json = ns.Json.Encode(copy)
+    end
+    return copy
 end
 
 -- ---------------------------------------------------------------------------
 -- Escritura y refresco
 -- ---------------------------------------------------------------------------
 
-local lastBody = nil     -- JSON del ultimo cuerpo escrito (sin exportedAt): evita escribir lo mismo
 local lastAt = nil       -- GetTime() del ultimo refresco
 local timerPending = false
 local deferred = false   -- hay un refresco pedido durante combate
@@ -549,15 +581,9 @@ local function refreshNow()
     local c = currentRecord()
     if not c then return false end
     local sheet = SH.Collect()
-    local body = fitBody(sheet)
-    if not body then
-        SH.stats.errors = SH.stats.errors + 1
-        return false
-    end
-    if body == lastBody and type(c.sheet) == "table" then return false end
+    if sameSheet(c.sheet, sheet) then return false end
     sheet.exportedAt = ns.Now()
     c.sheet = sheet
-    lastBody = body
     SH.stats.writes = SH.stats.writes + 1
     if ns.Channel and ns.Channel.Send then ns.Channel.Send(12) end
     return true
@@ -651,9 +677,9 @@ end
 ns.SheetStatusLine = SH.StatusLine
 
 -- Internos expuestos solo para tools/lua/test_sheet.lua.
-SH.testing = { refreshNow = refreshNow, requestRefresh = requestRefresh, fitBody = fitBody,
+SH.testing = { refreshNow = refreshNow, requestRefresh = requestRefresh,
                cleanText = cleanText, reset = function()
-                   lastBody, lastAt, timerPending, deferred = nil, nil, false, false
+                   lastAt, timerPending, deferred = nil, false, false
                    tipFrame, tipFailed = nil, false
                end }
 

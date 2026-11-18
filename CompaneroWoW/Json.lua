@@ -1,5 +1,7 @@
 -- Json.lua: codificador JSON minimo y puro (sin llamadas a la API de WoW) para el canal en vivo.
 -- ns.Json.Encode(valor) -> cadena JSON, o nil + motivo ("depth" | "size" | "type").
+-- ns.Json.EncodeAsync(valor): igual, pero cede el control (coroutine.yield) cada ASYNC_NODES nodos.
+--   Solo se llama dentro de una coroutine; quien la reanuda reparte la codificacion entre tramas.
 -- Reglas:
 --  - nil y funciones/userdata se omiten en objetos y se escriben null en arrays.
 --  - tabla con solo claves enteras 1..n (sin huecos) -> array; cualquier otra -> objeto.
@@ -17,12 +19,14 @@ local getmetatable, setmetatable, next = getmetatable, setmetatable, next
 local floor, huge = math.floor, math.huge
 local concat, sort = table.concat, table.sort
 local format, gsub, byte = string.format, string.gsub, string.byte
+local yield = coroutine.yield
 
 local Json = {}
 ns.Json = Json
 
 Json.MAX_DEPTH = 8
 Json.MAX_BYTES = 65536
+Json.ASYNC_NODES = 48 -- nodos entre dos cesiones en EncodeAsync (unas decenas de us en WoW)
 
 -- Marca de "lista vacia": una tabla vacia con esta metatabla se escribe [] (no {}).
 local ARRAY_MT = {}
@@ -84,8 +88,9 @@ local function sortedEntries(t)
     return keys
 end
 
--- Escribe el valor en buf. Devuelve true, o false + motivo.
-local function write(buf, v, depth)
+-- Escribe el valor en buf. Devuelve true, o false + motivo. async: ceder cada ASYNC_NODES nodos.
+local nodes = 0
+local function write(buf, v, depth, async)
     local t = type(v)
     if t == "nil" or t == "function" or t == "userdata" or t == "thread" then
         buf[#buf + 1] = "null"
@@ -101,6 +106,13 @@ local function write(buf, v, depth)
         return true
     elseif t == "table" then
         if depth >= Json.MAX_DEPTH then return false, "depth" end
+        if async then
+            nodes = nodes + 1
+            if nodes >= Json.ASYNC_NODES then
+                nodes = 0
+                yield()
+            end
+        end
         if next(v) == nil then
             buf[#buf + 1] = getmetatable(v) == ARRAY_MT and "[]" or "{}"
             return true
@@ -110,7 +122,7 @@ local function write(buf, v, depth)
             buf[#buf + 1] = "["
             for i = 1, n do
                 if i > 1 then buf[#buf + 1] = "," end
-                local ok, why = write(buf, v[i], depth + 1)
+                local ok, why = write(buf, v[i], depth + 1, async)
                 if not ok then return false, why end
             end
             buf[#buf + 1] = "]"
@@ -123,7 +135,7 @@ local function write(buf, v, depth)
             first = false
             buf[#buf + 1] = quote(e.text)
             buf[#buf + 1] = ":"
-            local ok, why = write(buf, e.value, depth + 1)
+            local ok, why = write(buf, e.value, depth + 1, async)
             if not ok then return false, why end
         end
         buf[#buf + 1] = "}"
@@ -136,7 +148,19 @@ end
 -- El tamano se comprueba al final (una tabla gigante se rechaza entera, no a medias).
 function Json.Encode(v)
     local buf = {}
-    local ok, why = write(buf, v, 0)
+    local ok, why = write(buf, v, 0, false)
+    if not ok then return nil, why end
+    local s = concat(buf)
+    if #s > Json.MAX_BYTES then return nil, "size" end
+    return s
+end
+
+-- Igual que Encode, pero cede el control cada ASYNC_NODES nodos. Debe llamarse dentro de una
+-- coroutine. Mismo resultado que Encode.
+function Json.EncodeAsync(v)
+    local buf = {}
+    nodes = 0
+    local ok, why = write(buf, v, 0, true)
     if not ok then return nil, why end
     local s = concat(buf)
     if #s > Json.MAX_BYTES then return nil, "size" end

@@ -80,7 +80,7 @@ local state = {
     lastEventCode = 1,
     eventSeq = 5,
     eventArg = 71,
-    freeBagSlots = 10,
+    shareRemainingSec = 17,
 }
 local p = ns.BuildPayload(state)
 eq("payload tiene 32 bytes", #p, 32)
@@ -107,7 +107,8 @@ eq("flags inCombat|resting|inGroup|targetHostile|hasTarget = 117", p[24], 117)
 eq("lastEventCode 1", p[25], 1)
 eq("eventSeq 5", p[26], 5)
 eq("eventArg 71 b3", p[30], 71)
-eq("freeBagSlots 10", p[31], 10)
+eq("byte 30 = shareRemainingSec 17 (p[31])", p[31], 17)
+eq("freeBagSlots ya no va en el estado", ns.BuildPayload({ freeBagSlots = 9 })[31], 0)
 eq("crc8 coincide con referencia", p[32], crc8Reference(p, 31))
 
 eq("UnitLevel -1 -> targetLevel 255", ns.BuildPayload({ targetLevel = -1 })[21], 255)
