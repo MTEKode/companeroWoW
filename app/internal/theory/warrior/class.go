@@ -100,7 +100,7 @@ func (m *model) runFights(opt theory.Options) []fightRec {
 func (m *model) cycle(r fightRec) (kill float64, cyc float64) {
 	if r.kill {
 		d := m.descanso(r)
-		return 1, r.dur + d
+		return float64(max(r.kills, 1)), r.dur + d
 	}
 	if r.died {
 		return 0, r.dur + m.k.DeathPenalty
@@ -300,9 +300,14 @@ func (m *model) assumptions(opt theory.Options) []string {
 	if m.fixedMob {
 		lv = fmt.Sprintf("nivel %d", m.mobLevel)
 	}
+	scenario := "Escenario: un enemigo"
+	if m.targets == 2 {
+		scenario = "Escenario: dos enemigos juntos (el segundo también te ataca; Barrido, Torbellino y Hendedura le pegan)"
+	}
 	out := []string{
+		scenario + ".",
 		"Enemigo " + lv + " normal (defensa 5 × nivel, armadura 25 × nivel, vida 50 + 25 × nivel, golpe medio 5 + nivel cada 2 s): aproximación del modelo.",
-		"Pelea desde vida llena y 0 de ira, hasta que el enemigo muere, tú mueres o pasan 300 s; una sola pelea a la vez.",
+		"Pelea desde vida llena y 0 de ira, hasta que mueren los enemigos, tú mueres o pasan 300 s; una sola pelea a la vez.",
 		"Tras morir, 60 s de penalización; tras matar, comer para recuperar la vida y 10 s de reinicio (aproximaciones).",
 		"Ira: 7,5 × daño causado y 2,5 × daño recibido, divididos por la conversión del nivel (classic; algunas fuentes dan 15 en lugar de 7,5).",
 	}
@@ -313,6 +318,18 @@ func (m *model) assumptions(opt theory.Options) []string {
 		}
 	}
 	out = append(out, "Números de habilidades (hoja > tabla del sitio > constantes): "+strings.Join(src, ", ")+".")
+	if m.bsAP > 0 {
+		out = append(out, fmt.Sprintf("Grito de batalla: +%.0f poder de ataque mientras dura (rotación); la hoja no lo tiene.", m.bsAP))
+	}
+	if m.buffedBS {
+		out = append(out, "Grito de batalla ya activo en la hoja: su poder de ataque ya está en la hoja y no se suma.")
+	}
+	if m.abil[kSunder].known && m.order != nil && containsIdx(m.order, kSunder) {
+		out = append(out, "Sunder Armor en la rotación: reduce la armadura del enemigo, sin otras reducciones del grupo (supuesto de tanque o de un solo guerrero).")
+	}
+	if m.switches > 0 {
+		out = append(out, fmt.Sprintf("Cambios de postura: %d por pelea; la ira se queda en %.0f al cambiar (Táctica).", m.switches, m.retain))
+	}
 	used, unused := m.tree.Modelled(m.ranks)
 	if len(unused) > 0 {
 		out = append(out, "Talentos sin efecto en el modelo (no se valoran): "+strings.Join(unused, ", ")+".")
@@ -320,6 +337,16 @@ func (m *model) assumptions(opt theory.Options) []string {
 	out = append(out, m.notes...)
 	_ = used
 	return out
+}
+
+// containsIdx reports whether an ability index is in an order list.
+func containsIdx(list []int, i int) bool {
+	for _, x := range list {
+		if x == i {
+			return true
+		}
+	}
+	return false
 }
 
 // Evaluate simulates the build and returns the report.
@@ -368,7 +395,7 @@ func (w Warrior) calibrate(in theory.Input, m *model) []theory.Check {
 	}
 	check("Poder de ataque base", k.APPerStrength*sh.Base.Str+k.APOffset, sh.Melee.APBase,
 		"2 × fuerza base − 20 (classic, guerrero)")
-	sheetTalents, err := m.tree.Ranks(sh.TalentRanks())
+	sheetTalents, _, err := sheetTalentRanks(m.tree, sh)
 	critTalents := 0.0
 	if err == nil {
 		critTalents = talentsOf(m.tree, sheetTalents, m.kind).critPts
@@ -452,6 +479,7 @@ func (w Warrior) Weights(in theory.Input) (theory.WeightsReport, error) {
 }
 
 // CompareItems scores each candidate: the simulated change of kills per hour, with its 95 % interval.
+// Armour and jewellery change the stats; a main-hand weapon changes the damage range and the speed.
 func (w Warrior) CompareItems(in theory.Input, items []theory.Item) (theory.ItemsReport, error) {
 	_, m, err := w.prepare(in)
 	if err != nil {
@@ -462,18 +490,27 @@ func (w Warrior) CompareItems(in theory.Input, items []theory.Item) (theory.Item
 	rep := theory.ItemsReport{KPHBase: round1(m.kph(base, nil)), Supuestos: m.assumptions(opt)}
 	scores := make([]theory.ItemScore, len(items))
 	ok := make([]bool, len(items))
+	reasons := make([]string, len(items))
 	parallel(len(items), func(i int) {
 		it := items[i]
-		if isWeaponLoc(it.EquipLoc) {
-			return
+		var add, sub theory.Delta
+		var unmodelled []string
+		if it.Weapon != nil || isWeaponLoc(it.EquipLoc) {
+			d, notes, why := weaponDelta(in.Sheet, it, m)
+			if why != "" {
+				reasons[i] = why
+				return
+			}
+			add, unmodelled = d, notes
+		} else {
+			add, unmodelled = theory.DeltaFromItem(it.Stats)
+			sub, _ = theory.DeltaFromItem(it.Replaces)
 		}
-		add, _ := theory.DeltaFromItem(it.Stats)
-		sub, _ := theory.DeltaFromItem(it.Replaces)
-		_, unmodelled := theory.DeltaFromItem(it.Stats)
 		in2 := in
 		in2.Build.Delta = in.Build.Delta.Add(add).Add(negate(sub))
 		_, m2, err := w.prepare(in2)
 		if err != nil {
+			reasons[i] = err.Error()
 			return
 		}
 		recs := m2.runFights(opt)
@@ -491,7 +528,11 @@ func (w Warrior) CompareItems(in theory.Input, items []theory.Item) (theory.Item
 	})
 	for i, it := range items {
 		if !ok[i] {
-			rep.NoComparables = append(rep.NoComparables, fmt.Sprintf("%s: no tengo daño ni velocidad de este arma (o no es comparable)", it.Name))
+			why := reasons[i]
+			if why == "" {
+				why = "no tengo daño ni velocidad de este arma (o no es comparable)"
+			}
+			rep.NoComparables = append(rep.NoComparables, it.Name+": "+why)
 			continue
 		}
 		rep.Items = append(rep.Items, scores[i])
@@ -505,8 +546,39 @@ func (w Warrior) CompareItems(in theory.Input, items []theory.Item) (theory.Item
 	return rep, nil
 }
 
-// isWeaponLoc reports whether an equip location is a weapon: the comparison needs the damage and speed
-// of a weapon, which the item stats do not carry.
+// weaponDelta is the change a main-hand weapon makes to the sheet: its average damage, its damage range and
+// its speed against the weapon the sheet has. notes name what the change leaves out; why is set when the
+// weapon cannot be compared (offhand, ranged, one hand against two, no damage).
+func weaponDelta(sh theory.Sheet, it theory.Item, m *model) (d theory.Delta, notes []string, why string) {
+	if it.Weapon == nil || it.Weapon.Speed <= 0 || it.Weapon.Max <= 0 {
+		return d, nil, "no tengo daño ni velocidad de este arma (o no es comparable)"
+	}
+	switch it.EquipLoc {
+	case "INVTYPE_WEAPONOFFHAND", "INVTYPE_HOLDABLE", "INVTYPE_SHIELD":
+		return d, nil, "va en la mano izquierda: su daño no está modelado"
+	case "INVTYPE_RANGED", "INVTYPE_RANGEDRIGHT", "INVTYPE_THROWN":
+		return d, nil, "es un arma a distancia: no cambia el cuerpo a cuerpo"
+	case "INVTYPE_2HWEAPON", "INVTYPE_WEAPON", "INVTYPE_WEAPONMAINHAND":
+	default:
+		return d, nil, "no es un arma de la mano derecha"
+	}
+	twoH := it.EquipLoc == "INVTYPE_2HWEAPON"
+	if twoH != m.twoH {
+		return d, nil, "cambia entre una y dos manos: no modelado"
+	}
+	if it.Subclass != "" {
+		if kind, _, ok := theory.KindOf(it.Subclass); ok && kind != m.kind {
+			notes = append(notes, "cambia de familia de arma: los talentos de arma se evalúan con la familia actual")
+		}
+	}
+	curMin, curMax := sh.Melee.MHMin, sh.Melee.MHMax
+	d.MHAvg = it.Weapon.Average() - (curMin+curMax)/2
+	d.MHSpread = (it.Weapon.Max - it.Weapon.Min) - (curMax - curMin)
+	d.MHSpeed = it.Weapon.Speed - sh.Melee.MHSpeed
+	return d, notes, ""
+}
+
+// isWeaponLoc reports whether an equip location is a weapon.
 func isWeaponLoc(loc string) bool {
 	return strings.Contains(loc, "WEAPON") || strings.Contains(loc, "RANGED")
 }
@@ -516,13 +588,16 @@ func negate(d theory.Delta) theory.Delta {
 	return theory.Delta{
 		Str: -d.Str, Agi: -d.Agi, Sta: -d.Sta, AP: -d.AP, Crit: -d.Crit, Hit: -d.Hit, Skill: -d.Skill,
 		Expertise: -d.Expertise, Armor: -d.Armor, Dodge: -d.Dodge, Parry: -d.Parry,
-		MHAvg: -d.MHAvg, MHSpeed: -d.MHSpeed,
+		MHAvg: -d.MHAvg, MHSpeed: -d.MHSpeed, MHSpread: -d.MHSpread,
 	}
 }
 
 // OptimizeTalents searches the points the character still has to spend, plus the next ones, one point
 // at a time. Each step keeps the best states by kills per hour (beam search) over the legal points.
 func (w Warrior) OptimizeTalents(in theory.Input, opt theory.TalentSearch) (theory.TalentPlan, error) {
+	if opt.Opts.Targets > 0 {
+		in.Opt.Targets = opt.Opts.Targets
+	}
 	tree, m0, err := w.prepare(in)
 	if err != nil {
 		return theory.TalentPlan{}, err
@@ -539,7 +614,7 @@ func (w Warrior) OptimizeTalents(in theory.Input, opt theory.TalentSearch) (theo
 	if opt.Opts.Fights <= 0 {
 		search.Fights = searchFights
 	}
-	start, err := tree.Ranks(in.Sheet.TalentRanks())
+	start, _, err := sheetTalentRanks(tree, in.Sheet)
 	if err != nil {
 		return theory.TalentPlan{}, err
 	}
@@ -671,11 +746,15 @@ func (t *Tree) unlocksModelled(i int) bool {
 // OptimizeRotation compares the priority lists the character can cast, with the Heroic Strike thresholds.
 // The lists are fixed templates; abilities the character does not have are removed by the model.
 func (w Warrior) OptimizeRotation(in theory.Input, opt theory.RotationSearch) (theory.RotationPlan, error) {
+	if opt.Opts.Targets > 0 {
+		in.Opt.Targets = opt.Opts.Targets
+	}
 	_, _, err := w.prepare(in)
 	if err != nil {
 		return theory.RotationPlan{}, err
 	}
 	full := options(opt.Opts, defaultFights)
+	full.Targets = in.Opt.Targets
 	templates := [][]string{
 		{"mortal_strike", "bloodthirst", "overpower", "rend", "hs"},
 		{"bloodthirst", "mortal_strike", "overpower", "rend", "hs"},
@@ -686,6 +765,14 @@ func (w Warrior) OptimizeRotation(in theory.Input, opt theory.RotationSearch) (t
 		{"mortal_strike", "bloodthirst", "slam", "overpower", "cleave", "hs"},
 		{"whirlwind", "mortal_strike", "bloodthirst", "overpower", "rend", "hs"},
 		{"mortal_strike", "bloodthirst", "overpower", "rend"},
+		{"battle_shout", "mortal_strike", "bloodthirst", "overpower", "rend", "hs"},
+		{"sunder", "mortal_strike", "bloodthirst", "overpower", "rend", "hs"},
+	}
+	if full.Targets == 2 {
+		templates = append(templates,
+			[]string{"sweeping_strikes", "whirlwind", "mortal_strike", "bloodthirst", "overpower", "cleave", "hs"},
+			[]string{"sweeping_strikes", "mortal_strike", "bloodthirst", "overpower", "cleave", "hs"},
+		)
 	}
 	thresholds := []float64{15, 30, 45, 60, 80}
 	type cand struct {
@@ -718,6 +805,7 @@ func (w Warrior) OptimizeRotation(in theory.Input, opt theory.RotationSearch) (t
 		c := cands[i]
 		in2 := in
 		in2.Build = theory.Build{Talents: in.Build.Talents, Rotation: c.order, Params: map[string]float64{"hs_sobre": c.hs}, Delta: in.Build.Delta}
+		in2.Opt = in.Opt
 		_, m, err := w.prepare(in2)
 		if err != nil {
 			results[i] = out{kph: -1, note: err.Error()}
@@ -733,6 +821,7 @@ func (w Warrior) OptimizeRotation(in theory.Input, opt theory.RotationSearch) (t
 	sort.SliceStable(results, func(a, b int) bool { return results[a].kph > results[b].kph })
 	plan := theory.RotationPlan{Supuestos: []string{
 		"Cada lista se evalúa con las mismas peleas (misma semilla) y el mismo talento.",
+		"El Grito de batalla dura toda la pelea (se lanza fuera de combate, su ira no entra en ella); Sunder Armor cuesta ira y quita armadura al enemigo; el Barrido solo cuenta con dos enemigos.",
 		"El golpe heroico se encola con el umbral de ira indicado; el resto sigue el orden de la lista.",
 	}}
 	seen := map[string]bool{}
@@ -774,12 +863,22 @@ func (w Warrior) Review(in theory.Input, f theory.FightRecord) theory.FightRevie
 	if rev.DPSEsperado.Mean > 0 {
 		rev.Brecha = round1(100 * (rev.DPSReal - rev.DPSEsperado.Mean) / rev.DPSEsperado.Mean)
 	}
-	seen := map[string]bool{}
+	// The record's spell ids are the match; its names only label the abilities that were not used.
+	used := map[string]bool{}
+	for _, id := range f.Hechizos {
+		if key, ok := abilityKeyOf(id); ok {
+			used[key] = true
+		}
+	}
 	for _, h := range f.Habilidades {
-		seen[h] = true
+		for i, n := range abilityNames {
+			if strings.EqualFold(n, h) {
+				used[abilityKeys[i]] = true
+			}
+		}
 	}
 	for _, i := range m.order {
-		if !seen[abilityKeys[i]] && i != kHS {
+		if !used[abilityKeys[i]] && i != kHS {
 			rev.SinUsar = append(rev.SinUsar, abilityNames[i])
 		}
 	}

@@ -416,6 +416,22 @@ eq("quita colores y texturas", SH.testing.cleanText("|cffffd100Golpe|r |TIcon:12
 eq("solo espacios -> nil", SH.testing.cleanText("   "), nil)
 
 -- ---------------------------------------------------------------------------
+print("(j2) Auras del jugador (grito de batalla en la hoja)")
+fresh()
+local AURAS = { 6673, 1234 }
+_G.C_UnitAuras = {
+    GetBuffDataByIndex = function(unit, i)
+        if unit ~= "player" or AURAS[i] == nil then return nil end
+        return { spellId = AURAS[i] }
+    end,
+}
+local withBuffs = SH.Collect()
+eq("buffs: dos auras", withBuffs.buffs and #withBuffs.buffs, 2)
+eq("buffs: spellID del grito de batalla", withBuffs.buffs and withBuffs.buffs[1], 6673)
+_G.C_UnitAuras = nil
+check("sin auras: sin campo buffs", SH.Collect().buffs == nil)
+
+-- ---------------------------------------------------------------------------
 print("(k) Tipo 12 en la tabla de tipos del canal")
 eq("nombre del tipo 12", C.TYPES[12].name, "sheet")
 check("tipo 12 sin eventos propios (lo marca Sheet.lua)", #C.TYPES[12].events == 0)

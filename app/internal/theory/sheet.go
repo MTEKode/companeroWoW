@@ -110,6 +110,7 @@ type Sheet struct {
 		Unspent int         `json:"unspent"`
 	} `json:"talents"`
 	Spells       []SheetSpell  `json:"spells"`
+	Buffs        []int         `json:"buffs"` // spell ids of the buffs the character has now (player auras)
 	WeaponSkills []WeaponSkill `json:"weaponSkills"`
 }
 
@@ -151,38 +152,37 @@ func (s Sheet) TalentRanks() map[string]int {
 	return out
 }
 
-// SpellByName returns the known spell with that name (case-insensitive), if the sheet has it.
-func (s Sheet) SpellByName(name string) (SheetSpell, bool) {
-	for _, sp := range s.Spells {
-		if strings.EqualFold(sp.Name, name) && (sp.Known || len(s.Spells) > 0) {
-			return sp, true
-		}
-	}
-	return SheetSpell{}, false
-}
-
 // WeaponKind names the main-hand weapon family from the weapon skill lines ("Two-Handed Swords"
 // → sword, two-handed). ok is false when the sheet has no weapon skill of a known family.
 func (s Sheet) WeaponKind() (kind string, twoHanded bool, ok bool) {
 	for _, w := range s.WeaponSkills {
-		n := strings.ToLower(w.Name)
-		th := strings.Contains(n, "two-handed")
-		switch {
-		case strings.Contains(n, "sword"):
-			return "sword", th, true
-		case strings.Contains(n, "axe"):
-			return "axe", th, true
-		case strings.Contains(n, "mace"):
-			return "mace", th, true
-		case strings.Contains(n, "polearm"):
-			return "polearm", th, true
-		case strings.Contains(n, "staff"):
-			return "staff", th, true
-		case strings.Contains(n, "dagger"):
-			return "dagger", false, true
-		case strings.Contains(n, "fist"):
-			return "fist", false, true
+		if kind, th, ok := KindOf(w.Name); ok {
+			return kind, th, true
 		}
+	}
+	return "", false, false
+}
+
+// KindOf names the weapon family of a weapon skill or item subclass name, in English ("One-Handed Axes"
+// → axe). ok is false for a name it does not know.
+func KindOf(name string) (kind string, twoHanded bool, ok bool) {
+	n := strings.ToLower(name)
+	th := strings.Contains(n, "two-handed")
+	switch {
+	case strings.Contains(n, "sword"):
+		return "sword", th, true
+	case strings.Contains(n, "axe"):
+		return "axe", th, true
+	case strings.Contains(n, "mace"):
+		return "mace", th, true
+	case strings.Contains(n, "polearm"):
+		return "polearm", th, true
+	case strings.Contains(n, "staff"):
+		return "staff", th, true
+	case strings.Contains(n, "dagger"):
+		return "dagger", false, true
+	case strings.Contains(n, "fist"):
+		return "fist", false, true
 	}
 	return "", false, false
 }

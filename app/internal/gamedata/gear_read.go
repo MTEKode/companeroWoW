@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MTEKode/companeroWoW/app/internal/theory"
 )
 
 // Readers of the gear, quest-window and dungeon blocks that the addon writes into each
@@ -45,6 +47,7 @@ type gearItem struct {
 	Class         string
 	Subclass      string
 	Stats         map[string]float64
+	Weapon        *theory.Weapon // damage and speed of a weapon; nil for the other items
 }
 
 // npcPoint is a quest giver, quest taker, dungeon entrance or other place with coordinates.
@@ -397,6 +400,14 @@ func parseGearItem(m map[string]any, slotID int) (gearItem, bool) {
 		Class:         str(m["class"]),
 		Subclass:      str(m["subclass"]),
 		Stats:         readStats(m["stats"]),
+	}
+	if w := asMap(m["weapon"]); w != nil {
+		mn, okMin := numOK(w["min"])
+		mx, okMax := numOK(w["max"])
+		sp, okSp := numOK(w["speed"])
+		if okMin && okMax && okSp && mx > 0 && sp > 0 {
+			it.Weapon = &theory.Weapon{Min: mn, Max: mx, Speed: sp}
+		}
 	}
 	if it.Name == "" && it.ItemID == 0 {
 		return gearItem{}, false

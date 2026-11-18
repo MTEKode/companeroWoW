@@ -49,20 +49,48 @@ type Constants struct {
 
 	// Ability fallbacks used only when the client text is not available (the sheet and the class
 	// page both missing). Each one is the classic rule; the tooltip wins when present.
-	DeathWishCD   float64 // 180 s (classic)
-	DeathWishLen  float64 // 30 s (tooltip of the talent)
-	DeathWishDmg  float64 // +20 % physical damage (tooltip of the talent)
-	DeathWishTake float64 // +5 % damage taken (tooltip of the talent)
-	EnrageLen     float64 // 12 s (tooltip of the talent)
-	FlurryLen     int     // next 3 swings (tooltip of the talent)
-	BloodthirstCD float64 // 6 s (tooltip of the ability)
-	MortalCD      float64 // 6 s (tooltip of the ability)
-	SlamCD        float64 // 15 s (tooltip of the ability)
-	SlamCast      float64 // 1.5 s (tooltip of the ability)
-	WhirlCD       float64 // 10 s (tooltip of the ability)
-	RendFallback  float64 // total Rend damage when there is no text: aprox.
-	HSFallback    float64 // Heroic Strike bonus when there is no text: aprox.
-	FallbackCost  map[string]float64
+	SunderStack     float64 // armour removed per Sunder Armor stack: 90 (rank 1 of the site)
+	SunderMaxStacks float64 // 5 (site text)
+	SunderLen       float64 // 30 s (site text)
+	RevengeMin      float64 // Revenge damage, rank 1 of the site: 20 + 22.5 % AP
+	RevengeAP       float64 // 22.5 (site text)
+	RevengeMax      float64 // 24
+	RevengeWindow   float64 // seconds after a block, dodge or parry that Revenge is usable: 5 (aprox.)
+	BattleShoutAP   float64 // attack power of Battle Shout, rank 1: 12 (site text)
+	BattleShoutLen  float64 // 180 s (site text: lasts 3 min)
+	BloodrageHPCost float64 // share of base health Bloodrage costs: 0.2 (site text)
+	BloodrageCD     float64 // 60 s (site text)
+	BloodrageLen    float64 // the rage over time lasts 10 s (site text)
+	BerserkerCD     float64 // 30 s (site text)
+	BerserkerLen    float64 // 10 s (site text)
+	BerserkerTake   float64 // rage from damage taken during Berserker Rage is multiplied by this: 2 (aprox.)
+	VictoryAP       float64 // Victory Rush: 15 % of AP (site text)
+	VictoryCD       float64 // 30 s (site text)
+	VictoryWindow   float64 // usable 20 s after a non-trivial kill (site text)
+	RecklessCD      float64 // 1800 s (site text: 30 min)
+	RecklessLen     float64 // 15 s (site text)
+	RecklessCrit    float64 // +100 % critical strike chance (site text)
+	RecklessTake    float64 // +20 % damage taken (site text)
+	SweepCD         float64 // 30 s (classic, aprox.)
+	SweepCost       float64 // 30 rage (classic, aprox.)
+	SweepCharges    int     // the next 5 melee attacks (feed text)
+	TacticalRetain  float64 // rage kept when changing stance, before talents: 10 (feed text)
+	StanceEvery     float64 // seconds between two stance changes when the build asks for them (aprox.)
+	SweepDamage     float64 // the extra target takes this share of the swing (aprox., classic: 100 %)
+	DeathWishCD     float64 // 180 s (classic)
+	DeathWishLen    float64 // 30 s (tooltip of the talent)
+	DeathWishDmg    float64 // +20 % physical damage (tooltip of the talent)
+	DeathWishTake   float64 // +5 % damage taken (tooltip of the talent)
+	EnrageLen       float64 // 12 s (tooltip of the talent)
+	FlurryLen       int     // next 3 swings (tooltip of the talent)
+	BloodthirstCD   float64 // 6 s (tooltip of the ability)
+	MortalCD        float64 // 6 s (tooltip of the ability)
+	SlamCD          float64 // 15 s (tooltip of the ability)
+	SlamCast        float64 // 1.5 s (tooltip of the ability)
+	WhirlCD         float64 // 10 s (tooltip of the ability)
+	RendFallback    float64 // total Rend damage when there is no text: aprox.
+	HSFallback      float64 // Heroic Strike bonus when there is no text: aprox.
+	FallbackCost    map[string]float64
 }
 
 // Sources returns the lines of the formula table for the report, in reading order.
@@ -79,6 +107,8 @@ func Sources() []string {
 		"AP del guerrero: 2 × fuerza − 20 (classic).",
 		"Enemigos (aprox.): defensa 5 × nivel; vida 50 + 25 × nivel; armadura 25 × nivel; golpe medio 5 + nivel; golpe cada 2 s; crítico 5 %.",
 		"Descanso tras un combate: comida que restaura 40 % de la vida en 27 s (aprox.) + 10 s de reinicio (aprox.); tras la muerte 60 s (aprox.).",
+		"Grito de batalla: se lanza fuera de combate y dura 3 min (sitio); cuenta toda la pelea y no suma si la hoja ya lo muestra.",
+		"Dos enemigos juntos (aprox.): cada uno tira sus golpes y te ataca; la pelea acaba cuando mueren los dos; Barrido, Torbellino y Hendedura pegan a los dos.",
 	}
 }
 
@@ -141,6 +171,35 @@ var Table = Constants{
 	MobVariance:    0.15,
 	CritBaseTalent: 0,
 
+	SunderStack:     90,
+	SunderMaxStacks: 5,
+	SunderLen:       30,
+	RevengeMin:      20,
+	RevengeAP:       22.5,
+	RevengeMax:      24,
+	RevengeWindow:   5,
+	BattleShoutAP:   12,
+	BattleShoutLen:  180,
+	BloodrageHPCost: 0.2,
+	BloodrageCD:     60,
+	BloodrageLen:    10,
+	BerserkerCD:     30,
+	BerserkerLen:    10,
+	BerserkerTake:   2,
+	VictoryAP:       15,
+	VictoryCD:       30,
+	VictoryWindow:   20,
+	RecklessCD:      1800,
+	RecklessLen:     15,
+	RecklessCrit:    100,
+	RecklessTake:    20,
+	SweepCD:         30,
+	SweepCost:       30,
+	SweepCharges:    5,
+	TacticalRetain:  10,
+	StanceEvery:     60,
+	SweepDamage:     1,
+
 	DeathWishCD:   180,
 	DeathWishLen:  30,
 	DeathWishDmg:  20,
@@ -157,5 +216,7 @@ var Table = Constants{
 	FallbackCost: map[string]float64{
 		"hs": 15, "rend": 10, "overpower": 5, "execute": 15, "mortal_strike": 30,
 		"bloodthirst": 30, "slam": 15, "whirlwind": 25, "cleave": 20,
+		"sunder": 15, "revenge": 5, "battle_shout": 10, "bloodrage": 0, "berserker_rage": 0,
+		"victory_rush": 0, "recklessness": 0, "sweeping_strikes": 30,
 	},
 }

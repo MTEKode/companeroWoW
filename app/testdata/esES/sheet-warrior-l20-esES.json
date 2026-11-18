@@ -1,0 +1,245 @@
+{
+ "exportedAt": 1795000000,
+ "level": 20,
+ "class": "WARRIOR",
+ "race": "Human",
+ "stance": "Battle Stance",
+ "base": {
+  "str": 60,
+  "agi": 40,
+  "sta": 55,
+  "int": 20,
+  "spi": 30
+ },
+ "total": {
+  "str": 60,
+  "agi": 52,
+  "sta": 65,
+  "int": 20,
+  "spi": 30
+ },
+ "health": 1000,
+ "healthMax": 1000,
+ "power": 0,
+ "powerMax": 100,
+ "powerType": "RAGE",
+ "armor": 620,
+ "armorEffective": 620,
+ "melee": {
+  "ap": 124,
+  "apBase": 100,
+  "apPos": 24,
+  "apNeg": 0,
+  "crit": 5.6,
+  "hit": 2,
+  "expertise": 0,
+  "mhMin": 44,
+  "mhMax": 62,
+  "mhSpeed": 3.5,
+  "ohMin": null,
+  "ohMax": null,
+  "ohSpeed": null,
+  "mhSkill": 100,
+  "ohSkill": null,
+  "attackSpeed": 3.5
+ },
+ "ranged": {
+  "ap": 0,
+  "crit": 0,
+  "min": 0,
+  "max": 0,
+  "speed": 0
+ },
+ "defense": {
+  "dodge": 6.0,
+  "parry": 5.0,
+  "block": 0,
+  "blockValue": 0,
+  "defenseSkill": 100
+ },
+ "spell": {
+  "crit": 0,
+  "power": 0,
+  "hit": 0,
+  "haste": 0
+ },
+ "regen": {
+  "manaBase": 0,
+  "manaCasting": 0
+ },
+ "resist": {
+  "arcane": 0,
+  "fire": 0,
+  "frost": 0,
+  "nature": 0,
+  "shadow": 0
+ },
+ "talents": {
+  "tabs": [
+   {
+    "name": "Arms",
+    "points": 7,
+    "talents": [
+     {
+      "name": "Desviación",
+      "rank": 5,
+      "maxRank": 5,
+      "row": 1,
+      "col": 1,
+      "spellID": 16466
+     },
+     {
+      "name": "Abrumar mejorado",
+      "rank": 2,
+      "maxRank": 2,
+      "row": 2,
+      "col": 2,
+      "spellID": 12964
+     }
+    ]
+   },
+   {
+    "name": "Fury",
+    "points": 5,
+    "talents": [
+     {
+      "name": "Crueldad",
+      "rank": 5,
+      "maxRank": 5,
+      "row": 1,
+      "col": 2,
+      "spellID": 12855
+     }
+    ]
+   },
+   {
+    "name": "Protection",
+    "points": 0,
+    "talents": []
+   }
+  ],
+  "unspent": 0
+ },
+ "spells": [
+  {
+   "spellID": 78,
+   "name": "Golpe heroico",
+   "rank": "Rank 3",
+   "known": true,
+   "cost": 12,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 0,
+   "range": 0,
+   "tooltip": "Un ataque fuerte que aumenta el daño cuerpo a cuerpo en 32 y genera mucha amenaza."
+  },
+  {
+   "spellID": 772,
+   "name": "Desgarrar",
+   "rank": "Rank 3",
+   "known": true,
+   "cost": 10,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 0,
+   "range": 5,
+   "tooltip": "Hiere al objetivo y le provoca un sangrado de 61 de daño durante 15 s."
+  },
+  {
+   "spellID": 7384,
+   "name": "Abrumar",
+   "rank": "Rank 1",
+   "known": true,
+   "cost": 5,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 5,
+   "range": 5,
+   "tooltip": "Abruma al enemigo al instante, causando daño de arma más 5. Solo se puede usar después de que el objetivo esquive. Abrumar no puede ser bloqueado, esquivado ni parado."
+  },
+  {
+   "spellID": 845,
+   "name": "Hendedura",
+   "rank": "Rank 1",
+   "known": true,
+   "cost": 20,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 0,
+   "range": 5,
+   "tooltip": "Un ataque de barrido que causa tu daño de arma más 5 al objetivo y a un segundo enemigo cercano."
+  },
+  {
+   "spellID": 1464,
+   "name": "Aplastar",
+   "rank": "Rank 1",
+   "known": true,
+   "cost": 15,
+   "powerType": "RAGE",
+   "castTime": 1.5,
+   "cooldown": 15,
+   "range": 5,
+   "tooltip": "Golpea al oponente, causando daño de arma más 16."
+  },
+  {
+   "spellID": 6673,
+   "name": "Grito de batalla",
+   "rank": "Rank 2",
+   "known": true,
+   "cost": 10,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 0,
+   "range": 0,
+   "tooltip": "El guerrero grita, aumentando el poder de ataque cuerpo a cuerpo de todos los miembros del grupo o la banda a 20 yardas en 24. Dura 3 min."
+  },
+  {
+   "spellID": 2457,
+   "name": "Postura de combate",
+   "rank": "",
+   "known": true,
+   "cost": 0,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 1,
+   "range": 0,
+   "tooltip": "Una postura de combate equilibrada."
+  },
+  {
+   "spellID": 100,
+   "name": "Carga",
+   "rank": "Rank 2",
+   "known": true,
+   "cost": 0,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 15,
+   "range": 25,
+   "tooltip": "Carga contra un enemigo, genera 12 de ira y lo aturde durante 1 s. No se puede usar en combate."
+  },
+  {
+   "spellID": 1715,
+   "name": "Mutilar",
+   "rank": "Rank 1",
+   "known": true,
+   "cost": 10,
+   "powerType": "RAGE",
+   "castTime": 0,
+   "cooldown": 0,
+   "range": 5,
+   "tooltip": "Mutila al enemigo, causando 5 de daño y reduciendo su velocidad de movimiento un 40 % durante 15 s."
+  }
+ ],
+ "weaponSkills": [
+  {
+   "name": "Two-Handed Swords",
+   "rank": 100,
+   "max": 100
+  },
+  {
+   "name": "Defense",
+   "rank": 100,
+   "max": 100
+  }
+ ]
+}

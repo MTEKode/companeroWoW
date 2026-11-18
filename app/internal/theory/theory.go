@@ -69,6 +69,7 @@ type Delta struct {
 	Armor          float64
 	Dodge, Parry   float64 // percentage points
 	MHAvg, MHSpeed float64 // weapon average damage and speed changes
+	MHSpread       float64 // change of the main-hand damage range (max − min)
 }
 
 // Add returns the sum of two deltas.
@@ -77,7 +78,7 @@ func (d Delta) Add(o Delta) Delta {
 		Str: d.Str + o.Str, Agi: d.Agi + o.Agi, Sta: d.Sta + o.Sta, AP: d.AP + o.AP,
 		Crit: d.Crit + o.Crit, Hit: d.Hit + o.Hit, Skill: d.Skill + o.Skill, Expertise: d.Expertise + o.Expertise,
 		Armor: d.Armor + o.Armor, Dodge: d.Dodge + o.Dodge, Parry: d.Parry + o.Parry,
-		MHAvg: d.MHAvg + o.MHAvg, MHSpeed: d.MHSpeed + o.MHSpeed,
+		MHAvg: d.MHAvg + o.MHAvg, MHSpeed: d.MHSpeed + o.MHSpeed, MHSpread: d.MHSpread + o.MHSpread,
 	}
 }
 
@@ -86,12 +87,25 @@ type Item struct {
 	Name      string
 	ItemID    int64
 	EquipLoc  string
+	Subclass  string // the item's subclass in English ("One-Handed Swords"), for weapons
 	ItemLevel int
 	Slot      string // the sheet slot it would replace, when known
 	Stats     map[string]float64
 	Replaces  map[string]float64 // stats of the item it replaces (empty for an empty slot)
 	Source    string
+	Weapon    *Weapon // damage and speed of a weapon candidate
+	Bag       bool    // the item is in the bags, not equipped and not a gear candidate
 }
+
+// Weapon is a weapon's damage range and speed, as the tooltip shows them (seconds per swing).
+type Weapon struct {
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Speed float64 `json:"velocidad"`
+}
+
+// Average is the mean damage of one swing before Attack Power.
+func (w Weapon) Average() float64 { return (w.Min + w.Max) / 2 }
 
 // Options are the simulation settings shared by every calculation.
 type Options struct {
@@ -99,6 +113,7 @@ type Options struct {
 	Seed     uint64 // the seed; 0 uses the class default
 	MobLevel int    // a fixed mob level; 0 draws it from the leveling window (level-2 to level+2)
 	Elite    bool
+	Targets  int // enemies pulled together: 1 (default) or 2
 }
 
 // Build is one configuration to evaluate: talent ranks by name, the rotation (class ability keys in
@@ -278,7 +293,8 @@ type FightRecord struct {
 	Muerte      bool
 	DanoHecho   float64
 	NivelMob    int
-	Habilidades []string // ability keys seen in the fight
+	Hechizos    []int    // spell ids that dealt damage (the match key; the names are the client's)
+	Habilidades []string // the names as the record has them, for display only
 }
 
 // FightReview is the comparison of a recorded fight with the model.
