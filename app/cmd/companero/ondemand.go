@@ -1,0 +1,137 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/MTEKode/companeroWoW/app/internal/ai"
+	"github.com/MTEKode/companeroWoW/app/internal/assistant"
+	"github.com/MTEKode/companeroWoW/app/internal/bridge"
+	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/ondemand"
+	"github.com/MTEKode/companeroWoW/app/internal/ui"
+)
+
+// modeGate holds the settings that decide whether the game is read between questions: the way
+// the app reads the game (continuous or on demand) and the tips mode. It is read from the
+// reader's goroutine and written from the settings screen, so it has its own lock.
+type modeGate struct {
+	mu         sync.Mutex
+	continuous bool
+	tips       string
+}
+
+func newModeGate(cfg *config.Config) *modeGate {
+	return &modeGate{continuous: !cfg.OnDemand(), tips: cfg.TipsMode}
+}
+
+// isContinuous reports whether the game is read all the time.
+func (m *modeGate) isContinuous() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.continuous
+}
+
+func (m *modeGate) setContinuous(on bool) {
+	m.mu.Lock()
+	m.continuous = on
+	m.mu.Unlock()
+}
+
+func (m *modeGate) setTips(mode string) {
+	m.mu.Lock()
+	m.tips = mode
+	m.mu.Unlock()
+}
+
+// tipsOn reports whether proactive tips are produced: only in the continuous mode, where the
+// game is read between questions, and only when the tips mode is not off.
+func (m *modeGate) tipsOn() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.continuous && m.tips != config.TipsOff
+}
+
+// onDemandBackend is the assistant as the panel sees it. In the on-demand mode a question
+// makes the reader active, waits for fresh game data (up to the configured wait), shows the
+// progress in the status bar and then goes ahead, naming any block that is still old. In the
+// continuous mode it is the assistant itself.
+type onDemandBackend struct {
+	*assistant.Assistant
+	ctl    *ondemand.Controller
+	mode   *modeGate
+	waiter *ondemand.Waiter
+	g      *gamedata.Service
+	wait   time.Duration
+}
+
+// Ask answers one question (see onDemandBackend).
+func (b *onDemandBackend) Ask(ctx context.Context, question string, withScreenshot bool) (ai.Response, error) {
+	if b.mode.isContinuous() {
+		return b.Assistant.Ask(ctx, question, withScreenshot)
+	}
+	b.ctl.BeginQuestion()
+	defer b.ctl.EndQuestion()
+	defer ui.ReportReading("")
+	refreshSavedVariables(b.g)
+	stale, err := b.waiter.Wait(ctx, b.ctl.ActivatedAt(), b.wait, func(have, total int) {
+		ui.ReportReading(fmt.Sprintf("Leyendo el juego… (%d/%d)", have, total))
+	})
+	if err != nil {
+		return ai.Response{}, err
+	}
+	ctx = assistant.WithDataNote(ctx, ondemand.StaleNote(stale))
+	return b.Assistant.Ask(ctx, question, withScreenshot)
+}
+
+// refreshSavedVariables checks the SavedVariables file once. A file that is not there yet (WoW
+// not set up, the addon never synced) is normal and is not logged.
+func refreshSavedVariables(g *gamedata.Service) {
+	if err := g.RefreshSavedVariables(); err != nil &&
+		!errors.Is(err, fs.ErrNotExist) && !errors.Is(err, config.ErrNoSavedVariables) {
+		log.Printf("saved variables: %v", err)
+	}
+}
+
+// saveOnDemandState writes the runtime state of the app, and, when it goes inactive, the last
+// known game data (livecache.json). --diag reads the runtime state to report the captures of the
+// running app.
+func saveOnDemandState(dir string, reader *bridge.Reader, mode string, active bool) {
+	if !active {
+		if err := ondemand.SaveCache(filepath.Join(dir, ondemand.CacheFile), reader.Channel().Data, time.Now()); err != nil {
+			log.Printf("caché de datos: %v", err)
+		}
+	}
+	st := ondemand.RuntimeState{
+		PID:      os.Getpid(),
+		Mode:     mode,
+		Active:   active,
+		Captures: reader.Captures(),
+		At:       time.Now(),
+	}
+	if err := ondemand.SaveRuntime(filepath.Join(dir, ondemand.RuntimeFile), st); err != nil {
+		log.Printf("estado de la app: %v", err)
+	}
+}
+
+// onDemandAfter is the timer of the controller: time.AfterFunc, which fires once per schedule.
+func onDemandAfter(d time.Duration, f func()) func() {
+	t := time.AfterFunc(d, f)
+	return func() { t.Stop() }
+}
+
+// modeName is the config value of the mode, for the runtime state.
+func (m *modeGate) modeName() string {
+	if m.isContinuous() {
+		return config.ModeContinuous
+	}
+	return config.ModeOnDemand
+}

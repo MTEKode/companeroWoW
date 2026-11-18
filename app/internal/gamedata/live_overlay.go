@@ -40,7 +40,7 @@ func (g *Service) overlayLive(ch charEntry) charEntry {
 	}
 	changed := false
 	for t, it := range items {
-		if t == bridge.MsgKnowledge || t == bridge.MsgMeta {
+		if t == bridge.MsgKnowledge || t == bridge.MsgMeta || t == bridge.MsgSession {
 			continue
 		}
 		if !ch.updatedAt.IsZero() && !it.At.After(ch.updatedAt) {

@@ -161,6 +161,8 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `antigravityModels` / `antigravityQuotaCooldownMin` | Orden de los modelos de Antigravity y minutos que un modelo sin cuota queda fuera (30 por defecto). Ver [Modelos de Antigravity](#modelos-de-antigravity). |
 | `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
+| `mode` | `bajo_demanda` (por defecto): la app lee el juego solo con el panel abierto o mientras respondes una pregunta (ver «Modo de lectura»). `continuo`: lectura permanente, como antes, para depurar. Las configuraciones anteriores reciben `bajo_demanda`. |
+| `onDemandWaitSec` | En modo bajo demanda, segundos que una pregunta espera a que lleguen datos frescos del juego antes de responder (por defecto 8, máximo 20). Pasado el tiempo responde con lo que hay y señala qué datos son antiguos. |
 | `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
 | `tipsSound` | `true` reproduce el sonido de Windows con el aviso de un consejo. Por defecto, `false`. |
 | `proactive` | Refleja `tipsMode` (`false` solo con `off`); se mantiene por compatibilidad. Si `tipsMode` existe, manda `tipsMode`. |
@@ -309,6 +311,22 @@ Para builds, talentos, rotación, stats y valor de equipo, la app no usa guías:
 - **Herramientas** (guerrero): `calcular_dps`, `pesos_estadisticas`, `comparar_objetos`, `optimizar_talentos`, `optimizar_rotacion`. `analizar_equipo` añade `teoria.ranking`, `analizar_rotacion` añade `teoria.mejor` y `revisar_combates` añade `revision` por combate.
 - **Calibración**: el modelo calcula el poder de ataque (2 × fuerza − 20), el crítico (agilidad total / 20 + talentos) y la velocidad de ataque, y los compara con la hoja. Si una diferencia pasa del 3 %, la herramienta avisa «modelo desajustado». El golpe blanco no se compara: la hoja no trae su daño.
 - **Limitaciones**: solo guerrero (otras clases responden con `disponible: false`); las constantes marcadas «aprox.» son aproximaciones documentadas, no datos del cliente; los talentos sin efecto modelado se nombran y no se valoran; la búsqueda de talentos es un haz de 5 opciones por paso, no exhaustiva; las pistas de daño de Rend y Deep Wounds dependen de los tooltips del personaje.
+
+## Modo de lectura: solo al preguntar (por defecto)
+
+Con `mode: "bajo_demanda"` (por defecto) la app no mira el juego en segundo plano:
+
+- **Lector en reposo.** No hay capturas de pantalla ni búsqueda de la ventana de WoW mientras nadie usa la app. El lector se activa mientras el panel está abierto o hay una pregunta en curso, y se apaga 20 s después de cerrar el panel si no hay ninguna pregunta. Activo, lee la franja como antes (cada 0,25 s), así que los datos se refrescan mientras escribes. Con el panel cerrado y en reposo, la app no hace capturas y su uso de CPU es despreciable.
+- **Espera de datos frescos.** Al preguntar, la app espera hasta `onDemandWaitSec` (8 s por defecto) a que lleguen el personaje, la hoja, las misiones, el equipo y la sesión del addon. El panel muestra «Leyendo el juego… (x/5)» y el botón Cancelar sigue funcionando. Si no llegan a tiempo, responde con los datos que tiene y avisa a la IA de qué bloques son antiguos y de hace cuánto («datos de hace 3 min»).
+- **SavedVariables bajo demanda.** El archivo se mira al activarse la app y antes de cada pregunta; no hay temporizador que lo lea.
+- **Sesión del addon.** La sesión de juego la lleva el addon: el mensaje 14 («session») del canal y `characters[key].session` en SavedVariables. `ritmo_subida`, `resumen_sesion` y `contexto_jugador` la leen de ahí. La app no lleva sesiones propias en este modo.
+- **Últimos datos.** Al quedar en reposo, la app guarda lo último que leyó en `%APPDATA%\CompaneroWoW\livecache.json` y lo carga al arrancar, para que una respuesta tras reiniciar tenga datos, con su antigüedad.
+- **Sin consejos proactivos.** La IA solo responde cuando preguntas. En Ajustes, el selector de consejos aparece desactivado con la nota correspondiente.
+- **Ocultar en combate** solo funciona mientras la app está activa (panel abierto o pregunta en curso). Con el panel cerrado en reposo, no puede saber si estás en combate.
+- **Barra de estado.** En reposo muestra «En reposo — abre el panel o pregunta para leer el juego».
+- **Diagnóstico.** `CompaneroWoW.exe --diag` incluye `mode`, `tipsEffective` y `runningApp`: el estado que la app en ejecución escribió en `runtime.json` en su último cambio (activa o no, y el número de capturas hechas). Con el panel cerrado ese número no cambia. `channel.captures` cuenta las capturas del propio `--diag`.
+
+`mode: "continuo"` vuelve a la lectura de siempre: captura permanente, consejos proactivos y el seguimiento de sesión propio de la app. En Ajustes, **Funcionamiento** cambia entre los dos modos al guardar, sin reiniciar.
 
 ## Ritmo, valor de misiones y enemigos
 
