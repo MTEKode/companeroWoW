@@ -102,6 +102,7 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 	if g != nil {
 		g.SetKillTime(theoryKillTime(g, ws))
 	}
+	addWorldTools(r, g)
 	withProfileNotes(r)
 	return r
 }

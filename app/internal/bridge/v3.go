@@ -61,6 +61,7 @@ const (
 	MsgHeavy           uint8 = 10 // questie, questWindow, gearCandidates, dungeons
 	MsgMeta            uint8 = 11 // addon version, export timestamps, health
 	MsgSheet           uint8 = 12 // character sheet: the same shape as characters[key].sheet (manual, every 60 s at most)
+	MsgWorld           uint8 = 16 // account-wide world data (flights, vendors, trainers, chains, consumables): changed parts only
 )
 
 // MsgNames maps each message type to its name in the addon and in --diag.
@@ -68,6 +69,7 @@ var MsgNames = map[uint8]string{
 	MsgCharacter: "character", MsgQuests: "quests", MsgBags: "bags", MsgEquipment: "equipment",
 	MsgProfessions: "professions", MsgCompletedQuests: "completedQuests", MsgCombat: "combat",
 	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta", MsgSheet: "sheet",
+	MsgWorld: "world",
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.

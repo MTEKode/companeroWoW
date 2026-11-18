@@ -62,6 +62,11 @@ var wantNames = []string{
 	"ritmo_subida",
 	"valor_misiones",
 	"info_enemigo",
+	"ruta_viaje",
+	"donde_comprar",
+	"coste_entrenamiento",
+	"cadena_mision",
+	"consumibles",
 }
 
 // fixtureService builds a gamedata service over the SavedVariables fixture with the

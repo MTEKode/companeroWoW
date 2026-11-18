@@ -1,0 +1,140 @@
+CompaneroWoWDB = {
+	["schema"] = 1,
+	["characters"] = {
+		["Velaris-Forever"] = {
+			["updatedAt"] = 1793880000,
+			["character"] = {
+				["name"] = "Velaris",
+				["realm"] = "Forever",
+				["race"] = "Human",
+				["class"] = "Priest",
+				["classFile"] = "PRIEST",
+				["level"] = 19,
+				["money"] = 25000,
+				["specOrTalentSummary"] = "Disciplina",
+			},
+			["location"] = {
+				["mapID"] = 37,
+				["zone"] = "Bosque de Elwynn",
+				["x"] = 0.4100,
+				["y"] = 0.5200,
+			},
+			["completedQuests"] = "90107,90102",
+			["professions"] = {
+				{ ["name"] = "Sastrería", ["skillLineID"] = 197, ["rank"] = 68, ["maxRank"] = 75, ["isSecondary"] = false },
+				{ ["name"] = "Primeros auxilios", ["skillLineID"] = 129, ["rank"] = 60, ["maxRank"] = 75, ["isSecondary"] = true },
+				{ ["name"] = "Cocina", ["skillLineID"] = 185, ["rank"] = 20, ["maxRank"] = 75, ["isSecondary"] = true },
+			},
+			["inventory"] = {
+				["freeSlots"] = 9,
+				["totalSlots"] = 64,
+				["items"] = {
+					{ ["bag"] = 0, ["slot"] = 1, ["itemID"] = 1251, ["link"] = "|cffffffff|Hitem:1251|h[Vendaje de lino]|h|r", ["count"] = 4, ["quality"] = 1 },
+					{ ["bag"] = 0, ["slot"] = 2, ["itemID"] = 4540, ["link"] = "|cffffffff|Hitem:4540|h[Pan duro]|h|r", ["count"] = 2, ["quality"] = 1 },
+					{ ["bag"] = 1, ["slot"] = 4, ["itemID"] = 118, ["link"] = "|cff1eff00|Hitem:118|h[Poción de vida menor]|h|r", ["count"] = 1, ["quality"] = 2 },
+				},
+			},
+			["combats"] = {
+				{ ["id"] = 9004, ["startedAt"] = 1793879900, ["zone"] = "Bosque de Elwynn", ["duration"] = 40, ["died"] = false,
+					["damageDone"] = { ["total"] = 900, ["dps"] = 22.5, ["spells"] = {} },
+					["damageTaken"] = { ["total"] = 300, ["sources"] = {} } },
+				{ ["id"] = 9003, ["startedAt"] = 1793879800, ["zone"] = "Bosque de Elwynn", ["duration"] = 50, ["died"] = false,
+					["damageDone"] = { ["total"] = 1100, ["dps"] = 22, ["spells"] = {} },
+					["damageTaken"] = { ["total"] = 500, ["sources"] = {} } },
+				{ ["id"] = 9002, ["startedAt"] = 1793879700, ["zone"] = "Bosque de Elwynn", ["duration"] = 30, ["died"] = true,
+					["damageDone"] = { ["total"] = 200, ["dps"] = 6.6, ["spells"] = {} },
+					["damageTaken"] = { ["total"] = 900, ["sources"] = {} } },
+				{ ["id"] = 9001, ["startedAt"] = 1793879600, ["zone"] = "Bosque de Elwynn", ["duration"] = 35, ["died"] = false,
+					["damageDone"] = { ["total"] = 800, ["dps"] = 22.8, ["spells"] = {} },
+					["damageTaken"] = { ["total"] = 400, ["sources"] = {} } },
+			},
+		},
+	},
+	["world"] = {
+		["flight"] = {
+			["Alliance"] = {
+				["nodes"] = {
+					[1] = { ["nodeID"] = 1, ["name"] = "Ventormenta", ["mapID"] = 37, ["x"] = 0.4500, ["y"] = 0.6000, ["known"] = true, ["lastSeen"] = 1793880000 },
+					[2] = { ["nodeID"] = 2, ["name"] = "Forjaz", ["mapID"] = 1, ["x"] = 0.3000, ["y"] = 0.4000, ["known"] = true, ["lastSeen"] = 1793880000 },
+					[3] = { ["nodeID"] = 3, ["name"] = "Villa Darkshire", ["mapID"] = 10, ["x"] = 0.6000, ["y"] = 0.3000, ["known"] = true, ["lastSeen"] = 1793880000 },
+					[4] = { ["nodeID"] = 4, ["name"] = "Puerto Aguafria", ["mapID"] = 37, ["x"] = 0.2000, ["y"] = 0.2000, ["known"] = true, ["lastSeen"] = 1793880000 },
+				},
+				["costs"] = {
+					["1>2"] = { ["copper"] = 1200, ["hops"] = 2, ["seconds"] = 95 },
+					["2>1"] = { ["copper"] = 1200, ["hops"] = 2, ["seconds"] = 100 },
+					["1>3"] = { ["copper"] = 500, ["hops"] = 1, ["seconds"] = 60 },
+					["3>2"] = { ["copper"] = 900, ["hops"] = 2, ["seconds"] = 110 },
+					["1>4"] = { ["copper"] = 80, ["hops"] = 1, ["seconds"] = 30 },
+				},
+			},
+			["Horde"] = {
+				["nodes"] = {
+					[10] = { ["nodeID"] = 10, ["name"] = "Orgrimmar", ["mapID"] = 1, ["x"] = 0.5000, ["y"] = 0.5000, ["known"] = true },
+				},
+				["costs"] = {},
+			},
+			["known"] = {
+				["Velaris-Forever"] = { 1, 2, 3 },
+			},
+		},
+		["vendors"] = {
+			[3001] = { ["npcID"] = 3001, ["name"] = "Hermano Rodrigo", ["mapID"] = 37, ["x"] = 0.4200, ["y"] = 0.5500,
+				["faction"] = "Alliance", ["lastSeen"] = 1793880000,
+				["items"] = {
+					{ ["itemID"] = 1251, ["name"] = "Vendaje de lino", ["price"] = 50, ["stack"] = 1, ["limited"] = false },
+					{ ["itemID"] = 4540, ["name"] = "Pan duro", ["price"] = 10, ["stack"] = 1, ["limited"] = false },
+				},
+			},
+			[3002] = { ["npcID"] = 3002, ["name"] = "Vendedora Marta", ["mapID"] = 1, ["x"] = 0.3200, ["y"] = 0.4200,
+				["faction"] = "Alliance", ["lastSeen"] = 1793880000,
+				["items"] = {
+					{ ["itemID"] = 4540, ["name"] = "Pan duro", ["price"] = 8, ["stack"] = 1, ["limited"] = false },
+				},
+			},
+			[3003] = { ["npcID"] = 3003, ["name"] = "Boticario Lomar", ["mapID"] = 10, ["x"] = 0.6000, ["y"] = 0.3000,
+				["faction"] = "Alliance", ["lastSeen"] = 1793880000,
+				["items"] = {
+					{ ["itemID"] = 118, ["name"] = "Poción de vida menor", ["price"] = 200, ["stack"] = 1, ["limited"] = false },
+					{ ["itemID"] = 1251, ["name"] = "Vendaje de lino", ["price"] = 60, ["stack"] = 1, ["limited"] = false },
+				},
+			},
+		},
+		["trainers"] = {
+			[2001] = { ["npcID"] = 2001, ["name"] = "Lana Hilotejido", ["mapID"] = 37, ["x"] = 0.4300, ["y"] = 0.5600,
+				["kind"] = "profession", ["profession"] = "Sastrería", ["lastSeen"] = 1793880000,
+				["services"] = {
+					{ ["name"] = "Sastrería", ["rank"] = "Maestro", ["cost"] = 1500, ["level"] = 0,
+						["skill"] = { ["name"] = "Sastrería", ["rank"] = 75 }, ["available"] = "unavailable" },
+					{ ["name"] = "Sastrería", ["rank"] = "Oficial", ["cost"] = 800, ["level"] = 0,
+						["skill"] = { ["name"] = "Sastrería", ["rank"] = 68 }, ["available"] = "available" },
+					{ ["name"] = "Sastrería", ["rank"] = "Aprendiz", ["cost"] = 300, ["level"] = 0,
+						["skill"] = { ["name"] = "Sastrería", ["rank"] = 60 }, ["available"] = "used" },
+				},
+			},
+			[2002] = { ["npcID"] = 2002, ["name"] = "Brann Escudo", ["mapID"] = 37, ["x"] = 0.4000, ["y"] = 0.5100,
+				["kind"] = "class", ["lastSeen"] = 1793880000,
+				["services"] = {
+					{ ["name"] = "Golpe de escudo", ["rank"] = "Rango 1", ["cost"] = 2000, ["level"] = 18, ["available"] = "available" },
+					{ ["name"] = "Sanación menor", ["rank"] = "Rango 2", ["cost"] = 9000, ["level"] = 22, ["available"] = "unavailable" },
+					{ ["name"] = "Escudo de poder", ["rank"] = "Rango 1", ["cost"] = 4000, ["level"] = 22, ["available"] = "unavailable" },
+					{ ["name"] = "Ataque viejo", ["rank"] = "Rango 1", ["cost"] = 10, ["level"] = 5, ["available"] = "used" },
+				},
+			},
+		},
+		["questChains"] = {
+			[90101] = { ["pre"] = {}, ["next"] = 90102, ["chainName"] = "La hermana Lurdes", ["name"] = "Encargo de la Hermana Lurdes" },
+			[90102] = { ["pre"] = { 90101 }, ["next"] = 90103, ["chainName"] = "La hermana Lurdes", ["name"] = "Segundo encargo" },
+			[90103] = { ["pre"] = { 90102 }, ["chainName"] = "La hermana Lurdes", ["name"] = "Tercer encargo" },
+		},
+		["consumables"] = {
+			[1251] = { ["itemID"] = 1251, ["name"] = "Vendaje de lino", ["kind"] = "bandage",
+				["restores"] = { ["health"] = 300, ["mana"] = 0, ["seconds"] = 8 }, ["requiredLevel"] = 1,
+				["skill"] = { "Primeros auxilios", 0 } },
+			[4540] = { ["itemID"] = 4540, ["name"] = "Pan duro", ["kind"] = "food",
+				["restores"] = { ["health"] = 200, ["mana"] = 0, ["seconds"] = 15 }, ["requiredLevel"] = 1,
+				["skill"] = { "Cocina", 1 } },
+			[118] = { ["itemID"] = 118, ["name"] = "Poción de vida menor", ["kind"] = "potion_health",
+				["restores"] = { ["health"] = 300, ["mana"] = 0, ["seconds"] = 0 }, ["requiredLevel"] = 1 },
+		},
+	},
+}
