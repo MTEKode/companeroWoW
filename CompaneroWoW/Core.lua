@@ -298,6 +298,9 @@ local function showHelp()
     say("  /compa barras - resumen de tus barras de acción")
     say("  /compa barras aplicar <slot>:<spellID>,... - coloca hechizos conocidos (fuera de combate, con copia de seguridad)")
     say("  /compa barras deshacer - restaura la última copia de seguridad de barras")
+    say("  /compa macro lista - cuenta y nombres de tus macros")
+    say("  /compa macro crear <nombre>|<icono>|<cuerpo> - crea (o actualiza) una macro de personaje, fuera de combate")
+    say("  /compa macro borrar <nombre> | deshacer | barra <nombre> <slot> - borra, deshace o pone una macro en una ranura")
 end
 
 local function showStatus()
@@ -330,6 +333,7 @@ local function showStatus()
         for _, line in ipairs(ns.CombatStatusLines()) do say(line) end
     end
     if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
+    if ns.MacrosStatusLine then say(ns.MacrosStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
@@ -356,6 +360,7 @@ local function handleSlash(msg)
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
+        if ns.ExportMacrosNow then ns.ExportMacrosNow() end -- macros de cuenta y personaje (Macros.lua)
         if ns.ExportSheetNow then ns.ExportSheetNow() end -- hoja de personaje y hechizos (Sheet.lua)
         ns.SnapshotAll()
         if ns.Channel then ns.Channel.ForceCarousel() end -- canal en vivo: reenvia todo al cargar la app
@@ -375,6 +380,8 @@ local function handleSlash(msg)
         end
     elseif cmd == "barras" then
         if ns.Bars then ns.Bars.Command(raw) else say("Barras no disponibles.") end
+    elseif cmd == "macro" then
+        if ns.Macros then ns.Macros.Command(raw) else say("Macros no disponibles.") end
     elseif cmd == "estado" then
         showStatus()
     else
