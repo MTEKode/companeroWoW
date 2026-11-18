@@ -3,6 +3,15 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
+)
+
+// Share line limits. noStripHintAfter is how long a panel opened from the tray waits for the
+// pixel strip before it says how to send the data; keyFreshFor is how old the key data may be
+// and still count as up to date.
+const (
+	noStripHintAfter = 2 * time.Second
+	keyFreshFor      = 5 * time.Minute
 )
 
 // formatStatus returns the one-line status bar text: the bridge state, the age of the
@@ -19,6 +28,9 @@ func formatStatus(s Status, notice string, busy bool) string {
 	}
 	if s.Channel != "" {
 		parts = append(parts, s.Channel)
+	}
+	if s.shareLine != "" {
+		parts = append(parts, s.shareLine)
 	}
 	if !busy && len(s.Hints) > 0 {
 		parts = append(parts, s.Hints[0])
@@ -74,4 +86,25 @@ func humanAge(sec int64) string {
 	default:
 		return fmt.Sprintf("hace %d d", sec/86400)
 	}
+}
+
+// shareNotice is the share line of the status bar: the countdown while the addon streams its
+// share window; the hint when the panel was opened from the tray and no strip showed within
+// noStripHintAfter; "Datos al día" with the age of the key data once it is fresh. hotkey is
+// the configured panel key, spelled out in the hint. It returns "" when there is nothing to say.
+func shareNotice(s Status, fromTray bool, sinceOpen time.Duration, hotkey string) string {
+	switch {
+	case s.ShareRemainingSec > 0:
+		return fmt.Sprintf("Recibiendo datos del juego… %ds", s.ShareRemainingSec)
+	case fromTray && s.Bridge != "connected" && sinceOpen >= noStripHintAfter:
+		return "Pulsa " + spokenKey(hotkey) + " dentro del juego para enviar tus datos"
+	case s.KeyKnown && time.Duration(s.KeyAgeSec)*time.Second <= keyFreshFor:
+		return fmt.Sprintf("Datos al día (hace %ds)", s.KeyAgeSec)
+	}
+	return ""
+}
+
+// spokenKey writes a key combo for the status bar: "Ctrl+Shift+Space" reads "Ctrl+Shift+Espacio".
+func spokenKey(hotkey string) string {
+	return strings.ReplaceAll(hotkey, "Space", "Espacio")
 }

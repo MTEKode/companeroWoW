@@ -97,6 +97,10 @@ func (a *Assistant) Ask(ctx context.Context, question string, withScreenshot boo
 	}
 	ctx, cancel := context.WithTimeout(ctx, questionDeadline)
 	defer cancel()
+	// After the panel key the addon streams its data: give it a moment (see AwaitKeyTypes).
+	if a.g != nil {
+		a.g.AwaitKeyTypes(ctx)
+	}
 	resp, err := a.ask(ctx, q, withScreenshot, a.history())
 	if err != nil {
 		return resp, err

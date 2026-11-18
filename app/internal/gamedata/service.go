@@ -43,6 +43,8 @@ type Service struct {
 	pace     *PaceSampler     // optional: live samples for the leveling pace, see SetPace
 	killTime KillTimeFunc     // optional: time-to-kill model, see SetKillTime
 
+	share shareState // the share on key, see ActivateLive
+
 	startOnce sync.Once
 }
 
@@ -314,8 +316,8 @@ func (g *Service) Inventory() (any, error) {
 	if fields["items"] == nil {
 		fields["items"] = []any{}
 	}
-	if live, ok := g.Live(); ok {
-		fields["freeSlots"] = float64(live.FreeBagSlots)
+	if _, ok := g.Live(); ok {
+		fields["freeSlots"] = g.freeBagSlots()
 	}
 	return available(sourceSV, at, fields), nil
 }

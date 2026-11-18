@@ -45,7 +45,7 @@ const (
 // Hints shown in the status bar.
 const (
 	hintOpenWoW   = "Abre World of Warcraft en modo ventana o sin bordes para leer datos en vivo"
-	hintActivate  = "Activa el addon y usa modo ventana sin bordes"
+	hintActivate  = "Pulsa Ctrl+Shift+Espacio dentro de WoW para enviar tus datos (modo sin bordes)"
 	hintWoWPath   = "Configura WoWPath en config.json"
 	hintSync      = "Escribe /compa sync en el juego para actualizar los datos"
 	hintSyncFirst = "Haz /compa sync en el juego para crear los datos"
@@ -257,11 +257,13 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	}
 
 	uiErr := ui.Run(ui.Options{
-		Hotkey:    cfg.Hotkey,
-		StatePath: filepath.Join(dir, "window.json"),
-		Avoid:     avoidStrip,
-		Backend:   asst,
-		Tips:      tips,
+		Hotkey:       cfg.Hotkey,
+		HotkeyMethod: cfg.HotkeyMethod,
+		ActivateLive: func() { g.ActivateLive(time.Now()) },
+		StatePath:    filepath.Join(dir, "window.json"),
+		Avoid:        avoidStrip,
+		Backend:      asst,
+		Tips:         tips,
 		TipsModeChanged: func(mode string) {
 			tipsOn.Store(mode != config.TipsOff)
 		},
@@ -369,6 +371,11 @@ func buildStatus(g *gamedata.Service, providers []string, sv *bridge.SVWatcher, 
 
 	if text, _, _ := g.ChannelFreshness(time.Now()); text != "" {
 		s.Channel = text
+	}
+	s.ShareRemainingSec = g.ShareRemaining()
+	if age, ok := g.KeyAge(time.Now()); ok {
+		s.KeyKnown = true
+		s.KeyAgeSec = int64(age / time.Second)
 	}
 
 	ageKnown := false

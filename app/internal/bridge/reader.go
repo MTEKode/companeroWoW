@@ -26,6 +26,10 @@ const (
 	// from WoW's own render (a window covers WoW). The reader switches back as soon as the
 	// screen copy decodes.
 	screenRetryEvery = 5 * time.Second
+	// shareWatch is how long after Activate the reader keeps polling at the normal rate, even
+	// while the strip is missing: the addon shows the strip for its share window (20 s) after
+	// the key, so the first frames must not wait for the failure backoff.
+	shareWatch = 25 * time.Second
 )
 
 // FindWoWWindow returns the WoW window handle and its client-area rectangle in
@@ -49,6 +53,11 @@ type Reader struct {
 	haveSeq bool
 	lastSeq uint8
 	subs    []func(LiveState) // see Subscribe; guarded by mu
+	// activeUntil is when the share watch set by Activate ends; guarded by mu.
+	activeUntil time.Time
+
+	// wake asks the poll loop to read now instead of after its wait (see Activate).
+	wake chan struct{}
 
 	// Poll-loop state, used only by the run goroutine (step).
 	failStreak    int
@@ -79,6 +88,7 @@ func NewReader(pollEvery time.Duration) *Reader {
 		grabScreen: capture.GrabScreen,
 		now:        time.Now,
 		channel:    NewChannel(),
+		wake:       make(chan struct{}, 1),
 	}
 	r.grabWindow = r.win.grab
 	return r
@@ -90,6 +100,26 @@ func (r *Reader) Start(ctx context.Context) {
 	r.startOnce.Do(func() {
 		go r.run(ctx)
 	})
+}
+
+// Activate is called when the user asks for the game's data (the panel's key): the reader
+// reads now and keeps polling at the normal rate for shareWatch, even while the strip is
+// missing, so that the addon's share window is picked up at once. It never blocks.
+func (r *Reader) Activate(now time.Time) {
+	r.mu.Lock()
+	r.activeUntil = now.Add(shareWatch)
+	r.mu.Unlock()
+	select {
+	case r.wake <- struct{}{}:
+	default: // a wake-up is already pending
+	}
+}
+
+// watching reports whether the share watch set by Activate is still on at now.
+func (r *Reader) watching(now time.Time) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return now.Before(r.activeUntil)
 }
 
 // Channel returns the live data channel (v3 messages). Its store is safe to read from any goroutine.
@@ -123,6 +153,8 @@ func (r *Reader) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-r.wake:
+			r.failStreak = 0
 		}
 		timer.Reset(r.step())
 	}
@@ -141,6 +173,9 @@ func (r *Reader) step() time.Duration {
 		r.lost()
 	}
 	r.failStreak++
+	if r.watching(r.now()) {
+		return r.pollEvery // the share watch polls at the normal rate, see Activate
+	}
 	if r.failStreak >= slowAfterFails {
 		return slowRetryEvery
 	}
