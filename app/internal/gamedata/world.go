@@ -144,23 +144,9 @@ func (g *Service) worldRaw() (map[string]any, time.Time, bool) {
 	return base, at, base != nil
 }
 
-// mergeWorld returns base with over laid on top: nested tables are merged key by key, and every
-// other value (lists, numbers, text) is replaced. Neither input is modified.
+// mergeWorld lays over on base: the live world delta over the saved block (see bridge.MergeDelta).
 func mergeWorld(base, over map[string]any) map[string]any {
-	out := make(map[string]any, len(base)+len(over))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range over {
-		ov, isMap := v.(map[string]any)
-		bv, baseMap := out[k].(map[string]any)
-		if isMap && baseMap {
-			out[k] = mergeWorld(bv, ov)
-			continue
-		}
-		out[k] = v
-	}
-	return out
+	return bridge.MergeDelta(base, over)
 }
 
 // loadWorld decodes the world block for the active character. ok is false when there is no

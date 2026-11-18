@@ -91,8 +91,20 @@ type Config struct {
 	// it is shown (coordinates, quoted names, commands) and asks the provider once to correct
 	// what is not backed. Default true.
 	VerifyAnswers bool `json:"verifyAnswers"`
+	// AnswerCacheMin is how many minutes an answer stays in the answer cache: an exact repeat of
+	// a question, with the same context and models, is answered from it at once. 0 turns the
+	// cache off. Default 10.
+	AnswerCacheMin int `json:"answerCacheMin"`
 	// Profile is what the player says about how they play (see profile.go).
 	Profile Profile `json:"profile"`
+	// UIMode is how the app shows itself: UIModeGame (default) keeps the panel closed and
+	// answers arrive on the clipboard with a sound; UIModeWindow opens the external panel.
+	UIMode string `json:"uiMode"`
+	// AnswerSound is how a finished answer is announced: AnswerVoice (default), AnswerBeep or
+	// AnswerNone.
+	AnswerSound string `json:"answerSound"`
+	// AnswerVolume is the volume of the answer sound, from 0 to 100.
+	AnswerVolume int `json:"answerVolume"`
 	// Mode is how the app reads the game: ModeOnDemand (the default) reads it only while the
 	// panel is open or a question is running; ModeContinuous keeps the old background reading.
 	Mode string `json:"mode"`
@@ -135,6 +147,38 @@ func (c *Config) EffectiveTipsMode() string {
 	}
 	return c.TipsMode
 }
+
+// The interface modes (UIMode).
+const (
+	// UIModeGame keeps the app invisible: tray icon only, questions typed in the game.
+	UIModeGame = "juego"
+	// UIModeWindow shows the external panel, as before.
+	UIModeWindow = "ventana"
+)
+
+// ValidUIMode reports whether s is one of the UIMode values.
+func ValidUIMode(s string) bool { return s == UIModeGame || s == UIModeWindow }
+
+// The announcements of a finished answer (AnswerSound).
+const (
+	// AnswerVoice says "Respuesta lista" with the Windows speech voice.
+	AnswerVoice = "voz"
+	// AnswerBeep plays a short tone.
+	AnswerBeep = "pitido"
+	// AnswerNone plays nothing.
+	AnswerNone = "ninguno"
+)
+
+// ValidAnswerSound reports whether s is one of the AnswerSound values.
+func ValidAnswerSound(s string) bool {
+	return s == AnswerVoice || s == AnswerBeep || s == AnswerNone
+}
+
+// MinAnswerVolume and MaxAnswerVolume bound AnswerVolume (percent).
+const (
+	MinAnswerVolume = 0
+	MaxAnswerVolume = 100
+)
 
 // The ways proactive tips reach the player (TipsMode).
 const (
@@ -206,10 +250,17 @@ func Defaults() Config {
 		WFTAdded:        true,
 		VerifyAnswers:   true,
 		Profile:         Profile{Tone: ToneBrief},
+		AnswerCacheMin:  DefaultAnswerCacheMin,
 		Mode:            ModeOnDemand,
 		OnDemandWaitSec: DefaultOnDemandWaitSec,
+		UIMode:          UIModeGame,
+		AnswerSound:     AnswerVoice,
+		AnswerVolume:    80,
 	}
 }
+
+// DefaultAnswerCacheMin is the time an answer stays in the answer cache, in minutes.
+const DefaultAnswerCacheMin = 10
 
 // WFTHost is the site of WoW: Forever's talents, spells, builds and dungeons (client data).
 const WFTHost = "wowforevertalents.com"
@@ -292,6 +343,13 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 		d.TipsMode = ""
 		hasKey = false
 	}
+	// A file from before the interface modes lacks uiMode, answerSound and answerVolume: they
+	// get their defaults and the file is rewritten once so the keys show up.
+	for _, k := range []string{"uiMode", "answerSound", "answerVolume"} {
+		if _, has := raw[k]; !has {
+			hasKey = false
+		}
+	}
 	if d.migrate() || modelsChanged || !hasKey {
 		if err := d.Save(path); err != nil {
 			return nil, false, fmt.Errorf("save migrated config %s: %w", path, err)
@@ -340,6 +398,18 @@ func (c *Config) migrate() bool {
 		}
 	}
 	if c.migrateProfile() {
+		changed = true
+	}
+	if !ValidUIMode(c.UIMode) {
+		c.UIMode = UIModeGame
+		changed = true
+	}
+	if !ValidAnswerSound(c.AnswerSound) {
+		c.AnswerSound = AnswerVoice
+		changed = true
+	}
+	if c.AnswerVolume < MinAnswerVolume || c.AnswerVolume > MaxAnswerVolume {
+		c.AnswerVolume = min(max(c.AnswerVolume, MinAnswerVolume), MaxAnswerVolume)
 		changed = true
 	}
 	if c.clampMode() {

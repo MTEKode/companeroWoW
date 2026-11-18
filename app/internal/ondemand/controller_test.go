@@ -187,3 +187,42 @@ func equalSeq(a, b []bool) bool {
 	}
 	return true
 }
+
+// The game-mode panel key only activates the reader for the hold: no panel, the reader on, and
+// off again HoldAfterHide later.
+func TestPulseActivatesForTheHoldWithoutPanel(t *testing.T) {
+	c, clk, tr := newTest(t)
+	c.Pulse()
+	if !c.Active() {
+		t.Fatal("pulse must activate the reader")
+	}
+	clk.advance(HoldAfterHide - time.Second)
+	c.Check()
+	if !c.Active() {
+		t.Fatal("reader went off before the hold ended")
+	}
+	clk.advance(time.Second)
+	c.Check()
+	if c.Active() {
+		t.Fatal("reader must be off after the hold")
+	}
+	if want := []bool{true, false}; !equalSeq(tr.seq, want) {
+		t.Fatalf("transitions = %v, want %v", tr.seq, want)
+	}
+}
+
+// A pulse while the panel is open or a question runs changes nothing: the reader is already on.
+func TestPulseWithPanelOrQuestionIsNoOp(t *testing.T) {
+	c, clk, tr := newTest(t)
+	c.PanelShown()
+	c.Pulse()
+	c.PanelHidden()
+	clk.advance(HoldAfterHide)
+	c.Check()
+	if c.Active() {
+		t.Fatal("pulse with the panel open must not extend the hold")
+	}
+	if want := []bool{true, false}; !equalSeq(tr.seq, want) {
+		t.Fatalf("transitions = %v, want %v", tr.seq, want)
+	}
+}

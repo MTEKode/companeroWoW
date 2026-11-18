@@ -88,6 +88,22 @@ func (c *Controller) PanelHidden() {
 	c.enterIdleLocked()
 }
 
+// Pulse activates the reader for the hold without opening the panel: the game-mode panel key
+// (uiMode juego) calls it, so the player can type a question in the game and the answer has the
+// data. With the panel open or a question running there is nothing to hold; the call is then
+// a no-op. Otherwise the reader stays on for HoldAfterHide from now.
+func (c *Controller) Pulse() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.panelVisible || c.questions > 0 {
+		return
+	}
+	c.idleSince = c.now()
+	c.cancelTimerLocked()
+	c.setLocked(true)
+	c.cancelTmr = c.after(HoldAfterHide, c.Check)
+}
+
 // BeginQuestion records a question in flight: the reader is on until EndQuestion.
 func (c *Controller) BeginQuestion() {
 	c.mu.Lock()

@@ -335,3 +335,34 @@ func TestLiveWorldDeltaLaysOverSavedWorld(t *testing.T) {
 		t.Errorf("saved edge 1>2 = %+v %v, want the saved 95 s", e, ok)
 	}
 }
+
+// Two changed-only live deltas accumulate: the flight from the first and the vendor from the second
+// are both used, on top of the saved block.
+func TestTwoLiveWorldDeltasAccumulate(t *testing.T) {
+	r := bridge.NewReader(time.Second)
+	w := bridge.NewSVWatcher(worldFixture, time.Hour)
+	if err := w.Poll(); err != nil {
+		t.Fatalf("poll world fixture: %v", err)
+	}
+	g := NewService(r, w, openStore(t))
+	now := time.Now()
+	if err := r.Channel().Data.Put(bridge.MsgWorld, []byte(`{"flight":{"Alliance":{"costs":{"2>3":{"copper":900,"hops":2,"seconds":80}}}}}`), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Channel().Data.Put(bridge.MsgWorld, []byte(`{"vendors":{"3004":{"npcID":3004,"name":"Nuevo","mapID":37,"x":0.4,"y":0.5,"items":[{"itemID":118,"name":"Poción de vida menor","price":150,"stack":1}]}}}`), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wd, ok := g.loadWorld()
+	if !ok {
+		t.Fatal("no world block")
+	}
+	if e, ok := wd.Edges[[2]int64{2, 3}]; !ok || e.Seconds != 80 {
+		t.Errorf("first delta's edge 2>3 = %+v %v", e, ok)
+	}
+	if _, ok := wd.Vendors[3004]; !ok {
+		t.Error("second delta's vendor missing")
+	}
+	if _, ok := wd.Vendors[3001]; !ok {
+		t.Error("saved vendor 3001 lost")
+	}
+}

@@ -63,6 +63,7 @@ const (
 	MsgSheet           uint8 = 12 // character sheet: the same shape as characters[key].sheet (manual, every 60 s at most)
 	MsgMacros          uint8 = 13 // account and character macros (Macros.lua, low priority)
 	MsgSession         uint8 = 14 // current play session and the last five: the same shape as characters[key].session (on demand)
+	MsgQuestion        uint8 = 15 // a question typed in the in-game frame (see ParseQuestion)
 	MsgWorld           uint8 = 16 // account-wide world data (flights, vendors, trainers, chains, consumables): changed parts only
 )
 
@@ -71,9 +72,10 @@ var MsgNames = map[uint8]string{
 	MsgCharacter: "character", MsgQuests: "quests", MsgBags: "bags", MsgEquipment: "equipment",
 	MsgProfessions: "professions", MsgCompletedQuests: "completedQuests", MsgCombat: "combat",
 	MsgActionBars: "actionBars", MsgKnowledge: "knowledge", MsgHeavy: "heavy", MsgMeta: "meta", MsgSheet: "sheet",
-	MsgSession: "session",
-	MsgMacros:  "macros", // Macros.lua: account and character macros (low priority)
-	MsgWorld:   "world",
+	MsgSession:  "session",
+	MsgMacros:   "macros", // Macros.lua: account and character macros (low priority)
+	MsgQuestion: "question",
+	MsgWorld:    "world",
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.
