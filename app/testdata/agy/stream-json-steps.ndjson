@@ -1,0 +1,8 @@
+{"event":"init","conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","init":{"cwd":"C:\work\agy","tools":["read_file","mcp_companero_get_player_state"],"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Voy a mirar"}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":" tu zona."}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":2,"state":"DONE","step_type":"tool_call"}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Estás en Elwynn."}}
+{"event":"step_update","step_update":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":120,"output_tokens":9,"total_tokens":129}}}
+{"event":"result","result":{"conversation_id":"5b1d6f0e-2c3a-4e8b-9a71-0d4f6c2e8a10","status":"SUCCESS","response":"Estás en Elwynn.\n","num_turns":1,"usage":{"input_tokens":120,"output_tokens":9,"total_tokens":129}}}

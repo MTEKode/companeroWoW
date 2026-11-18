@@ -148,6 +148,15 @@ func (a *antigravity) screensDir() string {
 // that runs out of quota goes on cooldown and the next model is tried at once; any other
 // failure ends the provider, so that the chain moves on to codex or the API.
 func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
+	return a.ask(ctx, req, Stream{})
+}
+
+// AskStream is Ask with the answer written to s as agy produces it (stream-json).
+func (a *antigravity) AskStream(ctx context.Context, req Request, s Stream) (Response, error) {
+	return a.ask(ctx, req, s)
+}
+
+func (a *antigravity) ask(ctx context.Context, req Request, s Stream) (Response, error) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		return Response{}, errors.New("antigravity: la pregunta está vacía")
 	}
@@ -193,7 +202,7 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 	candidates := a.candidates(time.Now())
 	var lastErr error
 	for i, model := range candidates {
-		text, err := a.askModel(ctx, exe, settingsPath, prompt, model)
+		text, err := a.askModel(ctx, exe, settingsPath, prompt, model, s)
 		if err == nil {
 			log.Printf("antigravity: respondió %s", model)
 			return Response{Text: text, Provider: a.Name() + ":" + model, Model: model}, nil
@@ -205,6 +214,8 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 		until := time.Now().Add(a.cooldown)
 		quota.exhaust(model, until)
 		lastErr = err
+		// The next model answers from the start: what the exhausted one streamed is void.
+		s.restart()
 		if i+1 < len(candidates) {
 			log.Printf("antigravity: cuota agotada en %s hasta %s; pruebo %s", model, until.Format("15:04"), candidates[i+1])
 		} else {
@@ -215,15 +226,54 @@ func (a *antigravity) Ask(ctx context.Context, req Request) (Response, error) {
 }
 
 // askModel runs agy with one model and returns its answer. The model's own timeout bounds the
-// run; when the question's context ends first, the error is the context's.
-func (a *antigravity) askModel(ctx context.Context, exe, settingsPath, prompt, model string) (string, error) {
+// run; when the question's context ends first, the error is the context's. With s, agy writes
+// stream-json and the text of its answer steps goes to s as it comes. When such a run yields no
+// answer and wrote none, the model is asked once more in plain JSON.
+func (a *antigravity) askModel(ctx context.Context, exe, settingsPath, prompt, model string, s Stream) (string, error) {
 	timeout := modelTimeout(model, a.timeout)
 	mctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	format := "json"
+	var onLine func([]byte)
+	sent := false
+	if s.on() {
+		format = "stream-json"
+		last := -1
+		onLine = func(line []byte) {
+			step, text := agyStepText(line)
+			if text == "" {
+				return
+			}
+			// A new answer step replaces the text of the previous one: only the last step is the answer.
+			if last >= 0 && step != last {
+				s.restart()
+			}
+			last = step
+			sent = true
+			s.delta(text)
+		}
+	}
+	text, err := a.runAgy(mctx, exe, settingsPath, prompt, model, format, onLine)
+	if err != nil && s.on() && !sent && errors.Is(err, errNoResult) && ctx.Err() == nil && mctx.Err() == nil {
+		log.Printf("antigravity: stream-json sin respuesta con %s; pido la respuesta en JSON", model)
+		text, err = a.runAgy(mctx, exe, settingsPath, prompt, model, "json", nil)
+	}
+	if err != nil {
+		if ctx.Err() == nil && errors.Is(mctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("antigravity: tiempo agotado tras %s con %s", timeout, model)
+		}
+		return "", err
+	}
+	return text, nil
+}
+
+// runAgy runs agy once in the given output format and returns the final answer. onLine, when set,
+// gets each stdout line while agy runs.
+func (a *antigravity) runAgy(mctx context.Context, exe, settingsPath, prompt, model, format string, onLine func([]byte)) (string, error) {
 	args := []string{
 		"--settings", settingsPath,
-		"--output-format", "json",
+		"--output-format", format,
 	}
 	if model != "" {
 		args = append(args, "--model", model)
@@ -234,20 +284,35 @@ func (a *antigravity) askModel(ctx context.Context, exe, settingsPath, prompt, m
 	}
 	args = append(args, "-p", prompt)
 	res, err := a.run.run(mctx, cmdSpec{
-		Path: exe,
-		Args: args,
-		Dir:  a.workspace,
+		Path:   exe,
+		Args:   args,
+		Dir:    a.workspace,
+		OnLine: onLine,
 	})
 	if err != nil {
-		if ctx.Err() == nil && errors.Is(mctx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("antigravity: tiempo agotado tras %s con %s", timeout, model)
-		}
 		return "", fmt.Errorf("antigravity: %w", err)
 	}
 	if res.ExitCode != 0 {
 		return "", agyExitError(res)
 	}
 	return parseAntigravityOutput(res.Stdout, res.Stderr)
+}
+
+// agyStepText returns the step index and the text of a stream-json event that carries the
+// answer: the text_delta of an "agent_response" step. For any other line the text is empty.
+func agyStepText(line []byte) (int, string) {
+	var ev struct {
+		Event string `json:"event"`
+		Step  struct {
+			Index     int    `json:"step_index"`
+			Type      string `json:"step_type"`
+			TextDelta string `json:"text_delta"`
+		} `json:"step_update"`
+	}
+	if json.Unmarshal(line, &ev) != nil || ev.Event != "step_update" || ev.Step.Type != "agent_response" {
+		return -1, ""
+	}
+	return ev.Step.Index, ev.Step.TextDelta
 }
 
 // appDataFileNames are the files of the data folder that never leave the PC, listed by name so
@@ -303,6 +368,9 @@ func (a *antigravity) dataFolderDenies() []string {
 	return out
 }
 
+// errNoResult means the output of agy held no answer.
+var errNoResult = errors.New("antigravity: salida sin resultado reconocible")
+
 // agyResult is the payload of a finished run: the json envelope itself, or the "result"
 // event of stream-json output.
 type agyResult struct {
@@ -343,11 +411,10 @@ func parseAntigravityOutput(stdout, stderr []byte) (string, error) {
 			return text, err
 		}
 	}
-	msg := "antigravity: salida sin resultado reconocible"
 	if hint := classifyFailure(string(stderr) + "\n" + string(stdout)); hint != "" {
-		msg += ": " + hint
+		return "", fmt.Errorf("%w: %s", errNoResult, hint)
 	}
-	return "", errors.New(msg)
+	return "", errNoResult
 }
 
 // parseAgyDoc reads one document. ok is false for documents that carry no answer (other

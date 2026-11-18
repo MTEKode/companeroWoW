@@ -40,6 +40,10 @@ type entry struct {
 	// its row in the store.
 	Rating     int
 	FeedbackID int64
+	// Corrected marks an answer that the verifier changed after it was streamed; Cached marks one
+	// answered from the answer cache. Both show in the answer's line.
+	Corrected bool
+	Cached    bool
 }
 
 // entryFromMsg turns a stored message into a conversation entry.
@@ -72,6 +76,12 @@ func entryRuns(e entry) []Span {
 		}
 		if e.At != "" {
 			parts = append(parts, e.At)
+		}
+		if e.Cached {
+			parts = append(parts, "(respuesta en caché)")
+		}
+		if e.Corrected {
+			parts = append(parts, "(corregida)")
 		}
 		out := []Span{{Text: strings.Join(parts, " · "), Style: StyleMeta}, {Text: "\n"}}
 		out = append(out, MarkRuns(e.Text)...)
