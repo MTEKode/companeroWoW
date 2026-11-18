@@ -150,6 +150,11 @@ func (w *window) removeTray() {
 func (w *window) onTrayMessage(mouse uint32) {
 	switch mouse {
 	case wmLButtonUpTray:
+		// The game mode keeps the panel closed: a click on the icon shows the menu instead.
+		if gameMode(w.cfg.UIMode) {
+			w.trayMenu()
+			return
+		}
 		w.toggle()
 	case wmRButtonUpTray:
 		w.trayMenu()
@@ -207,6 +212,16 @@ func fillUTF16(dst []uint16, s string) {
 
 // trayMenu is the menu of the tray icon.
 func (w *window) trayMenu() {
+	if gameMode(w.cfg.UIMode) {
+		w.menuCommand(w.popup([]menuItem{
+			{menuSettings, "Ajustes…"},
+			{menuOpenPanel, "Abrir panel (ventana)"},
+			{menuSession, "Resumen de sesión"},
+			{0, ""},
+			{menuQuit, "Salir"},
+		}))
+		return
+	}
 	w.menuCommand(w.popup([]menuItem{
 		{trayToggle, "Mostrar/ocultar"},
 		{menuSettings, "Ajustes…"},

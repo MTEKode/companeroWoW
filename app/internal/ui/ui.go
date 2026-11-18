@@ -84,9 +84,15 @@ type Options struct {
 	// TipsModeChanged is called when the settings screen saves a new tips mode, so that the
 	// tip loop follows it without a restart. It may be nil.
 	TipsModeChanged func(mode string)
+	// AnswerSoundChanged is called when the settings screen saves the answer sound (voz, pitido or
+	// ninguno) or its volume, so that the game-mode announcer follows them. It may be nil.
+	AnswerSoundChanged func(mode string, volume int)
 	// AnswerSettingsChanged is called when the settings screen saves a new player profile or the
 	// answer verifier setting, so that the assistant follows them without a restart. It may be nil.
 	AnswerSettingsChanged func(profile config.Profile, verify bool)
+	// ActivateReading is called when the panel key is pressed in the game mode (uiMode juego): the
+	// panel does not open, only the game reader is activated for its hold. It may be nil.
+	ActivateReading func()
 	// PanelVisibility is called when the panel is shown (true) or hidden (false), from the UI
 	// thread. The on-demand mode reads the game only while it is shown. It may be nil.
 	PanelVisibility func(visible bool)

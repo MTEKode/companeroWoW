@@ -23,6 +23,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
+	"github.com/MTEKode/companeroWoW/app/internal/gamemode"
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
 	"github.com/MTEKode/companeroWoW/app/internal/ondemand"
 	"github.com/MTEKode/companeroWoW/app/internal/session"
@@ -68,6 +69,7 @@ type options struct {
 	setup        bool
 	tray         bool
 	testTip      bool
+	testAnswer   bool
 	exportFB     string
 	profileMem   string
 }
@@ -82,6 +84,7 @@ func main() {
 	flag.BoolVar(&o.setup, "setup", false, "abre el asistente de configuración en el panel")
 	flag.BoolVar(&o.tray, "tray", false, "arranca minimizado en la bandeja, sin mostrar el panel (lo usa el inicio con WoW)")
 	flag.BoolVar(&o.testTip, "test-tip", false, "con la ventana, envía un consejo de prueba por el mismo camino que los proactivos (globo de la bandeja o panel, según ajustes)")
+	flag.BoolVar(&o.testAnswer, "test-answer", false, "pone una respuesta de ejemplo en el portapapeles, suena el aviso y sale (prueba del modo juego)")
 	flag.StringVar(&o.exportFB, "export-feedback", "", "escribe las valoraciones 👍/👎 en este archivo .json y sale")
 	flag.StringVar(&o.profileMem, "profile-mem", "", "escribe un perfil de memoria (heap, pprof) en este archivo tras 30 s de arranque, y un resumen en <archivo>.txt")
 	flag.Parse()
@@ -118,6 +121,9 @@ func run(o options) int {
 	}
 	if o.exportFB != "" {
 		return runExportFeedback(dir, o.exportFB)
+	}
+	if o.testAnswer {
+		return runTestAnswer(cfg, dir)
 	}
 
 	if o.testTip {
@@ -325,6 +331,28 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		g:         g,
 		wait:      cfg.OnDemandWait(),
 	}
+	// The game mode answers the questions typed in the in-game frame (msgType 15). Each answer goes
+	// to the clipboard as a CWOW1 block, and the answer sound says it is ready. The question ids are
+	// kept per character, so a restart does not answer the same question again.
+	answerGate, err := gamemode.NewGate(filepath.Join(dir, "questions.json"))
+	if err != nil {
+		log.Printf("preguntas: no pude leer questions.json: %v", err)
+	}
+	announcer := gamemode.NewSystemAnnouncer(cfg.AnswerSound, cfg.AnswerVolume)
+	answers := gamemode.NewController(backend, gamemode.ClipboardFunc(ui.CopyText), announcer, answerGate,
+		g.ActiveCharacterKey, ui.FriendlyError)
+	reader.Channel().OnMessage(func(t uint8, body []byte, _ time.Time) {
+		if t != bridge.MsgQuestion {
+			return
+		}
+		q, err := bridge.ParseQuestion(body)
+		if err != nil {
+			log.Printf("preguntas: %v", err)
+			return
+		}
+		answers.Submit(q)
+	})
+
 	uiErr := ui.Run(ui.Options{
 		Hotkey:       cfg.Hotkey,
 		HotkeyMethod: cfg.HotkeyMethod,
@@ -349,6 +377,8 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 				saveOnDemandState(dir, reader, mode.modeName(), ctl.Active())
 			}
 		},
+		// The game-mode panel key only activates the reader for its hold; the panel stays closed.
+		ActivateReading: ctl.Pulse,
 		PanelVisibility: func(visible bool) {
 			if visible {
 				ctl.PanelShown()
@@ -357,6 +387,7 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 			}
 		},
 		AnswerSettingsChanged: asst.SetAnswerSettings,
+		AnswerSoundChanged:    announcer.Set,
 		Status: func() ui.Status {
 			s := buildStatus(g, providers, watcher, mcpErrs.get())
 			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
@@ -585,6 +616,8 @@ type diagReport struct {
 	SkillVersion    string                 `json:"skillVersion"`
 	SkillInstalled  bool                   `json:"skillInstalled"`
 	Channel         *channelDiag           `json:"channel,omitempty"`
+	UIMode          string                 `json:"uiMode"`
+	AnswerSound     string                 `json:"answerSound"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -600,6 +633,8 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		MCPPort:           cfg.MCPPort,
 		Hotkey:            cfg.Hotkey,
 		Proactive:         cfg.Proactive,
+		UIMode:            cfg.UIMode,
+		AnswerSound:       cfg.AnswerSound,
 		Mode:              cfg.Mode,
 		TipsEffective:     cfg.EffectiveTipsMode(),
 		SavedVariablesAge: -1,

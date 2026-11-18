@@ -51,6 +51,8 @@ const (
 	menuWizard    = 1006
 	// Tray menu only; the other tray items reuse the header menu's commands.
 	trayToggle = 1010
+	// menuOpenPanel opens the external panel from the tray menu in the game mode.
+	menuOpenPanel = 1011
 
 	// combatPeriod is how often the combat flag is read.
 	combatPeriod = 500 * time.Millisecond
@@ -269,8 +271,9 @@ func Run(opts Options) error {
 	if opts.Setup {
 		w.startWizard()
 	}
-	// A panel started with --tray stays hidden: only the tray icon shows.
-	if !opts.StartHidden || opts.Setup {
+	// A panel started with --tray stays hidden: only the tray icon shows. In the game mode the
+	// panel stays hidden as well; the first-run wizard (Setup) still opens it.
+	if (!opts.StartHidden && !gameMode(w.cfg.UIMode)) || opts.Setup {
 		w.show(true)
 	}
 
@@ -880,6 +883,8 @@ func (w *window) menuCommand(id int) {
 		w.startWizard()
 	case trayToggle:
 		w.toggle()
+	case menuOpenPanel:
+		w.show(true)
 	case menuQuit:
 		w.quit()
 	case 0:
@@ -1028,6 +1033,9 @@ func (w *window) syncBadge() {
 // and a balloon announce it.
 func (w *window) deliverTip(tip assistant.Tip) {
 	route := routeTip(w.cfg.TipsMode, isVisible(w.hwnd), w.combat.InCombat())
+	if gameMode(w.cfg.UIMode) {
+		route = gameTipRoute(route)
+	}
 	if !route.Conversation {
 		log.Printf("ui: consejo descartado (consejos desactivados): %s", tip.Title)
 		return
@@ -1086,10 +1094,18 @@ func (w *window) toggle() {
 	w.show(true)
 }
 
-// onShareKey is the panel key: the panel opens with the focus in its input, which activates
-// the game reader at once (see PanelVisibility).
-// The panel does not toggle: pressing the key again only brings it to the front.
+// onShareKey is the panel key. In the game mode it only activates the reading of the game for
+// the hold window and never shows the panel. In the window mode the panel opens with the focus
+// in its input, which activates the game reader at once (see PanelVisibility). The panel does
+// not toggle: pressing the key again only brings it to the front.
 func (w *window) onShareKey() {
+	if hotkeyFor(w.cfg.UIMode) == hotkeyActivate {
+		log.Printf("ui: atajo en modo juego: el panel no se abre; se activa la lectura del juego")
+		if w.opts.ActivateReading != nil {
+			w.opts.ActivateReading()
+		}
+		return
+	}
 	w.trayOpenAt = time.Time{}
 	w.show(true) // PanelVisibility(true) activates the reader (see show)
 	w.refreshStatus()
