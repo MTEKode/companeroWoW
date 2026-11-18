@@ -13,6 +13,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/assistant"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"golang.org/x/sys/windows"
@@ -35,6 +36,7 @@ const (
 	msgTray     = wmApp + 6 // tray icon mouse events (lParam)
 	msgWizard   = wmApp + 7 // setup checks finished
 	msgShareKey = wmApp + 8 // the panel key was pressed (see registerHotkey)
+	msgStream   = wmApp + 9 // the streamed answer has new text (see drainStream)
 
 	idCheck  = 2001
 	idSend   = 2002
@@ -49,6 +51,8 @@ const (
 	menuWizard    = 1006
 	// Tray menu only; the other tray items reuse the header menu's commands.
 	trayToggle = 1010
+	// menuOpenPanel opens the external panel from the tray menu in the game mode.
+	menuOpenPanel = 1011
 
 	// combatPeriod is how often the combat flag is read.
 	combatPeriod = 500 * time.Millisecond
@@ -138,8 +142,14 @@ type window struct {
 	avoid   Rect
 	avoidOK bool
 
-	answers chan answer        // answers from the ask goroutine
-	tips    chan assistant.Tip // tips from the tip goroutine
+	answers chan answer // answers from the ask goroutine
+	// The streamed answer in progress: its throttle (nil when none), and its entry in the
+	// conversation (streamIdx, -1 when none), where it starts (streamAt) and how many units it takes.
+	streamTh  *deltaThrottle
+	streamIdx int
+	streamAt  int
+	streamLen int
+	tips      chan assistant.Tip // tips from the tip goroutine
 
 	// byUser is true while the panel is open because the user opened it (hotkey, tray,
 	// balloon, menu); false when a tip opened it. The hide-in-combat rule reads it.
@@ -186,6 +196,7 @@ func Run(opts Options) error {
 		ctx:       ctx,
 		cancel:    cancel,
 		answers:   make(chan answer, 1),
+		streamIdx: -1,
 		tips:      make(chan assistant.Tip, tipQueueSize),
 		cfg:       opts.Config,
 		cfgPath:   opts.ConfigPath,
@@ -260,8 +271,9 @@ func Run(opts Options) error {
 	if opts.Setup {
 		w.startWizard()
 	}
-	// A panel started with --tray stays hidden: only the tray icon shows.
-	if !opts.StartHidden || opts.Setup {
+	// A panel started with --tray stays hidden: only the tray icon shows. In the game mode the
+	// panel stays hidden as well; the first-run wizard (Setup) still opens it.
+	if (!opts.StartHidden && !gameMode(w.cfg.UIMode)) || opts.Setup {
 		w.show(true)
 	}
 
@@ -686,6 +698,9 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case msgAnswer:
 		w.drainAnswers()
 		return 0
+	case msgStream:
+		w.drainStream()
+		return 0
 	case msgTip:
 		w.drainTips()
 		return 0
@@ -868,6 +883,8 @@ func (w *window) menuCommand(id int) {
 		w.startWizard()
 	case trayToggle:
 		w.toggle()
+	case menuOpenPanel:
+		w.show(true)
 	case menuQuit:
 		w.quit()
 	case 0:
@@ -1016,6 +1033,9 @@ func (w *window) syncBadge() {
 // and a balloon announce it.
 func (w *window) deliverTip(tip assistant.Tip) {
 	route := routeTip(w.cfg.TipsMode, isVisible(w.hwnd), w.combat.InCombat())
+	if gameMode(w.cfg.UIMode) {
+		route = gameTipRoute(route)
+	}
 	if !route.Conversation {
 		log.Printf("ui: consejo descartado (consejos desactivados): %s", tip.Title)
 		return
@@ -1074,10 +1094,18 @@ func (w *window) toggle() {
 	w.show(true)
 }
 
-// onShareKey is the panel key: the panel opens with the focus in its input, which activates
-// the game reader at once (see PanelVisibility).
-// The panel does not toggle: pressing the key again only brings it to the front.
+// onShareKey is the panel key. In the game mode it only activates the reading of the game for
+// the hold window and never shows the panel. In the window mode the panel opens with the focus
+// in its input, which activates the game reader at once (see PanelVisibility). The panel does
+// not toggle: pressing the key again only brings it to the front.
 func (w *window) onShareKey() {
+	if hotkeyFor(w.cfg.UIMode) == hotkeyActivate {
+		log.Printf("ui: atajo en modo juego: el panel no se abre; se activa la lectura del juego")
+		if w.opts.ActivateReading != nil {
+			w.opts.ActivateReading()
+		}
+		return
+	}
 	w.trayOpenAt = time.Time{}
 	w.show(true) // PanelVisibility(true) activates the reader (see show)
 	w.refreshStatus()
@@ -1228,9 +1256,11 @@ func (w *window) start(display, question string, withShot bool) {
 	w.askGen++
 	ctx, cancel := context.WithCancel(w.ctx)
 	w.askCancel = cancel
+	th := newDeltaThrottle(streamInterval)
+	w.beginStream(th)
 	call(procInvalidateRect, w.send, 0, 1)
 	w.refreshStatus()
-	go w.ask(ctx, w.askGen, question, withShot)
+	go w.ask(ctx, th, w.askGen, question, withShot)
 }
 
 // cancelAsk stops the question in flight: the button and Escape do this while the
@@ -1246,14 +1276,16 @@ func (w *window) cancelAsk() {
 	}
 	w.askGen++
 	w.busy = false
+	w.cancelStream()
 	w.setNotice("Pregunta cancelada")
 	call(procInvalidateRect, w.send, 0, 1)
 	w.refreshStatus()
 }
 
-// ask runs the question in the background and hands the answer to the UI thread.
-func (w *window) ask(ctx context.Context, gen int, text string, withShot bool) {
-	e := w.answer(ctx, text, withShot)
+// ask runs the question in the background and hands the answer to the UI thread. The text
+// written while it runs reaches the UI through th (see streamOf).
+func (w *window) ask(ctx context.Context, th *deltaThrottle, gen int, text string, withShot bool) {
+	e := w.answer(ctx, th, text, withShot)
 	w.answers <- answer{gen: gen, e: e}
 	postMessage(w.hwnd, msgAnswer, 0, 0)
 }
@@ -1264,15 +1296,102 @@ type answer struct {
 	e   entry
 }
 
-func (w *window) answer(ctx context.Context, text string, withShot bool) entry {
+func (w *window) answer(ctx context.Context, th *deltaThrottle, text string, withShot bool) entry {
 	if w.opts.Backend == nil {
 		return entry{Kind: entryError, Text: askError(errors.New("el asistente no está disponible"))}
 	}
-	resp, err := w.opts.Backend.Ask(ctx, text, withShot)
+	var resp ai.Response
+	var err error
+	if sb, ok := w.opts.Backend.(streamBackend); ok {
+		resp, err = sb.AskStream(ctx, text, withShot, w.streamOf(th))
+	} else {
+		resp, err = w.opts.Backend.Ask(ctx, text, withShot)
+	}
 	if err != nil {
 		return entry{Kind: entryError, Text: askError(err)}
 	}
-	return entry{Kind: entryAssistant, Text: resp.Text, Provider: resp.Provider, At: time.Now().Format("15:04"), Question: text}
+	return entry{Kind: entryAssistant, Text: resp.Text, Provider: resp.Provider, At: time.Now().Format("15:04"),
+		Question: text, Corrected: resp.Corrected, Cached: resp.Cached}
+}
+
+// streamOf is the stream of one question: each piece of its text goes to th, and the UI thread is
+// asked to repaint at most once per streamInterval. It is called from the ask goroutine.
+func (w *window) streamOf(th *deltaThrottle) ai.Stream {
+	return ai.Stream{
+		Delta: func(text string) {
+			post, after := th.add(text, time.Now())
+			w.streamPost(th, post, after)
+		},
+		Restart: func() {
+			post, after := th.restart(time.Now())
+			w.streamPost(th, post, after)
+		},
+	}
+}
+
+// streamPost asks the UI thread to repaint the streamed answer now, or after the given delay.
+func (w *window) streamPost(th *deltaThrottle, post bool, after time.Duration) {
+	switch {
+	case post:
+		postMessage(w.hwnd, msgStream, 0, 0)
+	case after > 0:
+		time.AfterFunc(after, func() {
+			if th.due(time.Now()) {
+				postMessage(w.hwnd, msgStream, 0, 0)
+			}
+		})
+	}
+}
+
+// beginStream adds the answer's entry, still empty; the streamed text fills it in.
+func (w *window) beginStream(th *deltaThrottle) {
+	w.streamTh = th
+	w.streamAt = w.textLength()
+	w.entries = append(w.entries, entry{Kind: entryAssistant, At: time.Now().Format("15:04")})
+	w.streamIdx = len(w.entries) - 1
+	w.streamLen = w.replaceRange(w.streamAt, 0, entryRuns(w.entries[w.streamIdx]))
+}
+
+// drainStream shows the text that the streamed answer has gained since the last repaint.
+func (w *window) drainStream() {
+	th := w.streamTh
+	if th == nil || w.streamIdx < 0 || w.streamIdx >= len(w.entries) {
+		return
+	}
+	text, reset := th.take()
+	if text == "" && !reset {
+		return
+	}
+	e := &w.entries[w.streamIdx]
+	if reset {
+		e.Text = ""
+	}
+	e.Text += text
+	w.streamLen = w.replaceRange(w.streamAt, w.streamLen, entryRuns(*e))
+}
+
+// finishStream replaces the streamed answer's entry with the final one. Without a stream in
+// progress, the answer is added as an entry.
+func (w *window) finishStream(e entry) {
+	idx := w.streamIdx
+	w.streamTh = nil
+	w.streamIdx = -1
+	if idx < 0 || idx >= len(w.entries) {
+		w.add(e)
+		return
+	}
+	w.entries[idx] = e
+	w.streamLen = w.replaceRange(w.streamAt, w.streamLen, entryRuns(e))
+}
+
+// cancelStream turns the streamed answer's entry into a note that the question was cancelled.
+func (w *window) cancelStream() {
+	if w.streamIdx < 0 || w.streamIdx >= len(w.entries) {
+		w.streamTh = nil
+		w.streamIdx = -1
+		return
+	}
+	w.finishStream(entry{Kind: entryInfo, Text: "(respuesta cancelada)"})
 }
 
 // drainAnswers shows the answer that the ask goroutine delivered.
@@ -1287,7 +1406,7 @@ func (w *window) drainAnswers() {
 			w.askCancel()
 			w.askCancel = nil
 		}
-		w.add(a.e)
+		w.finishStream(a.e)
 		call(procInvalidateRect, w.send, 0, 1)
 		w.refreshStatus()
 	default:

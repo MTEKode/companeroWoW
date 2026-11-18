@@ -173,9 +173,9 @@ func buildCues() []cue {
 	return out
 }
 
-// normalizeQuestion lowercases a question, folds the accents and turns punctuation into spaces,
+// foldQuestion lowercases a question, folds the accents and turns punctuation into spaces,
 // so that "¿Qué hago?" and "que hago" read the same.
-func normalizeQuestion(s string) string {
+func foldQuestion(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
 		r = foldAccent(r)
@@ -205,7 +205,7 @@ func foldAccent(r rune) rune {
 // intent; the highest score wins, ties go to the intent that comes first in intentOrder, and a
 // question with no cue is IntentGeneral.
 func classifyIntent(question string) Intent {
-	norm := normalizeQuestion(question)
+	norm := foldQuestion(question)
 	if norm == "" {
 		return IntentGeneral
 	}
@@ -378,7 +378,7 @@ func playbookFor(in Intent, q string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	norm := " " + normalizeQuestion(q) + " "
+	norm := " " + foldQuestion(q) + " "
 	var names []string
 	for _, p := range parts {
 		if p.cue.MatchString(norm) {

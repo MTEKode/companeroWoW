@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -156,8 +157,8 @@ func TestNormalizeQuestionFoldsAccentsAndPunctuation(t *testing.T) {
 		"Sesión 40%":            "sesion 40",
 	}
 	for in, want := range cases {
-		if got := normalizeQuestion(in); got != want {
-			t.Errorf("normalizeQuestion(%q) = %q, want %q", in, got, want)
+		if got := foldQuestion(in); got != want {
+			t.Errorf("foldQuestion(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -480,5 +481,36 @@ func TestPlaybookPartsKeepTheirSubItems(t *testing.T) {
 	}
 	if pb := playbooks["build.macros"]; !strings.Contains(pb, "Ejemplos de guerrero") {
 		t.Errorf("the macro part lost its examples: %q", pb)
+	}
+}
+
+// TestAnswerCacheKeyHoldsTheIntentBlocks: the cache key hashes the system prompt, which carries the
+// intent's playbook and context blocks, so a repeat with the same blocks hits the cache and a repeat
+// whose blocks changed does not.
+func TestAnswerCacheKeyHoldsTheIntentBlocks(t *testing.T) {
+	const q = "Analiza mi equipo"
+	a, _ := fixtureAssistant(t)
+	bare := newWithAsker(&fakeAsker{}, nil, openStore(t), nil)
+	ctx := context.Background()
+	withData, err := a.request(ctx, q, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := a.request(ctx, q, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noData, err := bare.request(ctx, q, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withData.System, "Playbook (equipo):") {
+		t.Fatalf("the gear question must carry its playbook: %q", withData.System)
+	}
+	if answerCacheKey(q, withData, "m", true) != answerCacheKey(q, again, "m", true) {
+		t.Error("the same question with the same blocks must share a key")
+	}
+	if answerCacheKey(q, withData, "m", true) == answerCacheKey(q, noData, "m", true) {
+		t.Error("blocks that changed (here, the player context) must change the key")
 	}
 }

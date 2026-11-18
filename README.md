@@ -54,7 +54,7 @@ Al arrancar, la app se queda en segundo plano y muestra la ventana. Cerrar la ve
 
 ## Atajo de teclado
 
-**Una sola tecla: Ctrl+Shift+Espacio.** Dentro del juego, pulsarla abre el panel con el foco en el campo de texto, pide tus datos y el addon los envía durante 20 segundos (la barra de estado cuenta los segundos). El addon no gasta nada fuera de ese envío: está en reposo, sin dibujar la franja ni serializar datos, y no le cuesta FPS. Si pulsas la tecla fuera del juego, el panel se abre igualmente, con los datos que ya tiene.
+**Una sola tecla: Ctrl+Shift+Espacio.** En el modo ventana, pulsarla abre el panel con el foco en el campo de texto, pide tus datos y el addon los envía durante 20 segundos (la barra de estado cuenta los segundos). En el modo juego (`uiMode: "juego"`, por defecto) no abre nada: solo activa la lectura del juego durante esos 20 segundos, para que la pregunta que escribes en el marco de Compañero tenga datos frescos (ver [Modo juego](#modo-juego-preguntas-dentro-del-juego)). El addon no gasta nada fuera de ese envío: está en reposo, sin dibujar la franja ni serializar datos, y no le cuesta FPS. Si pulsas la tecla fuera del juego, el panel se abre igualmente, con los datos que ya tiene (en modo ventana).
 
 La app solo **observa** la tecla con un hook de teclado: no la consume ni la modifica, así que WoW la recibe y el addon empieza su envío con ella. Si una aplicación la tiene reservada, la app no lo ve y la pulsación no llega a WoW.
 
@@ -66,6 +66,26 @@ Para cambiarla hay que cambiarla en dos sitios, que deben coincidir:
 Ejemplos de `hotkey`: `"Alt+F1"` o `"Ctrl+Alt+C"`. Modificadores: `Ctrl`, `Alt`, `Shift`, `Win`. Teclas: `A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, `Enter`, `Tab`, `Esc`. Si otra aplicación ya usa el atajo, la ventana lo indicará y puedes elegir otro.
 
 `hotkeyMethod` en `config.json` elige cómo se escucha la tecla: `escuchar` (por defecto, el hook descrito arriba) o `exclusivo`, que la registra en el sistema (RegisterHotKey). Con `exclusivo` ninguna otra aplicación, WoW incluido, recibe la tecla: el panel sigue abriéndose, pero el envío del addon sale con `/compa enviar` o con otra tecla asignada a «Compañero: compartir datos».
+
+## Modo juego: preguntas dentro del juego
+
+Por defecto (`uiMode: "juego"`) la app no muestra ventana: solo el icono de la bandeja. Las preguntas se escriben en el marco de Compañero, dentro de WoW, y la respuesta llega sin salir del juego:
+
+1. Pulsa Ctrl+Shift+Espacio, escribe la pregunta en el marco de Compañero del juego y envíala. El addon la manda a la app.
+2. La app responde con la misma IA de siempre (las mismas herramientas, verificación y proveedores) y no muestra nada fuera del juego.
+3. Al terminar, la respuesta queda en el **portapapeles** como un bloque `[CWOW1 #id …]…[/CWOW1]`, y suena el aviso **«Respuesta lista»** (o un pitido, según `answerSound`).
+4. Vuelve al marco de Compañero y pulsa **Ctrl+V** en su caja de respuesta. El addon muestra la respuesta con sus botones: **Marcar** (pone una marca en el mapa), **Colocar barras** (fuera de combate) y **Crear macro**.
+
+Detalles:
+
+- **El atajo** (Ctrl+Shift+Espacio) no abre nada en este modo: solo activa la lectura del juego durante 20 segundos. Pulsa la tecla antes de escribir la pregunta, para que el addon envíe los datos frescos y la pregunta llegue a la app. El icono de la bandeja ofrece **Ajustes…**, **Abrir panel (ventana)**, **Resumen de sesión** y **Salir**; un clic izquierdo en el icono abre el mismo menú.
+- **Consejos**: en este modo no abren el panel ni muestran avisos; quedan en la conversación del panel, y el icono de la bandeja cuenta los nuevos.
+- **Una pregunta a la vez, la última gana**: si envías otra pregunta mientras una responde, la anterior se cancela y solo llega al portapapeles la respuesta de la última. Una pregunta ya respondida (mismo id) no se vuelve a contestar, tampoco después de reiniciar la app: los ids se guardan en `questions.json`, por personaje.
+- **Errores**: si ningún proveedor responde, el portapapeles recibe un bloque con un aviso corto en castellano y suena el aviso de error.
+- **Límites**: el bloque mide como mucho 4000 caracteres; una respuesta más larga se recorta y acaba en «(respuesta recortada)». La respuesta no se escribe en el chat del juego: solo la pegas tú con Ctrl+V.
+- **Probar el aviso y el portapapeles** sin jugar: `CompaneroWoW.exe --test-answer` pone una respuesta de ejemplo en el portapapeles, suena el aviso, escribe el resultado en la consola y en `companero.log`, y sale.
+- **Primera vez**: el asistente de configuración se abre en el panel la primera vez (cuando se crea `config.json`) y con `--setup`.
+- Para ver el panel de siempre, elige **Ventana** en los ajustes (`uiMode: "ventana"`) o usa **Abrir panel (ventana)** en la bandeja.
 
 ## Ventana
 
@@ -177,6 +197,9 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `onDemandWaitSec` | En modo bajo demanda, segundos que una pregunta espera a que lleguen datos frescos del juego antes de responder (por defecto 8, máximo 20). Pasado el tiempo responde con lo que hay y señala qué datos son antiguos. |
 | `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
 | `tipsSound` | `true` reproduce el sonido de Windows con el aviso de un consejo. Por defecto, `false`. |
+| `uiMode` | `juego` (por defecto): la app no abre el panel por sí sola; las respuestas van al portapapeles y suena el aviso ([Modo juego](#modo-juego-preguntas-dentro-del-juego)). `ventana`: el panel de siempre. Las configuraciones anteriores usan `juego`. |
+| `answerSound` | Cómo se avisa de una respuesta lista: `voz` (por defecto, dice «Respuesta lista» con la voz de Windows), `pitido` (un tono corto) o `ninguno`. Si la voz falla, se usa el pitido. |
+| `answerVolume` | Volumen del aviso, de 0 a 100. Por defecto, `80`. Con `0` no suena nada. |
 | `proactive` | Refleja `tipsMode` (`false` solo con `off`); se mantiene por compatibilidad. Si `tipsMode` existe, manda `tipsMode`. |
 | `hideInCombat` | `true` (por defecto) oculta el panel mientras el personaje está en combate. |
 | `startWithWoW` | `true` registra la app para arrancar al iniciar sesión, minimizada en la bandeja. Por defecto `false`. |

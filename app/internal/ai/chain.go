@@ -78,6 +78,17 @@ func (c *Chain) Providers() []string {
 // empty text is recorded and the next one is tried. The first success is returned with
 // every attempt filled in. If all fail, the error lists each attempt in Spanish.
 func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
+	return c.run(ctx, req, Stream{})
+}
+
+// AskStream is Ask with the answer written to s as it comes. A provider that cannot stream
+// answers whole, as with Ask. When a provider fails after it wrote part of the answer, s.Restart
+// is called before the next provider starts.
+func (c *Chain) AskStream(ctx context.Context, req Request, s Stream) (Response, error) {
+	return c.run(ctx, req, s)
+}
+
+func (c *Chain) run(ctx context.Context, req Request, s Stream) (Response, error) {
 	if len(c.providers) == 0 {
 		return Response{}, errors.New("no hay proveedores de IA configurados (revisa providerOrder y apiProviders)")
 	}
@@ -99,7 +110,21 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 		}
 		start := time.Now()
 		pctx, cancel := context.WithTimeout(ctx, budget)
-		resp, err := p.Ask(pctx, req)
+		var resp Response
+		var err error
+		written := false
+		if st, ok := p.(streamer); ok && s.on() {
+			ps := Stream{
+				Delta: func(text string) {
+					written = true
+					s.delta(text)
+				},
+				Restart: s.Restart,
+			}
+			resp, err = st.AskStream(pctx, req, ps)
+		} else {
+			resp, err = p.Ask(pctx, req)
+		}
 		timedOut := errors.Is(pctx.Err(), context.DeadlineExceeded)
 		cancel()
 		elapsed := time.Since(start)
@@ -115,6 +140,9 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 			err = errors.New("respuesta vacía")
 		}
 		if err != nil {
+			if written {
+				s.restart()
+			}
 			attempts = append(attempts, Attempt{Provider: name, Err: err.Error(), Duration: elapsed})
 			continue
 		}

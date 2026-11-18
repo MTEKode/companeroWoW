@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -94,15 +95,21 @@ type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
 	Tools    []chatTool    `json:"tools,omitempty"`
+	// Stream asks for the answer as server-sent events (see postStream).
+	Stream bool `json:"stream,omitempty"`
 }
 
 type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content   *string        `json:"content"`
-			ToolCalls []chatToolCall `json:"tool_calls"`
-		} `json:"message"`
-	} `json:"choices"`
+	Choices []chatChoice `json:"choices"`
+}
+
+type chatChoice struct {
+	Message respMessage `json:"message"`
+}
+
+type respMessage struct {
+	Content   *string        `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls"`
 }
 
 type contentPart struct {
@@ -131,6 +138,16 @@ func userContent(text string, png []byte) any {
 }
 
 func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
+	return o.ask(ctx, req, Stream{})
+}
+
+// AskStream is Ask with the text of each round written to s as the server sends it. A round
+// that ends in tool calls restarts the text, since only the last round is the answer.
+func (o *openAICompat) AskStream(ctx context.Context, req Request, s Stream) (Response, error) {
+	return o.ask(ctx, req, s)
+}
+
+func (o *openAICompat) ask(ctx context.Context, req Request, s Stream) (Response, error) {
 	key, err := o.provider.ResolveKey()
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", o.name, err)
@@ -164,7 +181,8 @@ func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 
 	for round := 0; round < maxToolRounds; round++ {
-		resp, err := o.post(ctx, key, chatRequest{Model: o.model, Messages: msgs, Tools: tools})
+		body := chatRequest{Model: o.model, Messages: msgs, Tools: tools}
+		resp, err := o.round(ctx, key, body, s)
 		if err != nil {
 			return Response{}, err
 		}
@@ -182,6 +200,8 @@ func (o *openAICompat) Ask(ctx context.Context, req Request) (Response, error) {
 		if o.tools == nil {
 			return Response{}, fmt.Errorf("%s: el modelo pidió herramientas pero no hay ninguna configurada", o.name)
 		}
+		// The text written so far was the model's intermediate turn, not the answer.
+		s.restart()
 
 		// Echo the assistant turn with its tool calls, then answer each call.
 		var assistantContent any
@@ -263,6 +283,168 @@ func (o *openAICompat) post(ctx context.Context, key string, body chatRequest) (
 		return chatResponse{}, fmt.Errorf("%s: respuesta JSON inválida: %w", o.name, err)
 	}
 	return out, nil
+}
+
+// round asks for one turn of the tool loop: streamed when s wants the text, else whole. An
+// endpoint that refuses the streaming request before it writes anything is asked again whole.
+func (o *openAICompat) round(ctx context.Context, key string, body chatRequest, s Stream) (chatResponse, error) {
+	if !s.on() {
+		return o.post(ctx, key, body)
+	}
+	body.Stream = true
+	resp, err := o.postStream(ctx, key, body, s)
+	if errors.Is(err, errStreamUnsupported) && ctx.Err() == nil {
+		body.Stream = false
+		return o.post(ctx, key, body)
+	}
+	return resp, err
+}
+
+// postStream sends a streamed chat completions request and accumulates the chunks into one
+// response, passing each text piece to s as it arrives. A body that is plain JSON (an
+// endpoint that ignores stream) is read whole. An error before any text is written may be
+// errStreamUnsupported; a refused request that is not about streaming is an HTTP error.
+func (o *openAICompat) postStream(ctx context.Context, key string, body chatRequest, s Stream) (chatResponse, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return chatResponse{}, fmt.Errorf("%s: codificar petición: %w", o.name, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return chatResponse{}, fmt.Errorf("%s: crear petición: %w", o.name, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Authorization", "Bearer "+key)
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return chatResponse{}, fmt.Errorf("%s: %w", o.name, ctx.Err())
+		}
+		return chatResponse{}, fmt.Errorf("%s: %w", o.name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		switch resp.StatusCode {
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed,
+			http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity, http.StatusNotImplemented:
+			return chatResponse{}, errStreamUnsupported
+		}
+		return chatResponse{}, httpStatusError(o.name, resp.StatusCode, raw)
+	}
+
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		if err != nil {
+			return chatResponse{}, fmt.Errorf("%s: leer respuesta: %w", o.name, err)
+		}
+		var out chatResponse
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return chatResponse{}, fmt.Errorf("%s: respuesta JSON inválida: %w", o.name, err)
+		}
+		if len(out.Choices) > 0 && out.Choices[0].Message.Content != nil {
+			s.delta(*out.Choices[0].Message.Content)
+		}
+		return out, nil
+	}
+
+	var acc streamAcc
+	err = readSSE(resp.Body, func(ev string) error {
+		if ev == "[DONE]" {
+			return errSSEStop
+		}
+		var ch chatStreamChunk
+		if err := json.Unmarshal([]byte(ev), &ch); err != nil {
+			return fmt.Errorf("evento SSE inválido: %w", err)
+		}
+		if msg := strings.TrimSpace(string(ch.Error)); msg != "" && msg != "null" {
+			return fmt.Errorf("error en el flujo: %s", clipRunes(strings.Join(strings.Fields(msg), " "), 200))
+		}
+		acc.add(ch, s)
+		return nil
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return chatResponse{}, fmt.Errorf("%s: %w", o.name, ctx.Err())
+		}
+		return chatResponse{}, fmt.Errorf("%s: %w", o.name, err)
+	}
+	return acc.response(), nil
+}
+
+// chatStreamChunk is one server-sent event of a streamed chat completion.
+type chatStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   *string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Error json.RawMessage `json:"error"`
+}
+
+// streamAcc joins the chunks of one streamed answer: the text in order, and each tool call
+// from its fragments (the arguments arrive in pieces, keyed by the call's index).
+type streamAcc struct {
+	content strings.Builder
+	calls   map[int]*chatToolCall
+}
+
+func (a *streamAcc) add(ch chatStreamChunk, s Stream) {
+	for _, c := range ch.Choices {
+		if c.Delta.Content != nil && *c.Delta.Content != "" {
+			a.content.WriteString(*c.Delta.Content)
+			s.delta(*c.Delta.Content)
+		}
+		for _, tc := range c.Delta.ToolCalls {
+			if a.calls == nil {
+				a.calls = map[int]*chatToolCall{}
+			}
+			cur := a.calls[tc.Index]
+			if cur == nil {
+				cur = &chatToolCall{}
+				a.calls[tc.Index] = cur
+			}
+			if tc.ID != "" {
+				cur.ID = tc.ID
+			}
+			if tc.Type != "" {
+				cur.Type = tc.Type
+			}
+			if cur.Function.Name == "" {
+				cur.Function.Name = tc.Function.Name
+			}
+			cur.Function.Arguments += tc.Function.Arguments
+		}
+	}
+}
+
+// response is the accumulated answer in the shape of a whole response.
+func (a *streamAcc) response() chatResponse {
+	text := a.content.String()
+	msg := respMessage{}
+	if text != "" {
+		msg.Content = &text
+	}
+	idx := make([]int, 0, len(a.calls))
+	for i := range a.calls {
+		idx = append(idx, i)
+	}
+	sort.Ints(idx)
+	for _, i := range idx {
+		msg.ToolCalls = append(msg.ToolCalls, *a.calls[i])
+	}
+	return chatResponse{Choices: []chatChoice{{Message: msg}}}
 }
 
 func httpStatusError(name string, status int, body []byte) error {

@@ -234,6 +234,24 @@ type Channel struct {
 
 	srcMu  sync.RWMutex
 	source string // SourceScreen or SourceWindow; empty until the first read
+
+	subMu sync.RWMutex
+	subs  []MessageFunc
+}
+
+// MessageFunc receives each complete message: its type, its JSON body and when it arrived.
+// It runs on the poll goroutine, so it must return quickly.
+type MessageFunc func(t uint8, body []byte, at time.Time)
+
+// OnMessage registers f to be called with every complete message, after it is stored. The
+// messages of the question type (MsgQuestion) reach the game-mode answerer this way.
+func (c *Channel) OnMessage(f MessageFunc) {
+	if f == nil {
+		return
+	}
+	c.subMu.Lock()
+	c.subs = append(c.subs, f)
+	c.subMu.Unlock()
 }
 
 // NewChannel returns a receiver with an empty store.
@@ -261,6 +279,12 @@ func (c *Channel) Feed(f FrameV3, now time.Time) {
 	t, body, ok := c.re.Add(f, now)
 	if ok {
 		_ = c.Data.Put(t, body, now) // a bad body is counted in DecodeErrors
+		c.subMu.RLock()
+		subs := c.subs
+		c.subMu.RUnlock()
+		for _, sub := range subs {
+			sub(t, body, now)
+		}
 	}
 }
 
@@ -276,7 +300,7 @@ type TypeFreshness struct {
 func (c *Channel) Freshness(now time.Time) []TypeFreshness {
 	all := c.Data.All()
 	var out []TypeFreshness
-	for t := uint8(1); t <= MsgSession; t++ {
+	for t := uint8(1); t <= MsgQuestion; t++ {
 		it, ok := all[t]
 		if !ok {
 			continue
