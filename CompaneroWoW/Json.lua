@@ -3,7 +3,7 @@
 -- Reglas:
 --  - nil y funciones/userdata se omiten en objetos y se escriben null en arrays.
 --  - tabla con solo claves enteras 1..n (sin huecos) -> array; cualquier otra -> objeto.
---  - tabla vacia -> {} (objeto).
+--  - tabla vacia -> {} (objeto), salvo las marcadas con Json.Array() -> [].
 --  - claves de objeto: cadenas, o numeros convertidos a cadena; se ordenan (salida determinista,
 --    necesaria para que el hash de cambios sea estable).
 --  - numeros enteros sin decimales; NaN e infinitos -> null; decimales con 10 cifras significativas.
@@ -13,6 +13,7 @@ local ADDON_NAME, ns = ...
 ns = ns or {}
 
 local type, pairs, tostring, tonumber = type, pairs, tostring, tonumber
+local getmetatable, setmetatable, next = getmetatable, setmetatable, next
 local floor, huge = math.floor, math.huge
 local concat, sort = table.concat, table.sort
 local format, gsub, byte = string.format, string.gsub, string.byte
@@ -22,6 +23,12 @@ ns.Json = Json
 
 Json.MAX_DEPTH = 8
 Json.MAX_BYTES = 65536
+
+-- Marca de "lista vacia": una tabla vacia con esta metatabla se escribe [] (no {}).
+local ARRAY_MT = {}
+function Json.Array(t)
+    return setmetatable(t or {}, ARRAY_MT)
+end
 
 local ESC = {
     ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f',
@@ -94,6 +101,10 @@ local function write(buf, v, depth)
         return true
     elseif t == "table" then
         if depth >= Json.MAX_DEPTH then return false, "depth" end
+        if next(v) == nil then
+            buf[#buf + 1] = getmetatable(v) == ARRAY_MT and "[]" or "{}"
+            return true
+        end
         local n = arrayLength(v)
         if n then
             buf[#buf + 1] = "["

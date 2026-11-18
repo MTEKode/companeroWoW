@@ -231,11 +231,18 @@ local function provider(t)
 end
 check("carrusel inicial reenvia", sc:carousel(0, provider))
 eq("carrusel: 2 mensajes encolados", sc:pending(), 2)
-check("carrusel: no repite con cola llena", sc:carousel(100, provider) == false)
-for _ = 1, 4 do sc:nextChunk(cs, 1) end
-check("carrusel: no repite antes de 60 s", sc:carousel(30, provider) == false)
-check("carrusel: repite tras 60 s con cola vacia", sc:carousel(61, provider))
+check("carrusel: no repite antes de 15 s", sc:carousel(14, provider) == false)
+local pendingId = sc.jobs[1].id
+check("carrusel: con trabajo pendiente no lo reinicia", sc:carousel(16, provider) and sc.jobs[1].id == pendingId and sc:pending() == 2)
+sc:nextChunk(cs, 1)
+sc:nextChunk(cs, 1)
+eq("carrusel: cola vacia tras enviar los 2", sc:pending(), 0)
+check("carrusel: repite a los 15 s aunque la cola no este llena", sc:carousel(31, provider))
 eq("carrusel: vuelve a encolar 2", sc:pending(), 2)
+local hs = C.NewScheduler()
+hs:carousel(0, function(t) return "{\"t\":" .. t .. "}" end)
+check("carrusel: el pesado (10) espera 60 s", hs:carouselDue(10, 59) == false and hs:carouselDue(10, 60))
+check("carrusel: los demas tipos, 15 s", hs:carouselDue(1, 14.9) == false and hs:carouselDue(1, 15))
 
 -- ---------------------------------------------------------------------------
 print("(g) Canal de juego: cambios, delta y combate")
@@ -267,10 +274,9 @@ local function lastJobOf(t)
     return found
 end
 
--- Combate: no se serializa nada nuevo.
+-- Combate: no se revisan cambios (el carrusel si corre, un tipo por tick).
 ns.InCombat = function() return true end
-local inCombatChunk = C.Tick(1000, 860)
-eq("combate: no hay trozo sin cola", inCombatChunk, nil)
+C.Tick(1000, 860)
 check("combate: no calcula tipos", next(C.state.hash) == nil)
 
 ns.InCombat = function() return false end
@@ -314,6 +320,8 @@ check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.s
 -- Combate en medio: se siguen enviando trozos ya encolados.
 C.state.sched.jobs = {}
 C.state.sched:enqueue(2, "{\"x\":1}")
+C.state.sched.carouselAt = 5000 -- sin ciclo de carrusel en este tick
+C.state.carouselTodo = nil
 ns.InCombat = function() return true end
 local queued = C.Tick(5000, 860)
 check("combate: sigue saliendo lo ya encolado", queued ~= nil and queued.type == 2)

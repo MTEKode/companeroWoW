@@ -29,13 +29,16 @@ C.STATUS_LEN = 32
 C.CHUNK_HEADER_LEN = 9
 C.OVERHEAD = 4 + 32 + 9 + 2 -- cabecera + estado + cabecera de trozo + CRC-16
 C.CALIB_BLOCKS = 5
-C.CAROUSEL_SEC = 60         -- cada mensaje se reenvia una vez por minuto cuando la cola esta vacia
+C.CAROUSEL_SEC = 15         -- cada mensaje se reenvia como mucho cada 15 s (contrato ON-DEMAND)
+C.HEAVY_CAROUSEL_SEC = 60   -- el tipo pesado (10) puede quedarse en 60 s
 C.HEAVY_TYPE = 10           -- tipo pesado: como mucho un trozo cada HEAVY_EVERY tramas
 C.HEAVY_EVERY = 3
 C.MAX_MESSAGE_BYTES = 98304 -- tope de cada mensaje JSON (mas grande -> no se envia)
 
 -- Prioridad de envio de los tipos (de mayor a menor).
-C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10 }
+-- Contrato ON-DEMAND: status (siempre, en cada trama), personaje, hoja, misiones, equipo, sesion,
+-- bolsas, profesiones, y el resto. Se mantiene siempre (no hay "reactivacion" que el addon pueda ver).
+C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 7, 8, 6, 9, 11, 10 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 C.RANK = RANK
@@ -144,7 +147,8 @@ function C.NewScheduler()
     return setmetatable({
         jobs = {},        -- trabajos pendientes, en orden de turno
         nextMsgId = 0,    -- msgId 1..65535 (envuelve)
-        carouselAt = nil, -- ultimo carrusel (segundos); nil = nunca
+        carouselAt = nil, -- ultimo ciclo de carrusel (segundos); nil = nunca
+        lastSent = {},    -- [tipo] = segundos en que se encolo por ultima vez en el carrusel
     }, Sched)
 end
 
@@ -206,23 +210,65 @@ function Sched:nextChunk(cs, frameNo)
     return chunk
 end
 
--- Carrusel: con la cola vacia y pasado CAROUSEL_SEC, reencola todos los mensajes que
--- provider(tipo) devuelve (texto JSON completo). provider puede devolver nil (no reenviar).
--- Devuelve true si lo ha hecho.
-function Sched:carousel(now, provider)
-    if #self.jobs > 0 then return false end
-    if self.carouselAt and now - self.carouselAt < C.CAROUSEL_SEC then return false end
-    self.carouselAt = now
-    for _, t in ipairs(C.PRIORITY) do
-        local str = provider(t)
-        if str then self:enqueue(t, str) end
+-- Periodo de reenvio de un tipo en el carrusel: 15 s; el pesado, 60 s.
+local function carouselPeriod(t)
+    local def = C.TYPES[t]
+    return (def and def.heavy) and C.HEAVY_CAROUSEL_SEC or C.CAROUSEL_SEC
+end
+
+-- true si hay un trabajo pendiente del tipo t.
+function Sched:has(msgType)
+    for _, job in ipairs(self.jobs) do
+        if job.type == msgType then return true end
+    end
+    return false
+end
+
+-- true si al tipo t le toca reenviarse (nunca enviado, o hace al menos su periodo).
+function Sched:carouselDue(t, now)
+    local last = self.lastSent[t]
+    return last == nil or now - last >= carouselPeriod(t) - 1e-6
+end
+
+-- Turno de ciclo: si ha pasado CAROUSEL_SEC desde el ultimo ciclo, lo abre. La fase es fija
+-- (carouselAt + CAROUSEL_SEC), asi los ciclos caen cada 15 s exactos y el pesado cada 4 ciclos (60 s);
+-- solo si se ha retrasado mas de un periodo empieza ahora. true si hay ciclo nuevo.
+local function carouselTurn(sched, now)
+    if sched.carouselAt == nil then
+        sched.carouselAt = now
+        return true
+    end
+    local elapsed = now - sched.carouselAt
+    if elapsed < C.CAROUSEL_SEC - 1e-6 then return false end
+    if elapsed < 2 * C.CAROUSEL_SEC then
+        sched.carouselAt = sched.carouselAt + C.CAROUSEL_SEC
+    else
+        sched.carouselAt = now
     end
     return true
 end
 
--- Fuerza el siguiente carrusel (lo pide /compa sync).
+-- Carrusel: cada CAROUSEL_SEC reencola cada tipo que provider(tipo) devuelve (texto JSON completo)
+-- y que no tenga ya un trabajo pendiente (un mensaje a medio enviar no se reinicia). provider puede
+-- devolver nil (no reenviar). Devuelve true si ha empezado un ciclo.
+function Sched:carousel(now, provider)
+    if not carouselTurn(self, now) then return false end
+    for _, t in ipairs(C.PRIORITY) do
+        if not self:has(t) and self:carouselDue(t, self.carouselAt) then
+            local str = provider(t)
+            if str then
+                self:enqueue(t, str)
+                self.lastSent[t] = self.carouselAt
+            end
+        end
+    end
+    return true
+end
+
+-- Fuerza el siguiente carrusel con todos los tipos (lo pide /compa sync).
 function Sched:forceCarousel()
     self.carouselAt = nil
+    self.lastSent = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -321,6 +367,17 @@ C.TYPES = {
             local s = c.sheet
             if type(s) ~= "table" then return nil end
             return s
+        end,
+    },
+    [14] = {
+        -- sesion del personaje (Session.lua): historial de la sesion en curso (contrato ON-DEMAND).
+        -- minGap largo: la sesion cambia con cada XP y no conviene reiniciar el envio a cada cambio.
+        name = "session", period = 15, minGap = 5,
+        events = { "PLAYER_LEVEL_UP", "PLAYER_XP_UPDATE", "PLAYER_MONEY", "QUEST_TURNED_IN", "QUEST_ACCEPTED",
+                   "PARTY_KILL", "PLAYER_DEAD", "ZONE_CHANGED_NEW_AREA" },
+        build = function(c)
+            if not (ns.Session and ns.Session.Public) then return nil end
+            return ns.Session.Public(c.session)
         end,
     },
     [11] = {
@@ -507,42 +564,43 @@ local function refreshOne(now)
     refreshType(due, now)
 end
 
--- Carrusel repartido: con la cola vacia y pasado CAROUSEL_SEC se prepara la lista de tipos, y
--- cada tick serializa y encola uno solo, para no pagar todo el JSON de golpe.
+-- Carrusel repartido: cada CAROUSEL_SEC se prepara la lista de tipos que toca reenviar (sin trabajo
+-- pendiente y con su periodo cumplido), en orden de prioridad; cada tick serializa y encola uno solo,
+-- para no pagar todo el JSON de golpe. Los tipos de mayor prioridad van primero en la lista.
 local function carouselStep(now, sched)
-    if S.carouselTodo and #S.carouselTodo > 0 then
-        local t = table.remove(S.carouselTodo, 1)
+    if not (S.carouselTodo and #S.carouselTodo > 0) then
+        if not carouselTurn(sched, now) then return end
+        S.carouselTodo = {}
+        local c = currentChar()
+        for _, t in ipairs(C.PRIORITY) do
+            local def = C.TYPES[t]
+            if not sched:has(t) and sched:carouselDue(t, sched.carouselAt) then
+                -- Tipos manuales (la hoja) solo si tienen datos: no gastan turnos del carrusel en vacio.
+                if not def.manual or (c and def.build(c, CompaneroWoWDB) ~= nil) then
+                    S.carouselTodo[#S.carouselTodo + 1] = t
+                    -- Se marca al empezar el ciclo (no al serializar): la cadencia de 15 s es entre ciclos.
+                    sched.lastSent[t] = sched.carouselAt
+                end
+            end
+        end
+    end
+    -- Un tipo por tick (el primero, en el mismo tick que abre el ciclo).
+    local t = table.remove(S.carouselTodo, 1)
+    if t and not sched:has(t) then -- si mientras tanto llego un cambio, ese trabajo ya lleva lo nuevo
         local json = fullJSON(t)
         if json then sched:enqueue(t, json) end
-        return
-    end
-    if sched:pending() > 0 then return end
-    if S.carouselAt and now - S.carouselAt < C.CAROUSEL_SEC then return end
-    S.carouselAt = now
-    S.carouselTodo = {}
-    for _, t in ipairs(C.PRIORITY) do
-        if not C.TYPES[t].manual then S.carouselTodo[#S.carouselTodo + 1] = t end
-    end
-    -- Tipos manuales (la hoja) solo si tienen datos: no gastan turnos del carrusel en vacio.
-    local c = currentChar()
-    for _, t in ipairs(C.PRIORITY) do
-        local def = C.TYPES[t]
-        if def.manual and c and def.build(c, CompaneroWoWDB) ~= nil then
-            S.carouselTodo[#S.carouselTodo + 1] = t
-        end
     end
 end
 
 -- Llamar en cada refresco de la franja (cada 0.2 s). N = bloques de la fila.
--- Devuelve el trozo a enviar en esta trama (o nil). Bloqueos: ninguno en combate.
+-- Devuelve el trozo a enviar en esta trama (o nil). Fuera de combate se revisan los cambios;
+-- el carrusel corre tambien en combate (un tipo por tick), para cumplir el periodo de 15 s.
 function C.Tick(now, N)
     local sched = ensureScheduler()
     S.frame = S.frame + 1
     local inCombat = ns.InCombat and ns.InCombat()
-    if not inCombat then
-        refreshOne(now)
-        carouselStep(now, sched)
-    end
+    if not inCombat then refreshOne(now) end
+    carouselStep(now, sched)
     return sched:nextChunk(C.Capacity(N), S.frame)
 end
 
@@ -559,7 +617,6 @@ end
 -- Pide reenviar todo (lo llama /compa sync, antes de recargar).
 function C.ForceCarousel()
     markAll()
-    S.carouselAt = nil
     S.carouselTodo = nil
     ensureScheduler():forceCarousel()
 end
