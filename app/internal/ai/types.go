@@ -26,7 +26,8 @@ type Request struct {
 // Response is the answer of the provider that succeeded, plus every attempt made.
 type Response struct {
 	Text     string
-	Provider string
+	Provider string // "antigravity:<model>" when a model of agy answered, else the provider's name
+	Model    string // the agy model that answered; empty for the other providers
 	Attempts []Attempt
 }
 

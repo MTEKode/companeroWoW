@@ -1,6 +1,19 @@
 package ui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/MTEKode/companeroWoW/app/internal/ai"
+)
+
+// splitProvider separates the provider of an answer from the agy model that gave it:
+// "antigravity:gemini-4-hydrogen-high" is ("antigravity", "gemini-4-hydrogen-high").
+func splitProvider(p string) (provider, model string) {
+	if name, m, ok := strings.Cut(p, ":"); ok && name == "antigravity" {
+		return name, m
+	}
+	return p, ""
+}
 
 // entryKind says how one item of the conversation is shown.
 type entryKind int
@@ -52,15 +65,20 @@ func entryRuns(e entry) []Span {
 			{Text: "\n\n"},
 		}
 	case entryAssistant:
+		provider, model := splitProvider(e.Provider)
 		parts := []string{"Compañero"}
-		if e.Provider != "" {
-			parts = append(parts, e.Provider)
+		if provider != "" {
+			parts = append(parts, provider)
 		}
 		if e.At != "" {
 			parts = append(parts, e.At)
 		}
 		out := []Span{{Text: strings.Join(parts, " · "), Style: StyleMeta}, {Text: "\n"}}
 		out = append(out, MarkRuns(e.Text)...)
+		if model != "" {
+			// The model that answered, small, under the answer.
+			out = append(out, Span{Text: "\n"}, Span{Text: "Modelo: " + ai.DisplayModel(model), Style: StyleMeta})
+		}
 		return append(out, Span{Text: "\n\n"})
 	case entryTip:
 		head := "💡 Consejo"

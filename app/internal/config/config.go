@@ -41,9 +41,18 @@ type Config struct {
 	Language           string   `json:"language"`
 	ProviderOrder      []string `json:"providerOrder"`
 	AntigravityCommand string   `json:"antigravityCommand"`
-	// AntigravityModel is passed as --model to agy when set; empty keeps agy's default.
-	AntigravityModel string `json:"antigravityModel"`
-	// AntigravityEffort is passed as --effort to agy when set (low, medium, high, xhigh, max).
+	// AntigravityModels is the order in which agy models are tried: the first one answers
+	// until its quota runs out, then the next one (see ai.antigravity). Slugs such as
+	// "gemini-4-hydrogen-high" carry their effort.
+	AntigravityModels []string `json:"antigravityModels"`
+	// AntigravityModel is the single model of versions before AntigravityModels. It is read
+	// once (migrated into the list) and is not written back.
+	AntigravityModel string `json:"antigravityModel,omitempty"`
+	// AntigravityQuotaCooldownMin is how many minutes a model that ran out of quota is left out
+	// before the primary model is tried again.
+	AntigravityQuotaCooldownMin int `json:"antigravityQuotaCooldownMin"`
+	// AntigravityEffort is passed as --effort to agy only for a model slug without an effort
+	// suffix (low, medium, high, xhigh, max); the slugs that carry one never get the flag.
 	AntigravityEffort string `json:"antigravityEffort"`
 	CodexCommand      string `json:"codexCommand"`
 	// CodexModel is passed as -m to codex when set; empty keeps codex's default.
@@ -109,17 +118,17 @@ func Defaults() Config {
 		Language:           "es",
 		ProviderOrder:      []string{"antigravity", "codex", "api"},
 		AntigravityCommand: "agy",
-		// gemini-3.8-flash-low is the fastest model that `agy models` lists; the answers
-		// are short and the tools do the work, so speed matters more than depth.
-		AntigravityModel:  "gemini-3.8-flash-low",
-		AntigravityEffort: "low",
-		CodexCommand:      "codex",
-		CodexEffort:       "low",
-		APIProviders:      []APIProvider{defaultNVIDIAProvider},
-		MCPPort:           47321,
-		TipsMode:          TipsBandeja,
-		TipsSound:         false,
-		Proactive:         true,
+		// Gemini 4 Hydrogen answers first; Gemini 3.8 Flash takes over while its quota is out.
+		AntigravityModels:           append([]string(nil), DefaultAntigravityModels...),
+		AntigravityQuotaCooldownMin: DefaultQuotaCooldownMin,
+		AntigravityEffort:           "low",
+		CodexCommand:                "codex",
+		CodexEffort:                 "low",
+		APIProviders:                []APIProvider{defaultNVIDIAProvider},
+		MCPPort:                     47321,
+		TipsMode:                    TipsBandeja,
+		TipsSound:                   false,
+		Proactive:                   true,
 		WebSources: []string{
 			// First: its talents, spells, builds and dungeons are read from the client data.
 			WFTHost,
@@ -199,6 +208,8 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &raw)
 	_, hasKey := raw["hideInCombat"]
+	_, hasModels := raw["antigravityModels"]
+	modelsChanged := d.migrateAntigravityModels(hasModels)
 	if _, has := raw["wftAdded"]; !has {
 		// A file from before the site was added: the migration must still run, whatever the default.
 		d.WFTAdded = false
@@ -208,7 +219,7 @@ func LoadInfo(path string) (c *Config, created bool, err error) {
 		d.TipsMode = ""
 		hasKey = false
 	}
-	if d.migrate() || !hasKey {
+	if d.migrate() || modelsChanged || !hasKey {
 		if err := d.Save(path); err != nil {
 			return nil, false, fmt.Errorf("save migrated config %s: %w", path, err)
 		}

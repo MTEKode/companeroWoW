@@ -241,7 +241,7 @@ func TestMarkdownAndJSONReports(t *testing.T) {
 		}},
 	}
 	md := Markdown(rep)
-	for _, want := range []string{"# Evaluación de Compañero WoW", "| q01 ¿Qué hago \\| ahora? | codex | 4.2 | 1 | sí |", "`contexto_jugador`", "> Entrega (51.2, 38.7)."} {
+	for _, want := range []string{"# Evaluación de Compañero WoW", "| q01 ¿Qué hago \\| ahora? | codex | — | 4.2 | 1 | sí |", "`contexto_jugador`", "> Entrega (51.2, 38.7)."} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown lacks %q:\n%s", want, md)
 		}
@@ -268,5 +268,37 @@ func TestHasCoordinatesAndRefuses(t *testing.T) {
 	}
 	if Refuses("Te ayudo con gusto.") {
 		t.Error("a helpful answer is not a refusal")
+	}
+}
+
+// TestModelLatencyTable: each question records the agy model that answered, and the report
+// has a latency line per model (the provider when no model answered).
+func TestModelLatencyTable(t *testing.T) {
+	recs := []Record{
+		{ID: "q01", Provider: "antigravity:gemini-4-hydrogen-high", DurationSec: 40},
+		{ID: "q02", Provider: "antigravity:gemini-3.8-flash-medium", DurationSec: 12},
+		{ID: "q03", Provider: "antigravity:gemini-4-hydrogen-high", DurationSec: 80, Error: "tiempo agotado"},
+		{ID: "q04", Provider: "codex", DurationSec: 5},
+	}
+	recs[0].Model = modelOf(ai.Response{Provider: recs[0].Provider})
+	if recs[0].Model != "gemini-4-hydrogen-high" {
+		t.Fatalf("modelOf = %q", recs[0].Model)
+	}
+	if got := modelOf(ai.Response{Provider: "antigravity", Model: "x"}); got != "x" {
+		t.Errorf("modelOf prefers the response's model, got %q", got)
+	}
+	stats := modelLatency(recs)
+	if len(stats) != 3 {
+		t.Fatalf("stats = %+v, want three models", stats)
+	}
+	hydrogen := stats[0]
+	if hydrogen.Model != "gemini-4-hydrogen-high" || hydrogen.N != 2 || hydrogen.Errs != 1 || hydrogen.Max != 80 || hydrogen.Total/float64(hydrogen.N) != 60 {
+		t.Errorf("hydrogen = %+v", hydrogen)
+	}
+	md := Markdown(Report{Records: recs})
+	for _, want := range []string{"## Latencia por modelo", "| gemini-4-hydrogen-high | 2 | 1 | 60.0 | 80.0 |", "| codex | 1 | 0 | 5.0 | 5.0 |"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, md)
+		}
 	}
 }

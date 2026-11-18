@@ -49,6 +49,9 @@ type Status struct {
 	Providers       []string `json:"providers"`
 	// Channel is the live data channel line ("Canal en vivo: OK (1.2 KB/s)"); empty when unknown.
 	Channel string `json:"channel,omitempty"`
+	// Model is the status bar's model line ("Modelo: Gemini 4 Hydrogen"); empty when agy is not
+	// in the provider order.
+	Model string `json:"model,omitempty"`
 }
 
 // Options configures Run.

@@ -116,6 +116,8 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
   "language": "es",
   "providerOrder": ["antigravity", "codex", "api"],
   "antigravityCommand": "agy",
+  "antigravityModels": ["gemini-4-hydrogen-high", "gemini-3.8-flash-medium"],
+  "antigravityQuotaCooldownMin": 30,
   "codexCommand": "codex",
   "apiProviders": [
     {
@@ -156,6 +158,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `language` | Idioma de la interfaz. Las respuestas son siempre en castellano. |
 | `providerOrder` | Orden de los proveedores: `antigravity`, `codex`, `api`. `api` usa cada entrada de `apiProviders`, en orden. Un nombre desconocido (como el antiguo `gemini`) se omite. |
 | `antigravityCommand` / `codexCommand` | Nombre o ruta de los comandos de las CLI. Para `antigravityCommand` la app también busca `%LOCALAPPDATA%\agy\bin\agy.exe`. |
+| `antigravityModels` / `antigravityQuotaCooldownMin` | Orden de los modelos de Antigravity y minutos que un modelo sin cuota queda fuera (30 por defecto). Ver [Modelos de Antigravity](#modelos-de-antigravity). |
 | `apiProviders` | Endpoints compatibles con OpenAI: `name`, `baseUrl`, `model` y la clave en `apiKeyEnv` (nombre de la variable, recomendado) o en `apiKey` (clave literal, no recomendado). Ver [Claves de API y `.env`](#claves-de-api-y-env). |
 | `mcpPort` | Puerto local (solo 127.0.0.1) del servidor de herramientas que usan Antigravity CLI y Codex CLI. |
 | `tipsMode` | Cómo llegan los consejos: `bandeja` (por defecto: aviso y punto en la bandeja, sin abrir el panel), `panel` (abre el panel sin robar el foco) u `off` (sin consejos). Las configuraciones anteriores sin esta clave usan `bandeja`, o `off` si tenían `proactive: false`. |
@@ -184,6 +187,16 @@ Cómo lo usa la app: cada pregunta es un proceso `agy -p` que se lanza y termina
 Las capturas no se adjuntan como imagen en modo headless: si la pregunta lleva una captura, se guarda en `screens` y el texto indica su ruta, que agy lee con `read_file`. El modelo también puede pedir una captura de la ventana de WoW con `capturar_pantalla`. Esas imágenes salen del PC hacia Antigravity.
 
 **Permisos de Codex CLI.** Codex corre en `%APPDATA%\CompaneroWoW\codex` con un sandbox de solo lectura y un perfil de permisos de archivos que concede lectura solo a los archivos del sistema que necesita el sandbox y a su carpeta de trabajo. Lo impone el sandbox de Codex en Windows, no la app: comprueba con una pregunta de prueba que Codex no lee un archivo de tu perfil de usuario antes de confiar en ello.
+
+### Modelos de Antigravity
+
+`antigravityModels` es el orden en que la app prueba los modelos de `agy`. Por defecto: `["gemini-4-hydrogen-high", "gemini-3.8-flash-medium"]`: responde Gemini 4 Hydrogen y, cuando su cuota se agota, Gemini 3.8 Flash. El nombre del modelo ya incluye su esfuerzo (`-low`, `-medium`, `-high`, `-xhigh`); por eso `--effort` solo se pasa a un modelo sin esa terminación.
+
+- **Cuota agotada.** Un error de cuota, límite de uso, 429 o `RESOURCE_EXHAUSTED` pone ese modelo en enfriamiento durante `antigravityQuotaCooldownMin` minutos (30 por defecto) y la pregunta se repite de inmediato con el siguiente. Pasado el enfriamiento, el primero vuelve a probarse. Un error de sesión o de tiempo no cambia de modelo: pasa a Codex o a la API como antes.
+- **Tiempos.** Cada modelo tiene su tiempo: 150 s para Hydrogen y 90 s para Flash; los demás usan `aiTimeoutSec`. La pregunta completa tiene como máximo 210 s.
+- **Ajustes.** En «Modelos de Antigravity» se ordenan los modelos en uso, se añaden los que ofrece `agy models` (la lista se guarda en `agy-models.json`; «Actualizar» la vuelve a pedir) y se fija el enfriamiento. Se aplica al reiniciar la app.
+- **Barra de estado.** Muestra `Modelo: Gemini 4 Hydrogen`, o `Modelo: Gemini 3.8 Flash (cuota agotada hasta HH:MM)` mientras el primero está en enfriamiento. Cada respuesta muestra debajo el modelo que la dio.
+- **Configuración anterior.** Un `config.json` con `antigravityModel` (el modelo único de versiones anteriores) se migra a la lista: si ese modelo era `gemini-3.8-flash-low` (el antiguo valor por defecto) se usa el orden nuevo; si era otro, va primero.
 
 ## Claves de API y `.env`
 

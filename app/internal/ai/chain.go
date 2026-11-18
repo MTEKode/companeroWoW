@@ -21,6 +21,12 @@ func aiTimeout(cfg *config.Config) time.Duration {
 	return time.Duration(cfg.AITimeoutSec) * time.Second
 }
 
+// budgeted is implemented by a provider that needs more time than the chain's per-provider
+// timeout, because it runs several attempts of its own (see antigravity).
+type budgeted interface {
+	Budget() time.Duration
+}
+
 // Chain asks its providers in order and returns the first usable answer.
 type Chain struct {
 	providers []Provider
@@ -87,8 +93,12 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 			continue
 		}
 
+		budget := c.timeout
+		if b, ok := p.(budgeted); ok {
+			budget = b.Budget()
+		}
 		start := time.Now()
-		pctx, cancel := context.WithTimeout(ctx, c.timeout)
+		pctx, cancel := context.WithTimeout(ctx, budget)
 		resp, err := p.Ask(pctx, req)
 		timedOut := errors.Is(pctx.Err(), context.DeadlineExceeded)
 		cancel()
@@ -99,7 +109,7 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 				return Response{Attempts: attempts}, fmt.Errorf("consulta cancelada: %w", ctx.Err())
 			}
 			if timedOut {
-				err = fmt.Errorf("tiempo agotado tras %s", c.timeout)
+				err = fmt.Errorf("tiempo agotado tras %s", budget)
 			}
 		} else if strings.TrimSpace(resp.Text) == "" {
 			err = errors.New("respuesta vacía")
@@ -109,8 +119,11 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 			continue
 		}
 
-		attempts = append(attempts, Attempt{Provider: name, Duration: elapsed})
-		resp.Provider = name
+		// A provider that names what answered (antigravity:<model>) keeps its name.
+		if resp.Provider == "" {
+			resp.Provider = name
+		}
+		attempts = append(attempts, Attempt{Provider: resp.Provider, Duration: elapsed})
 		resp.Attempts = attempts
 		return resp, nil
 	}
