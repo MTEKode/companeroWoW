@@ -324,10 +324,10 @@ ns.InitBridge()
 local function setColorCount()
     return #W.callsNamed("SetColorTexture")
 end
--- El canal en vivo cambia la trama en cada refresco mientras tenga trozos: aqui se prueba solo
+-- El canal en vivo cambia la trama en cada refresco mientras tenga trozos (solo en activacion): aqui se prueba solo
 -- el repintado de la franja, con el canal en silencio.
-local realTick = ns.Channel.Tick
-ns.Channel.Tick = function() return nil end
+local realNext = ns.Channel.NextChunk
+ns.Channel.NextChunk = function() return nil end
 W.calls = {}
 ns.BridgeRefresh()
 local first = setColorCount()
@@ -342,7 +342,7 @@ S.level = 10
 W.calls = {}
 ns.BridgeRefresh()
 check("franja: un cambio de bytes repinta", setColorCount() > 0)
-ns.Channel.Tick = realTick
+ns.Channel.NextChunk = realNext
 
 -- Throttle de QUEST_LOG_UPDATE: como mucho 2 barridos por segundo.
 reset()

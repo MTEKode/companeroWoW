@@ -52,6 +52,7 @@ local function load(path)
     chunk("CompaneroWoW", ns)
 end
 load("CompaneroWoW/Util.lua")
+load("CompaneroWoW/Json.lua") -- hash de campos del snapshot (Core.lua)
 load("CompaneroWoW/Collectors.lua")
 load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Core.lua")
@@ -145,29 +146,55 @@ outln("snapshot periodico:")
 setupInWorld()
 local ticker
 for _, t in ipairs(S.tickers) do
-    if t.sec == 60 then ticker = t end
+    if t.sec == 120 then ticker = t end
 end
-check("ticker de 60 s creado al entrar al mundo", ticker ~= nil)
+check("ticker de 120 s creado al entrar al mundo", ticker ~= nil)
 
 data = fullData()
-advanceClock(61)
+advanceClock(121)
 collectorCalls = 0
 W.tickAll()
 check("el ticker toma snapshot dentro del mundo", collectorCalls > 0)
 
 S.inCombat = true
-advanceClock(61)
+advanceClock(121)
 collectorCalls = 0
 W.tickAll()
 check("el ticker no toma snapshot en combate", collectorCalls == 0)
 S.inCombat = false
 
 fire("PLAYER_LEAVING_WORLD")
-advanceClock(61)
+advanceClock(121)
 collectorCalls = 0
 W.tickAll()
 check("el ticker no toma snapshot durante la carga", collectorCalls == 0)
 fire("PLAYER_ENTERING_WORLD")
+
+-- ---------------------------------------------------------------------------
+outln("throttle de 120 s y campos sin cambios:")
+setupInWorld()
+data = fullData()
+collectorCalls = 0
+ns.RequestSnapshot()
+eq("RequestSnapshot dentro de 120 s: no ejecuta collectors", collectorCalls, 0)
+advanceClock(121)
+collectorCalls = 0
+ns.RequestSnapshot()
+check("RequestSnapshot tras 120 s: ejecuta collectors", collectorCalls > 0)
+-- Mismos datos: el hash de cada campo no cambia y el campo no se reescribe (misma tabla).
+local keptQuests = char().quests
+local keptInventory = char().inventory
+advanceClock(121)
+ns.SnapshotAll()
+check("sin cambios: quests no se reescribe", char().quests == keptQuests)
+check("sin cambios: inventory no se reescribe", char().inventory == keptInventory)
+-- Cambia un dato: ese campo se reescribe.
+data = fullData()
+data.quests = { { questID = 999, title = "Nueva" } }
+advanceClock(121)
+ns.SnapshotAll()
+check("cambio en quests: se reescribe", char().quests ~= keptQuests)
+check("cambio en quests: sin cambios en inventory", char().inventory == keptInventory)
 
 -- ---------------------------------------------------------------------------
 outln("logout:")

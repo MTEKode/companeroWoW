@@ -285,38 +285,28 @@ check("muestras separadas 60 s", gapsOk)
 eq("la primera conservada es la 41 (t0 + 41 min)", ses().xpSamples[1].t, t0 + 41 * 60)
 check("XP/h de la ventana positivo", ses().xpPerHour > 0, tostring(ses().xpPerHour))
 
--- ---------------------------------------------------------------------------
-print("(h) Canal: tipo 14 encolado y carrusel")
+-- ---------------------------------------------------------
+print("(h) Activacion: tipo 14 en el plan y en la cola")
 freshGame()
 login()
 tick()
 active(30, function() P.xp = P.xp + 10 end)
-C.state.sched = C.NewScheduler()
-C.state.carouselTodo = nil
-C.state.hash = {}
-C.state.lastBuilt = {}
-C.state.lastCheck = {}
-C.state.dirty = {}
-local ok14 = C.testing.refreshType(14, ns.Now())
-check("refresco del tipo 14 encola", ok14 == nil and C.state.sched:pending() >= 1)
+C.testing.reset()
+C.Begin(W.state.clock)
+C.Pump(W.state.clock, 1e9)
 local job14
 for _, j in ipairs(C.state.sched.jobs) do
     if j.type == 14 then job14 = j end
 end
-check("tipo 14 en la cola", job14 ~= nil)
+check("activacion: tipo 14 encolado", job14 ~= nil)
 check("tipo 14 lleva xpGained", job14 and string.find(job14.str, '"xpGained":', 1, true) ~= nil)
 check("listas vacias salen como []", job14 and string.find(job14.str, '"questsAccepted":[]', 1, true) ~= nil)
 check("tipo 14 no lleva campos internos", job14 and string.find(job14.str, "sessionBase", 1, true) == nil)
--- Carrusel: con todo el resto vacio, el 14 sale en el primer ciclo.
-C.state.sched = C.NewScheduler()
-C.state.carouselTodo = nil
-local seen14 = false
-for i = 1, 60 do
-    local ch = C.Tick(ns.Now() + i * 0.2, 860)
-    if ch and ch.type == 14 and ch.index == 0 then seen14 = true end
-end
-check("carrusel envia el tipo 14", seen14)
-
+C.Stop()
+-- Reposo: la sesion sigue contando, pero no se serializa nada.
+local before = C.state.sched and C.state.sched:pending() or 0
+active(10, function() P.xp = P.xp + 5 end)
+eq("reposo: el canal no serializa la sesion", (C.state.sched and C.state.sched:pending() or 0) - before, 0)
 -- ---------------------------------------------------------------------------
 print("(i) Resumen (/compa sesion) y estado (/compa estado)")
 freshGame()
@@ -341,15 +331,13 @@ eq("json: lista vacia con marca", J.Encode(J.Array()), "[]")
 eq("json: tabla vacia sin marca", J.Encode({}), "{}")
 
 -- ---------------------------------------------------------------------------
-print("(j) Carrusel <= 15 s con knowledge grande (2000 PNJ), reloj simulado y tamanos realistas")
-local KEYS = { 1, 12, 2, 4, 14 }
+-- ---------------------------------------------------------
+print("(j) Activacion con knowledge grande (2000 PNJ): ventana de 20 s, reloj simulado")
 local STEP = 0.2
-local isKey = {}
-for _, t in ipairs(KEYS) do isKey[t] = true end
 
 local function bulkList(n, width)
     local out = {}
-    for i = 1, n do out[i] = { id = i, title = "Misión " .. i, text = string.rep("t", width) } end
+    for i = 1, n do out[i] = { id = i, name = string.rep("x", width) .. i } end
     return out
 end
 
@@ -359,25 +347,8 @@ local function bytesToString(data)
     return table.concat(b)
 end
 
--- Estado del canal limpio para una simulacion nueva.
-local function resetChannel()
-    C.state.sched = C.NewScheduler()
-    C.state.carouselTodo = nil
-    C.state.hash = {}
-    C.state.lastBuilt = {}
-    C.state.lastCheck = {}
-    C.state.dirty = {}
-    C.state.completedSet = nil
-    C.state.know = {
-        cache = { quests = {}, npcs = {} }, bytes = 0, scan = nil, scanned = false,
-        out = { items = {}, head = 1, set = { quests = {}, npcs = {} } },
-        snap = { items = {}, head = 1 }, snapAt = nil,
-    }
-end
-
--- Simula simSec s con npcCount PNJ en knowledge (y 200 misiones). Si changeAt, cambia un PNJ a esa
--- hora (s desde el inicio). Devuelve las medidas del canal.
-local function simulate(npcCount, simSec, changeAt)
+-- Personaje con datos realistas (tamanos aproximados) y npcCount PNJ en knowledge.
+local function fillGame(npcCount)
     freshGame()
     login()
     tick()
@@ -395,16 +366,6 @@ local function simulate(npcCount, simSec, changeAt)
     c.professions = bulkList(4, 40)
     c.questie = { data = string.rep("q", 30000) }
     c.combats = {}
-    -- Macros al maximo (120 de cuenta y 18 de personaje, cuerpos de 255 bytes): tipo 13, el ultimo en prioridad.
-    local function macroList(n, base)
-        local out = {}
-        for i = 1, n do out[i] = { index = base + i, name = "Macro " .. i, icon = "INV_Misc_QuestionMark", body = string.rep("m", 255) } end
-        return out
-    end
-    c.macros = {
-        account = { used = 120, max = 120, list = macroList(120, 0) },
-        character = { used = 18, max = 18, list = macroList(18, 120) },
-    }
     CompaneroWoWDB.characters[KEY] = c
     CompaneroWoWDB.knowledge.quests = {}
     for i = 1, 200 do CompaneroWoWDB.knowledge.quests[i] = { questID = i, title = "Conocimiento " .. i } end
@@ -415,158 +376,128 @@ local function simulate(npcCount, simSec, changeAt)
             reaction = "friendly", isQuestGiver = true, firstSeen = 1700000000, lastSeen = 1700000000,
         }
     end
-    local knowBytes = 0
-    for _, kind in ipairs({ "quests", "npcs" }) do
-        for _, rec in pairs(CompaneroWoWDB.knowledge[kind]) do knowBytes = knowBytes + #ns.Json.Encode(rec) end
-    end
-    resetChannel()
+    C.testing.reset()
+end
 
-    local starts, completions = {}, {}
-    local tickSum, tickMax, ticks = 0, 0, 0
-    local dts = {}
-    local msgs9, partial9, bytes9Win = {}, {}, {}
-    local t0 = W.state.clock
-    local nextSessionTick = 0
-    local changedAt = nil
-    for step = 1, simSec / STEP do
+-- Trozos del tipo 9 a medio recibir, entre activaciones (un mensaje puede empezar en una ventana
+-- y acabar en la siguiente: el planificador no pierde trozos al volver al reposo).
+local partial9 = {}
+
+-- Una activacion completa con reloj simulado (una trama cada STEP). Devuelve medidas.
+local function shareRun()
+    -- El presupuesto de Channel.Pump mide con debugprofilestop: el del stub esta congelado (msStep = 0),
+    -- asi que aqui se usa el reloj real del proceso para medir de verdad.
+    _G.debugprofilestop = function() return os.clock() * 1000 end
+    C.Begin(W.state.clock)
+    local starts, completions, msgs9, snap9 = {}, {}, {}, {}
+    local bytes9 = 0
+    local sumT, maxT, frames = 0, 0, 0
+    local nextSession, elapsed = 0, 0
+    while C.IsSharing() and elapsed < 60 do
         advance(STEP)
-        local now = W.state.clock
-        local el = now - t0
-        if changeAt and not changedAt and el >= changeAt then
-            CompaneroWoWDB.knowledge.npcs[1005].name = "PNJ cambiado"
-            changedAt = el
-        end
-        if step * STEP >= nextSessionTick then
+        elapsed = elapsed + STEP
+        frames = frames + 1
+        if elapsed >= nextSession then
             P.xp = P.xp + 3
-            P.x = P.x + 0.001
             Ses.Tick()
-            nextSessionTick = nextSessionTick + 5
+            nextSession = nextSession + 5
         end
+        local now = W.state.clock
+        if not C.Update(now) then break end
         local c0 = os.clock()
-        local ch = C.Tick(now, 860)
+        C.Pump(now, C.PUMP_BUDGET_MS)
         local dt = os.clock() - c0
-        tickSum, ticks = tickSum + dt, ticks + 1
-        dts[#dts + 1] = dt
-        if dt > tickMax then tickMax = dt end
+        sumT, maxT = sumT + dt, math.max(maxT, dt)
+        -- Solo hay un trabajo del tipo 9 en cola: el trozo de tipo 9 es delta u optativo segun ese trabajo.
+        local nineOptional = false
+        for _, j in ipairs(C.state.sched and C.state.sched.jobs or {}) do
+            if j.type == 9 then nineOptional = j.optional end
+        end
+        local ch = C.NextChunk(860, frames)
         if ch then
-            if ch.index == 0 then
-                starts[ch.type] = starts[ch.type] or {}
-                table.insert(starts[ch.type], now)
-            end
-            if ch.index == ch.count - 1 then
-                completions[ch.type] = completions[ch.type] or {}
-                table.insert(completions[ch.type], now)
-            end
+            if ch.index == 0 then starts[ch.type] = starts[ch.type] or elapsed end
+            if ch.index == ch.count - 1 then completions[ch.type] = completions[ch.type] or elapsed end
             if ch.type == 9 then
-                local w = math.floor(el / 15)
-                bytes9Win[w] = (bytes9Win[w] or 0) + #ch.data
-                local p = partial9[ch.id] or { parts = {} }
+                bytes9 = bytes9 + #ch.data
+                local p = partial9[ch.id] or { parts = {}, count = ch.count }
                 partial9[ch.id] = p
                 p.parts[ch.index + 1] = bytesToString(ch.data)
-                if ch.index == ch.count - 1 then
-                    msgs9[#msgs9 + 1] = { t = el, s = table.concat(p.parts) }
+                local whole = true
+                for i = 1, p.count do
+                    if p.parts[i] == nil then whole = false break end
+                end
+                if whole then
+                    local list = nineOptional and snap9 or msgs9
+                    list[#list + 1] = table.concat(p.parts)
                     partial9[ch.id] = nil
                 end
             end
         end
     end
     return {
-        starts = starts, completions = completions, msgs9 = msgs9, bytes9Win = bytes9Win,
-        knowBytes = knowBytes, changedAt = changedAt, simSec = simSec,
-        tickSum = tickSum, tickMax = tickMax, ticks = ticks, dts = dts,
+        starts = starts, completions = completions, msgs9 = msgs9, snap9 = snap9, bytes9 = bytes9,
+        frames = frames, elapsed = elapsed, avg = sumT / math.max(1, frames), max = maxT,
     }
 end
 
--- Percentil p (0..1) de una lista de tiempos.
-local function percentile(list, p)
-    local copy = {}
-    for i, v in ipairs(list) do copy[i] = v end
-    table.sort(copy)
-    return copy[math.max(1, math.ceil(#copy * p))]
-end
-
-local function maxGap(list)
-    local m = 0
-    for i = 2, #list do
-        local g = list[i] - list[i - 1]
-        if g > m then m = g end
-    end
-    return m
-end
-
--- Comprobaciones de cadencia (tipos clave, pesado) y de latencia, sobre una simulacion.
-local SLACK = 0.25 -- un tick de 0.2 s y redondeo
-local function checkCadence(label, r)
-    local keyOk = true
+local KEYS = { 1, 12, 2, 4, 14 }
+local function checkShare(label, r)
     for _, t in ipairs(KEYS) do
-        local list = r.starts[t] or {}
-        local g = maxGap(list)
-        if #list < 10 or g > 15 + SLACK then keyOk = false end
-        outln(string.format("  info  %s tipo %2d: %3d envios, hueco maximo %.1f s", label, t, #list, g))
+        outln(string.format("  info  %s tipo %2d: primer trozo a %.1f s", label, t, r.starts[t] or -1))
     end
-    check(label .. ": tipos clave (1,12,2,4,14) se reenvian cada <= 15 s", keyOk)
-    local worst = 0
-    for _, t in ipairs(KEYS) do
-        local st, co = r.starts[t] or {}, r.completions[t] or {}
-        for i = 1, math.min(#st, #co) do
-            if co[i] - st[i] > worst then worst = co[i] - st[i] end
+    check(label .. ": tipos clave salen dentro de la ventana", (function()
+        for _, t in ipairs(KEYS) do
+            if r.starts[t] == nil or r.starts[t] > C.SHARE_SECONDS then return false end
         end
-    end
-    check(label .. ": tipos clave terminan <= 5 s desde que empiezan", worst <= 5, tostring(worst))
-    local heavy = r.starts[10] or {}
-    outln(string.format("  info  %s tipo 10 (pesado): %d envios, hueco maximo %.1f s", label, #heavy, maxGap(heavy)))
-    check(label .. ": tipo pesado (10) <= 60 s", #heavy >= 2 and maxGap(heavy) <= 60 + SLACK)
+        return true
+    end)())
+    check(label .. ": tipo 1 (personaje) completo antes que el 2", (r.completions[1] or 99) <= (r.starts[2] or 0) + 1)
+    check(label .. ": la ventana no pasa de 20 s", r.elapsed <= C.SHARE_SECONDS + STEP + 1e-9, tostring(r.elapsed))
+    outln(string.format("  info  %s: %d tramas, serializacion media %.3f ms, maxima %.3f ms",
+        label, r.frames, r.avg * 1000, r.max * 1000))
+    check(label .. ": serializacion media <= 1 ms por trama", r.avg <= 0.001, string.format("%.3f ms", r.avg * 1000))
 end
 
--- Base: sin PNJ.
-local base = simulate(0, 900)
-checkCadence("sin PNJ", base)
+-- Sin PNJ: la activacion envia los tipos clave.
+fillGame(0)
+local base = shareRun()
+checkShare("sin PNJ", base)
+check("sin PNJ: vuelve al reposo al acabar", not C.IsSharing())
 
--- Grande: 2000 PNJ.
-local big = simulate(2000, 900, 450)
-checkCadence("2000 PNJ", big)
-outln(string.format("  info  2000 PNJ: knowledge %d bytes en total", big.knowBytes))
-
--- Cobertura: cada PNJ llega en algun mensaje del tipo 9 (deltas o volcado).
-local all9 = {}
-for _, m in ipairs(big.msgs9) do all9[#all9 + 1] = m.s end
-local blob = table.concat(all9)
+-- 2000 PNJ: el conocimiento llega en varias activaciones (lo que cabe en cada ventana). Cuando
+-- una activacion ya no trae deltas, todos los PNJ han llegado al menos una vez.
+fillGame(2000)
+local seen, runs, firstRun = {}, 0, nil
+local lastRun
+repeat
+    runs = runs + 1
+    lastRun = shareRun()
+    if runs == 1 then
+        firstRun = lastRun
+        checkShare("2000 PNJ", lastRun)
+        check("2000 PNJ: el conocimiento sale como tipo 9 (delta)", #lastRun.msgs9 >= 1)
+    end
+    for _, m in ipairs(lastRun.msgs9) do
+        for id in string.gmatch(m, '"(%d+)":{') do seen[id] = true end
+    end
+until #lastRun.msgs9 == 0 or runs >= 12
 local missing = 0
 for i = 1, 2000 do
-    if not string.find(blob, '"' .. (1000 + i) .. '":', 1, true) then missing = missing + 1 end
+    if not seen[tostring(1000 + i)] then missing = missing + 1 end
 end
-check("2000 PNJ: todos llegan en mensajes del tipo 9", missing == 0, tostring(missing) .. " sin enviar")
+outln(string.format("  info  2000 PNJ: %d activaciones; %d bytes de conocimiento en la primera", runs, firstRun.bytes9))
+check("2000 PNJ: todos los PNJ llegan en las activaciones (sin faltantes)", missing == 0, tostring(missing) .. " faltan")
+check("2000 PNJ: la primera ventana no basta para todo (se reparte)", runs > 1)
+check("2000 PNJ: tras enviarlo todo, la activacion siguiente no reenvia deltas", #lastRun.msgs9 == 0)
 
--- Cambio: el PNJ modificado llega como delta en menos de 60 s.
-local changeOk, changeLag = false, nil
-for _, m in ipairs(big.msgs9) do
-    if m.t >= big.changedAt and string.find(m.s, "PNJ cambiado", 1, true) then
-        changeOk, changeLag = true, m.t - big.changedAt
-        break
-    end
-end
-check("cambio de un PNJ llega en <= 60 s (delta)", changeOk and changeLag <= 60, tostring(changeLag))
+-- Cambio de un PNJ entre activaciones: el delta trae solo ese PNJ.
+CompaneroWoWDB.knowledge.npcs[1005].name = "PNJ cambiado"
+local changed = shareRun()
+local deltaText = table.concat(changed.msgs9, "")
+check("cambio de un PNJ: hay delta", #changed.msgs9 >= 1)
+check("cambio de un PNJ: el delta trae el 1005", string.find(deltaText, '"1005":', 1, true) ~= nil)
+check("cambio de un PNJ: el delta no trae el 1500", string.find(deltaText, '"1500":', 1, true) == nil)
 
--- No se reenvia todo cada ciclo: en regimen, cada ventana de 15 s pesa una fraccion del volcado.
-local worstWin, sum9Late = 0, 0
-for w, bytes in pairs(big.bytes9Win) do
-    if w * 15 >= 400 then
-        sum9Late = sum9Late + bytes
-        if bytes > worstWin then worstWin = bytes end
-    end
-end
-outln(string.format("  info  2000 PNJ, regimen (>400 s): tipo 9 hasta %d bytes por 15 s y %d bytes en total (volcado = %d)",
-    worstWin, sum9Late, big.knowBytes))
-check("tipo 9 en regimen: cada ventana de 15 s < 25% del knowledge", worstWin < 0.25 * big.knowBytes)
-check("tipo 9 en regimen: menos de 1.5 volcados en 500 s", sum9Late < 1.5 * big.knowBytes)
-
--- Coste por tick con el knowledge grande (la revision reparte el trabajo en tandas). os.clock tiene
--- resolucion de ~1 ms en Windows: se da la media (sobre miles de ticks) y el maximo, no percentiles.
-local ticksOver1ms = 0
-for _, d in ipairs(big.dts) do if d >= 0.001 then ticksOver1ms = ticksOver1ms + 1 end end
-outln(string.format("  info  2000 PNJ: Tick medio %.1f us, maximo %.1f us, ticks >= 1 ms: %d de %d",
-    big.tickSum / big.ticks * 1e6, big.tickMax * 1e6, ticksOver1ms, big.ticks))
-check("2000 PNJ: Tick medio < 300 us", big.tickSum / big.ticks < 0.0003)
 
 -- ---------------------------------------------------------------------------
 print("(k) Medicion de coste por refresco (luajit, orientativa)")
@@ -577,7 +508,6 @@ do
     outln(string.format("  info  Session.Tick medio: %.1f us por tick (cada 5 s)", per * 1e6))
     check("coste de Session.Tick < 1 ms", per < 0.001)
 end
-check("coste medio del canal por refresco (0.2 s) < 1 ms", big.tickSum / big.ticks < 0.001)
 
 if failures > 0 then
     print("FAILED: " .. failures .. " check(s)")
