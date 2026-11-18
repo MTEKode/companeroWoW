@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -51,6 +52,9 @@ func loadSavedVariables(parent context.Context, path string, timeout time.Durati
 	if err != nil {
 		return nil, fmt.Errorf("evaluate %s: %w", path, err)
 	}
+	// Evaluating a SavedVariables file of a few MB makes hundreds of MB of Lua garbage, and the
+	// Go runtime keeps the peak as idle heap. Give it back now, so the app does not hold it.
+	debug.FreeOSMemory()
 	return &SavedVars{Raw: raw, ModTime: info.ModTime()}, nil
 }
 
@@ -207,10 +211,13 @@ type SVWatcher struct {
 	attempted bool
 	lastMod   time.Time
 	lastSize  int64
+	curPath   string // the file the data was read from; guarded by mu
 
-	mu      sync.RWMutex
-	current *SavedVars
-	lastErr error
+	mu       sync.RWMutex
+	current  *SavedVars
+	lastErr  error
+	lastUse  time.Time // when Current was last called or the file last loaded; guarded by mu
+	released bool      // the data was dropped by ReleaseIdle and is read again on demand; guarded by mu
 }
 
 // svResolveEvery is how often the file path is looked up again.
@@ -365,8 +372,11 @@ func (w *SVWatcher) Poll() error {
 	sv, err := LoadSavedVariables(path)
 	w.mu.Lock()
 	w.lastErr = err
+	w.curPath = path
 	if err == nil {
 		w.current = sv
+		w.released = false
+		w.lastUse = time.Now()
 	}
 	w.mu.Unlock()
 	if err != nil {
@@ -390,11 +400,64 @@ func (w *SVWatcher) publish(sv *SavedVars) {
 	}
 }
 
-// Current returns the last successfully loaded data, or nil if none.
+// Current returns the last successfully loaded data, or nil if none. Data dropped by
+// ReleaseIdle is read again from the file here, so the caller never sees the release.
 func (w *SVWatcher) Current() *SavedVars {
+	w.mu.Lock()
+	w.lastUse = time.Now()
+	cur, released, path := w.current, w.released, w.curPath
+	w.mu.Unlock()
+	if cur != nil || !released || path == "" {
+		return cur
+	}
+	return w.reload(path)
+}
+
+// reload reads the file again after ReleaseIdle. pollMu serializes it with Poll, so the two
+// never hold two copies of the data at once.
+func (w *SVWatcher) reload(path string) *SavedVars {
+	w.pollMu.Lock()
+	defer w.pollMu.Unlock()
+	w.mu.RLock()
+	cur := w.current
+	w.mu.RUnlock()
+	if cur != nil {
+		return cur
+	}
+	sv, err := LoadSavedVariables(path)
+	if err != nil {
+		w.mu.Lock()
+		w.lastErr = err
+		w.mu.Unlock()
+		return nil
+	}
+	w.mu.Lock()
+	w.current = sv
+	w.released = false
+	w.lastUse = time.Now()
+	w.mu.Unlock()
+	return sv
+}
+
+// ReleaseIdle drops the loaded data when nothing has used it for at least idle, so an idle
+// app does not keep the decoded SavedVariables tree in memory. It reports whether data was
+// dropped. The next Current call reads the file again.
+func (w *SVWatcher) ReleaseIdle(now time.Time, idle time.Duration) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.current == nil || now.Sub(w.lastUse) < idle {
+		return false
+	}
+	w.current = nil
+	w.released = true
+	return true
+}
+
+// Released reports whether the data is dropped and not loaded again yet.
+func (w *SVWatcher) Released() bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.current
+	return w.current == nil && w.released
 }
 
 // LastError returns the error of the most recent load attempt (nil on success).

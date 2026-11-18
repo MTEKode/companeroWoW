@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,7 @@ type options struct {
 	tray         bool
 	testTip      bool
 	exportFB     string
+	profileMem   string
 }
 
 func main() {
@@ -81,6 +83,7 @@ func main() {
 	flag.BoolVar(&o.tray, "tray", false, "arranca minimizado en la bandeja, sin mostrar el panel (lo usa el inicio con WoW)")
 	flag.BoolVar(&o.testTip, "test-tip", false, "con la ventana, envía un consejo de prueba por el mismo camino que los proactivos (globo de la bandeja o panel, según ajustes)")
 	flag.StringVar(&o.exportFB, "export-feedback", "", "escribe las valoraciones 👍/👎 en este archivo .json y sale")
+	flag.StringVar(&o.profileMem, "profile-mem", "", "escribe un perfil de memoria (heap, pprof) en este archivo tras 30 s de arranque, y un resumen en <archivo>.txt")
 	flag.Parse()
 	os.Exit(run(o))
 }
@@ -132,21 +135,26 @@ func run(o options) int {
 	defer release()
 
 	log.Printf("Compañero WoW %s iniciando", version)
-	return runApp(cfg, dir, appStart{setup: created || o.setup, tray: o.tray, testTip: o.testTip})
+	return runApp(cfg, dir, appStart{setup: created || o.setup, tray: o.tray, testTip: o.testTip, profileMem: o.profileMem})
 }
 
 // appStart is how the app was started: the first-run wizard opens when setup is set, and
 // tray keeps the panel hidden.
 type appStart struct {
-	setup   bool
-	tray    bool
-	testTip bool
+	setup      bool
+	tray       bool
+	testTip    bool
+	profileMem string // --profile-mem: where the heap profile is written, "" for none
 }
 
 // runApp wires the components and runs the overlay until the user quits.
 func runApp(cfg *config.Config, dir string, start appStart) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	debug.SetGCPercent(gcPercent)
+	if start.profileMem != "" {
+		startMemProfile(ctx, start.profileMem)
+	}
 
 	// The companion's skill is written where each provider reads it, and again before each
 	// question if a file goes missing or changes.
@@ -233,12 +241,15 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	pace := gamedata.NewPaceSampler(time.Now)
 	reader.Subscribe(pace.Observe)
 	g.SetPace(pace)
+	// Idle state for the memory release (see idle.go): it follows the reader active state set below.
+	idle := newIdleTracker(time.Now)
 
 	// The controller turns the panel and the questions into the reader's active state. Its
 	// transitions switch the reader, check the SavedVariables file when the app becomes active,
 	// and keep the last data on disk when it goes inactive.
 	ctl := ondemand.NewController(time.Now, onDemandAfter, func(on bool) {
 		reader.SetActive(mode.isContinuous() || on)
+		idle.SetActive(mode.isContinuous() || on)
 		if mode.isContinuous() {
 			return
 		}
@@ -299,6 +310,12 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 			log.Printf("inicio con WoW: %v", err)
 		}
 	}
+
+	// Idle checks: after a minute without the panel the store cache shrinks and the heap goes
+	// back to the OS; the SavedVariables tree is dropped after five unused minutes and read
+	// again on demand.
+	go runIdleRelease(ctx, idle, idleCheckEvery, releaseStoreCache(st.ShrinkMemory),
+		func(now time.Time) bool { return watcher.ReleaseIdle(now, svIdleAfter) })
 
 	backend := &onDemandBackend{
 		Assistant: asst,
