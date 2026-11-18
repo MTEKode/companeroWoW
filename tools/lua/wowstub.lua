@@ -1126,4 +1126,250 @@ function M.uninstallNative()
     M.state.native = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Hoja de personaje (Sheet.lua): stats, armadura, combate, resistencias, forma, talentos
+-- (C_ClassTalents / C_Traits), hechizos (C_Spell) y tooltip oculto de escaneo.
+-- M.SHEET guarda los valores (M.resetSheet() los restaura). M.SHEET.secret[API] = true hace que la
+-- API devuelva valores secretos. M.SHEET.descSecret[spellID] = true: descripcion secreta.
+-- M.sheetFrames: frames creados con CreateFrame("Frame") (para comprobar eventos registrados).
+-- ---------------------------------------------------------------------------
+M.SHEET = nil
+M.sheetFrames = {}
+
+local SHEET_SPELL_NAMES = {
+    [772] = "Rend", [100] = "Charge", [2457] = "Battle Stance", [12294] = "Mortal Strike",
+    [12286] = "Improved Rend", [12328] = "Sweeping Strikes", [12320] = "Cruelty", [12975] = "Last Stand",
+}
+local SHEET_SUBCLASS = { [4] = "One-Handed Maces", [7] = "One-Handed Swords", [8] = "Two-Handed Swords" }
+
+local function newSheetState()
+    return {
+        level = 19,
+        className = "Warrior", classFile = "WARRIOR", raceName = "Human", raceFile = "Human",
+        base = { 60, 40, 55, 20, 30 }, total = { 78, 52, 70, 20, 30 },
+        health = 900, healthMax = 900, power = 0, powerMax = 100, powerToken = "RAGE",
+        armor = { 620, 620 },                      -- UnitArmor: base, effective (real y bonus = 620, 0)
+        ap = { 180, 10, 0 }, rap = { 30, 0, 0 },   -- base, posBuff, negBuff
+        crit = 6.2, rcrit = 4.0, hit = 0, expertise = 0,
+        mh = { 30.1, 45.4 }, oh = { 0, 0 }, speed = 2.6, offSpeed = nil,
+        ranged = { speed = 2.9, min = 10, max = 20 },
+        dodge = 5.1, parry = 5.0, block = 0, shieldBlock = 0,
+        spellCrit = { [2] = 0, [3] = 0, [4] = 0, [5] = 0, [6] = 0, [7] = 0 },
+        spellPower = { [3] = 45 }, spellHit = 0, haste = 0,
+        regen = { 0, 0 }, resist = {},
+        form = 2, formSpell = 2457,
+        skills = { { name = "Two-Handed Swords", rank = 95, max = 95 },
+                   { name = "Weapon Skills", header = true },
+                   { name = "Defense", rank = 95, max = 95 } },
+        mhItem = "item:19351", ohItem = nil, weaponSub = 8,
+        configID = 999, trees = { 101, 102, 103 }, treeNames = { [101] = "Arms", [102] = "Fury", [103] = "Protection" },
+        treeNodes = { [101] = { 1, 2, 3 }, [102] = { 10 }, [103] = { 20 } },
+        -- posX/posY en pixeles; ranks = ranksPurchased; active = entryID activo (nil -> sin activeEntry)
+        nodes = {
+            [1] = { posX = 0, posY = 0, ranks = 1, max = 1, entries = { 1 }, active = 1 },
+            [2] = { posX = 80, posY = 0, ranks = 2, max = 3, entries = { 2 }, active = 2 },
+            [3] = { posX = 0, posY = 40, ranks = 0, max = 1, entries = { 3 }, active = nil },
+            [10] = { posX = 0, posY = 0, ranks = 0, max = 1, entries = { 10 }, active = nil },
+            [20] = { posX = 0, posY = 0, ranks = 2, max = 2, entries = { 20 }, active = 20 },
+        },
+        entries = { [1] = 1, [2] = 2, [3] = 3, [10] = 10, [20] = 20 },  -- entryID -> definitionID
+        defs = { [1] = { spellID = 12294 }, [2] = { spellID = 12286 }, [3] = { spellID = 12328 },
+                 [10] = { spellID = 12320 }, [20] = { spellID = 12975 } },
+        unspent = 1,
+        spellInfo = { [772] = { castTime = 0, maxRange = 5 }, [100] = { castTime = 0, maxRange = 25 },
+                      [12294] = { castTime = 0, maxRange = 5 } },
+        powerCost = { [772] = { { name = "RAGE", cost = 10 } }, [12294] = { { name = "RAGE", cost = 30 } } },
+        cooldownMs = { [772] = 0, [100] = 15000, [12294] = 6000 },
+        desc = { [772] = "Wounds the target causing them to bleed for 63 damage over 12 sec." },
+        descSecret = {},
+        tipLines = { [12294] = { "Mortal Strike", "Deals 160% weapon damage.", "Cost: 30 Rage" } },
+        tipCalls = {},
+        secret = {},
+    }
+end
+
+-- Restaura los datos de la hoja (en la misma tabla: las APIs instaladas la referencian).
+function M.resetSheet()
+    local cur = M.SHEET
+    for k in pairs(cur) do cur[k] = nil end
+    for k, v in pairs(newSheetState()) do cur[k] = v end
+end
+
+local sheetSaved = nil
+
+-- Crea el tooltip oculto "name" con SetSpellByID que expone las lineas de M.SHEET.tipLines.
+local function makeTip(name)
+    local tip = {}
+    function tip:SetOwner() end
+    function tip:ClearLines() end
+    function tip:SetSpellByID(id)
+        local SH = M.SHEET
+        SH.tipCalls[#SH.tipCalls + 1] = id
+        local lines = SH.tipLines[id] or {}
+        for i = 1, 40 do
+            local t = lines[i]
+            if t then
+                _G[name .. "TextLeft" .. i] = { GetText = function() return t end }
+            else
+                _G[name .. "TextLeft" .. i] = nil
+            end
+        end
+    end
+    return tip
+end
+
+function M.installSheet()
+    if M.SHEET == nil then M.SHEET = newSheetState() end
+    local SH = M.SHEET
+    sheetSaved = sheetSaved or { CreateFrame = _G.CreateFrame, C_Spell = _G.C_Spell }
+    _G.DEFENSE = "Defense"
+    _G.issecretvalue = function(v) return type(v) == "table" and SECRET[v] == true end
+
+    local function val(api, v)
+        if SH.secret[api] then return M.secret(v) end
+        return v
+    end
+
+    _G.CreateFrame = function(kind, name)
+        if kind == "GameTooltip" then return makeTip(name) end
+        local f = {}
+        f.events = {}
+        function f:RegisterEvent(ev) self.events[#self.events + 1] = ev end
+        function f:SetScript(n, fn) if n == "OnEvent" then self.onEvent = fn end end
+        M.sheetFrames[#M.sheetFrames + 1] = f
+        return f
+    end
+
+    _G.UnitClass = function() return SH.className, SH.classFile end
+    _G.UnitRace = function() return SH.raceName, SH.raceFile end
+    _G.UnitStat = function(_, i)
+        local b, t = SH.base[i], SH.total[i]
+        return val("UnitStat", b), val("UnitStat", t)
+    end
+    _G.UnitHealth = function() return val("UnitHealth", SH.health) end
+    _G.UnitHealthMax = function() return SH.healthMax end
+    _G.UnitPower = function() return val("UnitPower", SH.power) end
+    _G.UnitPowerMax = function() return SH.powerMax end
+    _G.UnitPowerType = function() return 1, SH.powerToken end
+    _G.UnitArmor = function()
+        return val("UnitArmor", SH.armor[1]), val("UnitArmor", SH.armor[2]), SH.armor[1], 0
+    end
+    _G.UnitAttackPower = function() return SH.ap[1], SH.ap[2], SH.ap[3] end
+    _G.UnitRangedAttackPower = function() return SH.rap[1], SH.rap[2], SH.rap[3] end
+    _G.GetCritChance = function() return SH.crit end
+    _G.GetRangedCritChance = function() return SH.rcrit end
+    _G.GetHitModifier = function() return SH.hit end
+    _G.GetExpertisePercent = function() return SH.expertise end
+    _G.UnitDamage = function() return SH.mh[1], SH.mh[2], SH.oh[1], SH.oh[2], 0, 0, 1 end
+    _G.UnitAttackSpeed = function() return SH.speed, SH.offSpeed end
+    _G.UnitRangedDamage = function() return SH.ranged.speed, SH.ranged.min, SH.ranged.max, 0, 0, 1 end
+    _G.GetDodgeChance = function() return SH.dodge end
+    _G.GetParryChance = function() return SH.parry end
+    _G.GetBlockChance = function() return SH.block end
+    _G.GetShieldBlock = function() return SH.shieldBlock end
+    _G.GetSpellCritChance = function(school) rec("GetSpellCritChance", school); return SH.spellCrit[school] end
+    _G.GetSpellBonusDamage = function(school) rec("GetSpellBonusDamage", school); return SH.spellPower[school] end
+    _G.GetSpellHitModifier = function() return SH.spellHit end
+    _G.GetHaste = function() return SH.haste end
+    _G.GetManaRegen = function() return SH.regen[1], SH.regen[2] end
+    _G.UnitResistance = function(_, idx) return SH.resist[idx] or 0 end
+    _G.GetShapeshiftForm = function() return SH.form end
+    _G.GetShapeshiftFormInfo = function(i)
+        if i == SH.form and i ~= 0 then return "icon", true, true, SH.formSpell end
+        return nil
+    end
+    _G.GetNumSkillLines = function() return #SH.skills end
+    _G.GetSkillLineInfo = function(i)
+        local s = SH.skills[i]
+        if not s then return nil end
+        return s.name, s.header == true, false, s.rank, 0, 0, s.max
+    end
+    _G.GetItemSubClassInfo = function(cls, sub)
+        if cls ~= 2 then return nil end
+        return SHEET_SUBCLASS[sub]
+    end
+    _G.GetInventoryItemLink = function(_, slot)
+        if slot == 16 then return SH.mhItem end
+        if slot == 17 then return SH.ohItem end
+        return nil
+    end
+    _G.C_Item = {
+        GetItemInfoInstant = function(link)
+            if link == SH.mhItem then
+                return 19351, "Weapon", SHEET_SUBCLASS[SH.weaponSub], "INVTYPE_2HWEAPON", 0, 2, SH.weaponSub
+            end
+            return nil
+        end,
+    }
+
+    _G.C_ClassTalents = { GetActiveConfigID = function() return SH.configID end }
+    _G.C_Traits = {
+        GetConfigInfo = function(id)
+            if id == SH.configID then return { treeIDs = SH.trees } end
+            return nil
+        end,
+        GetTreeNodes = function(tid) return SH.treeNodes[tid] end,
+        GetTreeInfo = function(_, tid)
+            local n = SH.treeNames[tid]
+            if n then return { name = n } end
+            return nil
+        end,
+        GetNodeInfo = function(_, nid)
+            local n = SH.nodes[nid]
+            if not n then return nil end
+            return {
+                posX = n.posX, posY = n.posY, ranksPurchased = n.ranks, maxRanks = n.max,
+                entryIDs = n.entries,
+                activeEntry = n.active and { entryID = n.active, rank = n.ranks } or nil,
+            }
+        end,
+        GetEntryInfo = function(_, eid)
+            local d = SH.entries[eid]
+            if d then return { definitionID = d } end
+            return nil
+        end,
+        GetDefinitionInfo = function(did) return SH.defs[did] end,
+    }
+    _G.UnitCharacterPoints = function() return SH.unspent end
+
+    _G.C_Spell = _G.C_Spell or {}
+    _G.C_Spell.GetSpellName = function(id) return SHEET_SPELL_NAMES[id] or M.SPELL_NAMES[id] end
+    _G.C_Spell.GetSpellInfo = function(id)
+        local i = SH.spellInfo[id]
+        if not i then return nil end
+        return { name = SHEET_SPELL_NAMES[id], castTime = i.castTime, maxRange = i.maxRange, spellID = id }
+    end
+    _G.C_Spell.GetSpellPowerCost = function(id) return SH.powerCost[id] end
+    _G.C_Spell.GetSpellBaseCooldown = function(id)
+        local c = SH.cooldownMs[id]
+        if c == nil then return nil end
+        return c, 1500
+    end
+    _G.C_Spell.GetSpellDescription = function(id)
+        local d = SH.desc[id]
+        if SH.descSecret[id] then return M.secret(d) end
+        return d
+    end
+end
+
+function M.uninstallSheet()
+    local saved = sheetSaved or {}
+    _G.CreateFrame = saved.CreateFrame
+    _G.C_Spell = saved.C_Spell
+    sheetSaved = nil
+    for _, name in ipairs({ "UnitClass", "UnitRace", "UnitStat", "UnitHealth", "UnitHealthMax", "UnitPower",
+                            "UnitPowerMax", "UnitPowerType", "UnitArmor", "UnitAttackPower",
+                            "UnitRangedAttackPower", "GetCritChance", "GetRangedCritChance", "GetHitModifier",
+                            "GetExpertisePercent", "UnitDamage", "UnitAttackSpeed", "UnitRangedDamage",
+                            "GetDodgeChance", "GetParryChance", "GetBlockChance", "GetShieldBlock",
+                            "GetSpellCritChance", "GetSpellBonusDamage", "GetSpellHitModifier", "GetHaste",
+                            "GetManaRegen", "UnitResistance", "GetShapeshiftForm", "GetShapeshiftFormInfo",
+                            "GetNumSkillLines", "GetSkillLineInfo", "GetItemSubClassInfo", "GetInventoryItemLink",
+                            "C_Item", "C_ClassTalents", "C_Traits", "UnitCharacterPoints", "DEFENSE",
+                            "issecretvalue" }) do
+        _G[name] = nil
+    end
+    M.SHEET = nil
+end
+
 return M

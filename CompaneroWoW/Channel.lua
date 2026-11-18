@@ -35,7 +35,7 @@ C.HEAVY_EVERY = 3
 C.MAX_MESSAGE_BYTES = 98304 -- tope de cada mensaje JSON (mas grande -> no se envia)
 
 -- Prioridad de envio de los tipos (de mayor a menor).
-C.PRIORITY = { 2, 1, 4, 3, 5, 7, 8, 6, 9, 11, 10 }
+C.PRIORITY = { 2, 1, 4, 12, 3, 5, 7, 8, 6, 9, 11, 10 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 C.RANK = RANK
@@ -312,6 +312,17 @@ C.TYPES = {
             return { questie = c.questie, questWindow = c.questWindow, gearCandidates = c.gearCandidates, dungeons = c.dungeons }
         end,
     },
+    [12] = {
+        -- hoja de personaje (Sheet.lua). manual: no lo recalcula el planificador (ni consume turnos);
+        -- Sheet.lua lo envia con C.Send(12) al escribir characters[key].sheet. El carrusel si lo reenvia.
+        name = "sheet", manual = true, period = 60, minGap = 1,
+        events = {},
+        build = function(c)
+            local s = c.sheet
+            if type(s) ~= "table" then return nil end
+            return s
+        end,
+    },
     [11] = {
         name = "meta", period = 60, minGap = 5,
         events = { "PLAYER_ENTERING_WORLD" },
@@ -356,7 +367,9 @@ local function ensureScheduler()
 end
 
 local function markAll()
-    for t in pairs(C.TYPES) do S.dirty[t] = true end
+    for t, def in pairs(C.TYPES) do
+        if not def.manual then S.dirty[t] = true end
+    end
 end
 
 local function markTypes(list)
@@ -481,7 +494,7 @@ local function refreshOne(now)
     for _, t in ipairs(C.PRIORITY) do
         local def = C.TYPES[t]
         local gap = now - (S.lastBuilt[t] or -math.huge)
-        if gap >= def.minGap then
+        if not def.manual and gap >= def.minGap then
             if S.dirty[t] or now - (S.lastCheck[t] or -math.huge) >= def.period then
                 due = t
                 break
@@ -507,7 +520,17 @@ local function carouselStep(now, sched)
     if S.carouselAt and now - S.carouselAt < C.CAROUSEL_SEC then return end
     S.carouselAt = now
     S.carouselTodo = {}
-    for i, t in ipairs(C.PRIORITY) do S.carouselTodo[i] = t end
+    for _, t in ipairs(C.PRIORITY) do
+        if not C.TYPES[t].manual then S.carouselTodo[#S.carouselTodo + 1] = t end
+    end
+    -- Tipos manuales (la hoja) solo si tienen datos: no gastan turnos del carrusel en vacio.
+    local c = currentChar()
+    for _, t in ipairs(C.PRIORITY) do
+        local def = C.TYPES[t]
+        if def.manual and c and def.build(c, CompaneroWoWDB) ~= nil then
+            S.carouselTodo[#S.carouselTodo + 1] = t
+        end
+    end
 end
 
 -- Llamar en cada refresco de la franja (cada 0.2 s). N = bloques de la fila.
@@ -521,6 +544,16 @@ function C.Tick(now, N)
         carouselStep(now, sched)
     end
     return sched:nextChunk(C.Capacity(N), S.frame)
+end
+
+-- Encola ahora el tipo manual t (lo usa Sheet.lua para el tipo 12) con su JSON actual.
+-- false si no hay datos o no se puede codificar.
+function C.Send(t)
+    local json = fullJSON(t)
+    if not json then return false end
+    ensureScheduler():enqueue(t, json)
+    S.sentCount = S.sentCount + 1
+    return true
 end
 
 -- Pide reenviar todo (lo llama /compa sync, antes de recargar).
