@@ -7,9 +7,10 @@ local Call, Num, Clean = ns.Call, ns.Num, ns.Clean
 ns.VERSION = "0.1.0"
 ns.SCHEMA = 1
 
-local SNAPSHOT_THROTTLE = 5  -- segundos
-local PERIODIC_SNAPSHOT = 60 -- segundos entre snapshots periodicos (dentro del mundo, fuera de combate)
+local SNAPSHOT_THROTTLE = 120 -- segundos minimos entre dos snapshots (fuera de combate)
+local PERIODIC_SNAPSHOT = 120  -- segundos entre snapshots periodicos (dentro del mundo, fuera de combate)
 local lastSnapshot = nil     -- tiempo (GetTime) del ultimo snapshot
+local lastHashes = {}        -- [claveDelPersonaje][campo] = hash del ultimo valor escrito en SavedVariables
 local timerPending = false   -- hay un snapshot diferido por throttle
 local combatPending = false  -- hay un snapshot diferido por combate
 local loading = false        -- true entre PLAYER_LEAVING_WORLD / PLAYER_LOGOUT y PLAYER_ENTERING_WORLD
@@ -140,6 +141,13 @@ local function mergeProtected(c, fresh, key, fullyIn)
     end
 end
 
+-- Hash del valor codificado en JSON (nil si no se puede codificar: entonces siempre se escribe).
+local function valueHash(v)
+    local json = ns.Json and ns.Json.Encode(v)
+    if not json then return nil end
+    return ns.HashText(json)
+end
+
 -- Ejecuta todos los collectors y guarda el resultado en characters[CharKey()].
 -- Un collector que falla conserva el dato anterior. Fuera del mundo (carga/salida) no se
 -- escriben campos vacios sobre datos previos. Devuelve true si se ejecuto.
@@ -164,8 +172,18 @@ function ns.SnapshotAll()
         if value ~= nil then fresh[entry[1]] = value end
     end
     mergeProtected(c, fresh, key, fullyIn)
+    local hashes = lastHashes[key] or {}
+    lastHashes[key] = hashes
     for _, entry in ipairs(FIELDS) do
-        if fresh[entry[1]] ~= nil then c[entry[1]] = fresh[entry[1]] end
+        local name, v = entry[1], fresh[entry[1]]
+        if v ~= nil then
+            -- Campo sin cambios desde la ultima escritura (mismo hash): no se reescribe en SavedVariables.
+            local h = valueHash(v)
+            if not (h and h == hashes[name] and c[name] ~= nil) then
+                c[name] = v
+                hashes[name] = h
+            end
+        end
     end
     if fullyIn then
         c.updatedAt = ns.Now()
@@ -289,19 +307,25 @@ end
 local function showHelp()
     say("Comandos:")
     say("  /compa sync - guarda los datos (misiones del juego, Questie si está, WhatsTraining, SkillUpForever, equipo) y recarga la interfaz (escribe SavedVariables)")
-    say("  /compa strip on|off - activa o desactiva la franja de píxeles")
+    say("  /compa enviar - comparte los datos durante 20 s (igual que la tecla Compañero: compartir datos)")
+    say("  /compa strip on|off - on: compartir con la tecla (por defecto); off: no compartir nunca")
     say("  /compa estado - muestra el estado actual")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
     say("  /compa marca - marca el siguiente paso de tu misión (con las guías del juego; Questie si está instalado)")
     say("  /compa marca borrar - quita la marca de Compañero")
+    say("  /compa sesion - resumen de la sesión actual (XP/h, siguiente nivel, misiones, enemigos, muertes)")
     say("  /compa barras - resumen de tus barras de acción")
     say("  /compa barras aplicar <slot>:<spellID>,... - coloca hechizos conocidos (fuera de combate, con copia de seguridad)")
     say("  /compa barras deshacer - restaura la última copia de seguridad de barras")
+    say("  /compa macro lista - cuenta y nombres de tus macros")
+    say("  /compa macro crear <nombre>|<icono>|<cuerpo> - crea (o actualiza) una macro de personaje, fuera de combate")
+    say("  /compa macro borrar <nombre> | deshacer | barra <nombre> <slot> - borra, deshace o pone una macro en una ranura")
 end
 
 local function showStatus()
     local db = ns.EnsureDB()
+    if ns.Share then say(ns.Share.StatusLine()) end
     local mapID, x, y = ns.GetPlayerPosition()
     local mapName = (mapID and db.maps[mapID]) or "desconocido"
     local coords = (x and y) and string.format("%.1f, %.1f", x * 100, y * 100) or "?"
@@ -317,7 +341,7 @@ local function showStatus()
     for _ in pairs(db.knowledge.quests) do nQuests = nQuests + 1 end
     for _ in pairs(db.knowledge.npcs) do nNpcs = nNpcs + 1 end
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
-    say("Franja de píxeles: " .. (ns.IsStripOn() and "activa" or "inactiva"))
+    say("Compartir datos: " .. (ns.IsStripOn() and "activado" or "desactivado (/compa strip on)"))
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
     if ns.Native and ns.Native.SourcesStatusLine then say(ns.Native.SourcesStatusLine()) end
     if ns.GearStatusLines then
@@ -330,6 +354,8 @@ local function showStatus()
         for _, line in ipairs(ns.CombatStatusLines()) do say(line) end
     end
     if ns.BarsStatusLine then say(ns.BarsStatusLine()) end
+    if ns.Session then say(ns.Session.StatusLine()) end
+    if ns.MacrosStatusLine then say(ns.MacrosStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
@@ -356,25 +382,35 @@ local function handleSlash(msg)
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
+        if ns.ExportMacrosNow then ns.ExportMacrosNow() end -- macros de cuenta y personaje (Macros.lua)
         if ns.ExportSheetNow then ns.ExportSheetNow() end -- hoja de personaje y hechizos (Sheet.lua)
         ns.SnapshotAll()
-        if ns.Channel then ns.Channel.ForceCarousel() end -- canal en vivo: reenvia todo al cargar la app
         say("Datos guardados. Recargando la interfaz...")
         ns.Call("ReloadUI")
+    elseif cmd == "enviar" then
+        if ns.Share then ns.Share.Command() else say("Compartir no disponible.") end
     elseif cmd == "marca" then
         if ns.Marks then ns.Marks.Command(raw) else say("Marcas no disponibles.") end
     elseif cmd == "strip" then
         if rest == "on" then
             ns.SetStripEnabled(true)
-            say("Franja de píxeles activada.")
+            say("Compartir datos: activado (con la tecla o /compa enviar).")
         elseif rest == "off" then
             ns.SetStripEnabled(false)
-            say("Franja de píxeles desactivada.")
+            say("Compartir datos: desactivado. No se enviará nada, tampoco con la tecla.")
         else
             say("Uso: /compa strip on|off")
         end
     elseif cmd == "barras" then
         if ns.Bars then ns.Bars.Command(raw) else say("Barras no disponibles.") end
+    elseif cmd == "sesion" then
+        if ns.Session then
+            for _, line in ipairs(ns.Session.SummaryLines()) do say(line) end
+        else
+            say("Sesión no disponible.")
+        end
+    elseif cmd == "macro" then
+        if ns.Macros then ns.Macros.Command(raw) else say("Macros no disponibles.") end
     elseif cmd == "estado" then
         showStatus()
     else

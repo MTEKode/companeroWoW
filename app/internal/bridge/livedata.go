@@ -276,7 +276,7 @@ type TypeFreshness struct {
 func (c *Channel) Freshness(now time.Time) []TypeFreshness {
 	all := c.Data.All()
 	var out []TypeFreshness
-	for t := uint8(1); t <= MsgMeta; t++ {
+	for t := uint8(1); t <= MsgSession; t++ {
 		it, ok := all[t]
 		if !ok {
 			continue

@@ -19,7 +19,11 @@ Integrations.lua
 Marks.lua
 Bridge.lua
 Channel.lua
+Share.lua
 Sheet.lua
 Events.lua
 Combat.lua
+Session.lua
 Bars.lua
+Macros.lua
+Bindings.xml

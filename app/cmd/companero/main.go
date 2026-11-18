@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
@@ -24,6 +23,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
+	"github.com/MTEKode/companeroWoW/app/internal/ondemand"
 	"github.com/MTEKode/companeroWoW/app/internal/session"
 	"github.com/MTEKode/companeroWoW/app/internal/skill"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
@@ -181,28 +181,74 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		<-maintDone
 	}()
 
+	// The mode decides when the game is read. On demand (the default) the reader is idle until the
+	// panel opens or a question is asked, and the SavedVariables file is checked when the app
+	// becomes active; the session then comes from the addon (see internal/ondemand).
+	mode := newModeGate(cfg)
+	onDemand := cfg.OnDemand()
 	reader := bridge.NewReader(cfg.PixelPoll())
+	if onDemand {
+		reader.SetActive(false)
+	}
 	// The watcher looks the file up until it exists, so WoW set up or /compa sync run
-	// after the app started are picked up without a restart.
+	// after the app started are picked up without a restart. On demand it is paused: it
+	// reads the file only when asked (see gamedata.Service.SetOnDemand).
 	watcher := bridge.NewSVWatcherFunc(cfg.SavedVariablesPath, 0)
 	g := gamedata.NewService(reader, watcher, st)
+	g.SetOnDemand(onDemand)
+	cachePath := filepath.Join(dir, ondemand.CacheFile)
+	if onDemand {
+		// The last known data is loaded, so that an answer after a restart has it (with its age).
+		if n, err := ondemand.LoadCache(cachePath, reader.Channel().Data); err != nil {
+			log.Printf("caché de datos: %v", err)
+		} else if n > 0 {
+			log.Printf("caché de datos: %d mensajes del último uso", n)
+		}
+	}
 	g.Start(ctx)
 	// A session left open by an earlier run (a crash) ends at its last data. The tracker
 	// then follows every read of the bridge and is saved in the store; it ends after ten
-	// minutes without data, and Close ends it when the app exits.
+	// minutes without data, and Close ends it when the app exits. In the on-demand mode the
+	// tracker follows nothing: the addon keeps the session.
 	if n, err := st.CloseOpenSessions(); err != nil {
 		log.Printf("sesiones: %v", err)
 	} else if n > 0 {
 		log.Printf("sesiones: cerradas %d que quedaron abiertas", n)
 	}
 	sessions := session.NewTracker(time.Now, st)
-	reader.Subscribe(sessions.Observe)
+	reader.Subscribe(func(ls bridge.LiveState) {
+		if mode.isContinuous() {
+			sessions.Observe(ls)
+		}
+	})
 	g.SetSessions(sessions)
+	var sessionsRun sync.Once
+	startSessions := func() {
+		sessionsRun.Do(func() { go sessions.Run(ctx) })
+	}
+	if !onDemand {
+		startSessions()
+	}
 	// The leveling pace (ritmo_subida, valor_misiones) keeps its own live samples.
 	pace := gamedata.NewPaceSampler(time.Now)
 	reader.Subscribe(pace.Observe)
 	g.SetPace(pace)
-	go sessions.Run(ctx)
+
+	// The controller turns the panel and the questions into the reader's active state. Its
+	// transitions switch the reader, check the SavedVariables file when the app becomes active,
+	// and keep the last data on disk when it goes inactive.
+	ctl := ondemand.NewController(time.Now, onDemandAfter, func(on bool) {
+		reader.SetActive(mode.isContinuous() || on)
+		if mode.isContinuous() {
+			return
+		}
+		if on {
+			go refreshSavedVariables(g)
+		}
+		saveOnDemandState(dir, reader, mode.modeName(), on)
+	})
+	// The state file says what runs now: active for the continuous mode, idle at rest otherwise.
+	saveOnDemandState(dir, reader, mode.modeName(), !onDemand)
 
 	ws := websearch.New(cfg.WebSources, st)
 	// capturar_pantalla also saves each capture where the CLI providers can read it.
@@ -232,11 +278,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	providers := availableProviders(providerReport(cfg, dir))
 
 	tips := make(chan assistant.Tip, tipQueueSize)
-	// The tip loop always runs; the gate drops the events while the tips are off, so the
-	// setting takes effect at once when the settings screen changes it.
-	var tipsOn atomic.Bool
-	tipsOn.Store(cfg.TipsMode != config.TipsOff)
-	events := assistant.Gate(ctx, reader.Events(), tipsOn.Load)
+	// The tip loop always runs; the gate drops the events while the tips are off (always off on
+	// demand), so the setting takes effect at once when the settings screen changes it.
+	events := assistant.Gate(ctx, reader.Events(), mode.tipsOn)
 	go asst.RunProactive(ctx, events, func(t assistant.Tip) {
 		select {
 		case tips <- t:
@@ -256,21 +300,50 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		}
 	}
 
+	backend := &onDemandBackend{
+		Assistant: asst,
+		ctl:       ctl,
+		mode:      mode,
+		waiter:    &ondemand.Waiter{Feed: ondemand.ReaderFeed{R: reader}},
+		g:         g,
+		wait:      cfg.OnDemandWait(),
+	}
 	uiErr := ui.Run(ui.Options{
 		Hotkey:       cfg.Hotkey,
 		HotkeyMethod: cfg.HotkeyMethod,
-		ActivateLive: func() { g.ActivateLive(time.Now()) },
 		StatePath:    filepath.Join(dir, "window.json"),
 		Avoid:        avoidStrip,
-		Backend:      asst,
+		Backend:      backend,
 		Tips:         tips,
-		TipsModeChanged: func(mode string) {
-			tipsOn.Store(mode != config.TipsOff)
+		TipsModeChanged: func(m string) {
+			mode.setTips(m)
+		},
+		// The settings screen switches the mode at once: the reader, the watcher and the tracker
+		// follow it. Leaving the on-demand mode keeps the reader on while the panel is open.
+		ModeChanged: func(m string) {
+			continuous := m == config.ModeContinuous
+			mode.setContinuous(continuous)
+			g.SetOnDemand(!continuous)
+			if continuous {
+				startSessions()
+			}
+			reader.SetActive(continuous || ctl.Active())
+			if !continuous {
+				saveOnDemandState(dir, reader, mode.modeName(), ctl.Active())
+			}
+		},
+		PanelVisibility: func(visible bool) {
+			if visible {
+				ctl.PanelShown()
+			} else {
+				ctl.PanelHidden()
+			}
 		},
 		AnswerSettingsChanged: asst.SetAnswerSettings,
 		Status: func() ui.Status {
 			s := buildStatus(g, providers, watcher, mcpErrs.get())
 			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
+			s.Idle = !mode.isContinuous() && !ctl.Active()
 			return s
 		},
 		Config:     *cfg,
@@ -286,8 +359,12 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		ExeDir:      executableDir(),
 	})
 
-	// The session ends with the app; it is saved before the store closes.
+	// The session ends with the app; it is saved before the store closes. On demand, the last
+	// game data is kept for the next start.
 	sessions.Close()
+	if !mode.isContinuous() {
+		saveOnDemandState(dir, reader, mode.modeName(), false)
+	}
 
 	// Graceful shutdown: stop the MCP server, wait for it briefly, then the store closes.
 	cancel()
@@ -480,9 +557,17 @@ type diagReport struct {
 	MCPPort             int            `json:"mcpPort"`
 	Hotkey              string         `json:"hotkey"`
 	Proactive           bool           `json:"proactive"`
-	SkillVersion        string         `json:"skillVersion"`
-	SkillInstalled      bool           `json:"skillInstalled"`
-	Channel             *channelDiag   `json:"channel,omitempty"`
+	// Mode is how the game is read (config.ModeOnDemand or config.ModeContinuous); TipsEffective
+	// is the tips mode in use (off on demand).
+	Mode          string `json:"mode"`
+	TipsEffective string `json:"tipsEffective"`
+	// RunningApp is the state the running app wrote at its last transition (runtime.json): its
+	// active state and the captures it had made. Absent when no app has written one.
+	RunningApp      *ondemand.RuntimeState `json:"runningApp,omitempty"`
+	RunningAppError string                 `json:"runningAppError,omitempty"`
+	SkillVersion    string                 `json:"skillVersion"`
+	SkillInstalled  bool                   `json:"skillInstalled"`
+	Channel         *channelDiag           `json:"channel,omitempty"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -498,6 +583,8 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		MCPPort:           cfg.MCPPort,
 		Hotkey:            cfg.Hotkey,
 		Proactive:         cfg.Proactive,
+		Mode:              cfg.Mode,
+		TipsEffective:     cfg.EffectiveTipsMode(),
 		SavedVariablesAge: -1,
 		SkillVersion:      skill.Version(),
 		SkillInstalled:    skill.Installed(dir),
@@ -517,6 +604,11 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 		} else {
 			rep.SavedVariablesError = err.Error()
 		}
+	}
+	if st, ok, err := ondemand.ReadRuntime(filepath.Join(dir, ondemand.RuntimeFile)); err != nil {
+		rep.RunningAppError = err.Error()
+	} else if ok {
+		rep.RunningApp = &st
 	}
 	if rep.WoWDetected {
 		rep.Channel = diagChannel(diagChannelWait)

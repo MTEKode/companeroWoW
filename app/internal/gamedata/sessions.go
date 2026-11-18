@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	hintSession = "Aún no hay sesiones guardadas. Con el puente conectado, la sesión empieza sola y se guarda al cerrar la app."
+	hintSessionAddon = "El addon aún no ha enviado la sesión: escribe /compa sync o /reload en el juego, o espera unos segundos con el juego abierto."
+	hintSession      = "Aún no hay sesiones guardadas. Con el puente conectado, la sesión empieza sola y se guarda al cerrar la app."
 	// sessionListLimit is how many names a session line lists before "y N más".
 	sessionListLimit = 3
 	// sessionZoneLimit is the same for the zones line.
@@ -29,7 +30,14 @@ func (g *Service) SetSessions(t *session.Tracker) {
 func (g *Service) SessionSummary() (any, error) {
 	var se store.Session
 	active := false
-	if g.sessions != nil {
+	if g.onDemand.Load() {
+		// The addon keeps the session; the app holds none of its own.
+		cur, ok := g.sessionFromAddon()
+		if !ok {
+			return unavailable(hintSessionAddon), nil
+		}
+		se, active = cur, true
+	} else if g.sessions != nil {
 		se, active = g.sessions.Current()
 	}
 	if !active {
@@ -77,7 +85,16 @@ func (g *Service) SessionSummary() (any, error) {
 	if !active && !se.EndedAt.IsZero() {
 		fields["fin"] = se.EndedAt.Format(time.RFC3339)
 	}
+	// The addon counts the kills (PARTY_KILL credited to the player); the app's own tracker does not.
+	kills := 0
+	if g.onDemand.Load() {
+		if m, _, ok := g.addonSessionMsg(); ok {
+			kills = int(numberOf(m["kills"]))
+		}
+		fields["enemigosDerrotados"] = kills
+	}
 	fields["texto"] = sessionText(sessionLines{
+		Kills:        kills,
 		Active:       active,
 		Start:        se.StartedAt,
 		Minutes:      minutes,
@@ -159,6 +176,7 @@ type sessionLines struct {
 	TurnedIn     []string
 	Zones        []string
 	Deaths       int
+	Kills        int // defeated enemies, when the addon counts them (on-demand mode); 0 otherwise
 }
 
 // sessionText writes the short Spanish summary, one line per topic.
@@ -209,6 +227,9 @@ func sessionText(s sessionLines) string {
 
 	if len(s.Zones) > 0 {
 		lines = append(lines, "Zonas: "+listText(s.Zones, sessionZoneLimit)+".")
+	}
+	if s.Kills > 0 {
+		lines = append(lines, fmt.Sprintf("Enemigos derrotados: %d.", s.Kills))
 	}
 	if s.Deaths > 0 {
 		lines = append(lines, fmt.Sprintf("Muertes: %d.", s.Deaths))

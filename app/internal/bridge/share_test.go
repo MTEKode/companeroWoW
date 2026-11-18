@@ -1,10 +1,8 @@
 package bridge
 
 import (
-	"errors"
 	"math/rand"
 	"testing"
-	"time"
 )
 
 // Byte 30 of the status payload is shareRemainingSec: the countdown of the addon's share
@@ -36,29 +34,5 @@ func TestShareRemainingRoundTripsThroughBlocks(t *testing.T) {
 		if got.ShareRemainingSec != n {
 			t.Fatalf("share %d decoded as %d", n, got.ShareRemainingSec)
 		}
-	}
-}
-
-// The reader keeps the normal poll rate for the share window, even while the strip is
-// missing, and backs off again after it.
-func TestReaderActivateKeepsNormalRateWhileStripMissing(t *testing.T) {
-	f := newFakeReader(t)
-	f.findErr = errors.New("WoW closed")
-	f.r.Activate(f.clock.now())
-	if got := f.r.step(); got != f.r.pollEvery {
-		t.Fatalf("during the share watch: wait %v, want %v", got, f.r.pollEvery)
-	}
-	f.clock.advance(shareWatch + time.Second)
-	if got := f.r.step(); got != retryEvery {
-		t.Fatalf("after the share watch: wait %v, want %v", got, retryEvery)
-	}
-}
-
-func TestReaderActivateWakesThePollLoop(t *testing.T) {
-	r := NewReader(time.Second)
-	r.Activate(time.Now())
-	r.Activate(time.Now()) // a second press while one wake-up is pending must not block
-	if n := len(r.wake); n != 1 {
-		t.Fatalf("pending wake-ups = %d, want 1", n)
 	}
 }

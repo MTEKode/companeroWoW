@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,13 +15,53 @@ const (
 	keyFreshFor      = 5 * time.Minute
 )
 
+// IdleText is the status line of the on-demand mode while the game is not read.
+const IdleText = "En reposo — abre el panel o pregunta para leer el juego"
+
+// reading is the progress of a question that waits for fresh game data ("Leyendo el juego…
+// (3/5)"); empty when no question is waiting. See ReportReading.
+var (
+	readingMu sync.Mutex
+	reading   string
+)
+
+// ReportReading sets the progress line shown while a question waits for the game data, and
+// refreshes the status bar. An empty text clears it.
+func ReportReading(text string) {
+	readingMu.Lock()
+	reading = text
+	readingMu.Unlock()
+	wakeStatus()
+}
+
+// readingText returns the progress line set by ReportReading.
+func readingText() string {
+	readingMu.Lock()
+	defer readingMu.Unlock()
+	return reading
+}
+
 // formatStatus returns the one-line status bar text: the bridge state, the age of the
 // SavedVariables data, the first hint, and any notices. While the assistant is busy the
-// bar says so first and drops the hint.
+// bar says so first and drops the hint. In the on-demand mode, while the game is not read,
+// the bar says so instead of the bridge state.
 func formatStatus(s Status, notice string, busy bool) string {
 	var parts []string
+	if s.Idle && !busy {
+		parts = append(parts, IdleText)
+		for _, n := range []string{s.Notice, notice} {
+			if n != "" {
+				parts = append(parts, n)
+			}
+		}
+		return strings.Join(parts, " · ")
+	}
 	if busy {
-		parts = append(parts, "Pensando…")
+		if r := readingText(); r != "" {
+			parts = append(parts, r)
+		} else {
+			parts = append(parts, "Pensando…")
+		}
 	}
 	parts = append(parts, bridgeText(s), savedVarsText(s.SavedVarsAgeSec))
 	if s.Model != "" {

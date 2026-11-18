@@ -1,7 +1,6 @@
 package gamedata
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -40,43 +39,6 @@ func TestFreeBagSlotsFallBackToZero(t *testing.T) {
 	putType(t, ch, bridge.MsgCharacter, `{"level": 12}`, time.Now())
 	if got := g.freeBagSlots(); got != 0 {
 		t.Fatalf("freeBagSlots without the field = %v, want 0", got)
-	}
-}
-
-func TestAwaitKeyTypesWithoutActivationReturnsAtOnce(t *testing.T) {
-	g, _ := shareService(t)
-	start := time.Now()
-	g.AwaitKeyTypes(context.Background())
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("waited %v without an activation", d)
-	}
-}
-
-func TestAwaitKeyTypesEndsWhenTheKeyTypesArrive(t *testing.T) {
-	g, ch := shareService(t)
-	// Activated a second ago: the clock may not tick between two calls on Windows.
-	g.ActivateLive(time.Now().Add(-time.Second))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	for _, typ := range []uint8{bridge.MsgCharacter, bridge.MsgSheet, bridge.MsgQuests, bridge.MsgEquipment} {
-		putType(t, ch, typ, `{}`, time.Now())
-	}
-	start := time.Now()
-	g.AwaitKeyTypes(ctx)
-	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Fatalf("waited %v although the key types had arrived", d)
-	}
-}
-
-func TestAwaitKeyTypesStopsWhenCancelled(t *testing.T) {
-	g, _ := shareService(t)
-	g.ActivateLive(time.Now().Add(-time.Second))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	start := time.Now()
-	g.AwaitKeyTypes(ctx)
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("a cancelled wait lasted %v", d)
 	}
 }
 

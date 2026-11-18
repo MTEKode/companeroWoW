@@ -969,6 +969,9 @@ func (w *window) onDPIChanged(wp, lp uintptr) {
 func (w *window) show(focus bool) {
 	w.refreshAvoid()
 	w.enforceAvoid()
+	if w.opts.PanelVisibility != nil {
+		w.opts.PanelVisibility(true)
+	}
 	if focus {
 		call(procShowWindow, w.hwnd, swShow)
 		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
@@ -1047,6 +1050,17 @@ func (w *window) hide() {
 	w.saveGeometry()
 	w.trayOpenAt = time.Time{}
 	call(procShowWindow, w.hwnd, swHide)
+	if w.opts.PanelVisibility != nil {
+		w.opts.PanelVisibility(false)
+	}
+}
+
+// wakeStatus asks the UI thread to repaint the status bar (see ReportReading). It is called from
+// any goroutine; it does nothing before the window exists.
+func wakeStatus() {
+	if w := current; w != nil && w.hwnd != 0 {
+		postMessage(w.hwnd, msgStatus, 0, 0)
+	}
 }
 
 // toggle is the tray icon's click: hide when shown, show with focus otherwise. Opening from
@@ -1060,15 +1074,12 @@ func (w *window) toggle() {
 	w.show(true)
 }
 
-// onShareKey is the panel key: the panel opens with the focus in its input and the reader is
-// activated at once, so that the addon's share window is read without waiting for a backoff.
+// onShareKey is the panel key: the panel opens with the focus in its input, which activates
+// the game reader at once (see PanelVisibility).
 // The panel does not toggle: pressing the key again only brings it to the front.
 func (w *window) onShareKey() {
 	w.trayOpenAt = time.Time{}
-	if w.opts.ActivateLive != nil {
-		w.opts.ActivateLive()
-	}
-	w.show(true)
+	w.show(true) // PanelVisibility(true) activates the reader (see show)
 	w.refreshStatus()
 }
 
@@ -1314,6 +1325,15 @@ func (w *window) linkClicked(text string) {
 	if cmd, ok := CommandFromLink(text); ok {
 		if err := CopyText(cmd); err != nil {
 			w.setNotice("No pude copiar la marca: " + err.Error())
+		} else {
+			w.setNotice(CopiedNotice)
+		}
+		w.refreshStatus()
+		return
+	}
+	if body, ok := MacroBodyFromLink(text); ok {
+		if err := CopyText(body); err != nil {
+			w.setNotice("No pude copiar la macro: " + err.Error())
 		} else {
 			w.setNotice(CopiedNotice)
 		}

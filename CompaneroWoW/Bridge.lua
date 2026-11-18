@@ -105,7 +105,7 @@ function ns.BuildPayload(s)
     ns.AppendU8(p, s.lastEventCode)                -- 24
     ns.AppendU8(p, s.eventSeq)                     -- 25
     ns.AppendU32(p, s.eventArg)                    -- 26-29
-    ns.AppendU8(p, s.freeBagSlots)                 -- 30
+    ns.AppendU8(p, s.shareRemainingSec)            -- 30: segundos de la ventana de envio (0 en reposo)
     p[PAYLOAD_LEN] = ns.CRC8(p, 1, PAYLOAD_LEN - 1) -- 31 = CRC sobre bytes 0..30
     return p
 end
@@ -310,8 +310,9 @@ local function percentOf(curName, maxName, unit)
     return ns.ClampInt(floor(cur / max * 100), 0, 100, 0)
 end
 
--- Lee el estado del jugador para construir el payload.
-function ns.ReadLiveState()
+-- Lee el estado del jugador para construir el payload. shareLeft: segundos de la ventana (byte 30).
+-- Las bolsas libres ya no van aqui: viajan en el mensaje del personaje (tipo 1, Channel.lua).
+function ns.ReadLiveState(shareLeft)
     local s = {}
     s.mapID, s.x, s.y = ns.GetPlayerPosition()
     s.level = Num(Call("UnitLevel", "player"))
@@ -333,7 +334,7 @@ function ns.ReadLiveState()
     s.inInstance = Clean(Call("IsInInstance")) == true
     s.healthPct = percentOf("UnitHealth", "UnitHealthMax", "player")
     s.powerPct = percentOf("UnitPower", "UnitPowerMax", "player")
-    s.freeBagSlots = ns.CountFreeBagSlots()
+    s.shareRemainingSec = ns.ClampInt(shareLeft, 0, 255, 0)
     s.lastEventCode = B.lastEventCode
     s.eventSeq = B.eventSeq
     s.eventArg = B.eventArg
@@ -479,16 +480,19 @@ local function nowSec()
     return ns.Now()
 end
 
--- Un refresco (cada REFRESH_SEC): recalcula el estado, toma el siguiente trozo del canal,
--- compone la trama, sube seq solo si cambia el contenido y pinta lo que cambio.
+-- Un refresco (cada REFRESH_SEC, solo durante una activacion): recalcula el estado, toma el
+-- siguiente trozo del canal, compone la trama, sube seq solo si cambia el contenido y pinta lo que cambio.
 function ns.BridgeRefresh()
     if not B.frame or not ns.IsStripOn() then return end
     local n = B.blocks
     if n <= CALIB_BLOCKS then return end
-    local payload = ns.BuildPayload(ns.ReadLiveState())
+    local C = ns.Channel
+    local now = nowSec()
+    B.frameNo = (B.frameNo or 0) + 1
+    local payload = ns.BuildPayload(ns.ReadLiveState(C and C.RemainingSec(now) or 0))
     B.payload = payload
-    local chunk = ns.Channel and ns.Channel.Tick(nowSec(), n) or nil
-    local frame = ns.Channel.BuildFrame(payload, B.seq, n, chunk)
+    local chunk = C and C.NextChunk(n, B.frameNo) or nil
+    local frame = C.BuildFrame(payload, B.seq, n, chunk)
     if not sameBytes(frame, B.bytes) then
         B.seq = (B.seq + 1) % 256
         frame = ns.Channel.BuildFrame(payload, B.seq, n, chunk)
@@ -498,21 +502,59 @@ function ns.BridgeRefresh()
     paint(B.colors, n)
 end
 
--- Activa o desactiva la franja y guarda la preferencia (settings.strip).
+-- ---------------------------------------------------------------------------
+-- Reposo y activacion
+-- ---------------------------------------------------------------------------
+-- Reposo (por defecto): la franja esta oculta y el frame no tiene OnUpdate: no hay nada que
+-- pintar ni que serializar. Activacion (tecla o /compa enviar): ns.StripStart registra OnUpdate y
+-- muestra la franja; ns.StripRest lo quita todo. Solo OnUpdate mientras dura la ventana.
+
+-- Trama de la ventana: reparte la serializacion (Channel.Pump, presupuesto por trama) y refresca la
+-- franja cada REFRESH_SEC. Al acabar la ventana, vuelve al reposo.
+local function onShareUpdate(_, elapsed)
+    local C = ns.Channel
+    if not C then return end
+    local now = nowSec()
+    if not C.Update(now) then
+        ns.StripRest()
+        return
+    end
+    C.Pump(now, C.PUMP_BUDGET_MS)
+    B.acc = B.acc + (tonumber(elapsed) or 0)
+    if B.acc < REFRESH_SEC then return end
+    B.acc = 0
+    ns.SafeCall(ns.BridgeRefresh)
+end
+
+-- Entra en la ventana de envio: muestra la franja y registra OnUpdate. false si no hay franja.
+function ns.StripStart()
+    if not B.frame then return false end
+    B.acc = 0
+    B.frameNo = 0
+    ns.Method(B.frame, "SetScript", "OnUpdate", onShareUpdate)
+    ns.Method(B.frame, "Show")
+    return true
+end
+
+-- Vuelve al reposo: oculta la franja, quita OnUpdate y para el canal.
+function ns.StripRest()
+    if ns.Channel and ns.Channel.Stop then ns.Channel.Stop() end
+    if B.frame then
+        ns.Method(B.frame, "SetScript", "OnUpdate", nil)
+        ns.Method(B.frame, "Hide")
+    end
+    B.acc = 0
+end
+
+-- Guarda la preferencia (settings.strip): "off" = no se comparte nunca; "on" = se comparte con la tecla.
+-- Al apagarla, si hay una ventana en curso se corta.
 function ns.SetStripEnabled(on)
     on = on and true or false
     if type(CompaneroWoWDB) == "table" then
         if type(CompaneroWoWDB.settings) ~= "table" then CompaneroWoWDB.settings = {} end
         CompaneroWoWDB.settings.strip = on
     end
-    if B.frame then
-        if on then
-            ns.Method(B.frame, "Show")
-            ns.SafeCall(ns.BridgeRefresh)
-        else
-            ns.Method(B.frame, "Hide")
-        end
-    end
+    if not on then ns.StripRest() end
 end
 
 -- Crea el frame de la franja (una sola vez). Llamado desde PLAYER_LOGIN.
@@ -541,16 +583,8 @@ function ns.InitBridge()
     ns.Method(f, "SetScript", "OnEvent", function()
         ns.SafeCall(recomputeScale)
     end)
-    ns.Method(f, "SetScript", "OnUpdate", function(_, elapsed)
-        B.acc = B.acc + (tonumber(elapsed) or 0)
-        if B.acc < REFRESH_SEC then return end
-        B.acc = 0
-        ns.SafeCall(ns.BridgeRefresh)
-    end)
-    if ns.IsStripOn() then
-        ns.Method(f, "Show")
-    else
-        ns.Method(f, "Hide")
-    end
+    -- Reposo: oculta y sin OnUpdate (se registra solo durante una activacion, ns.StripStart).
+    ns.Method(f, "SetScript", "OnUpdate", nil)
+    ns.Method(f, "Hide")
     return f
 end
