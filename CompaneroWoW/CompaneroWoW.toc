@@ -24,3 +24,4 @@ Events.lua
 Combat.lua
 Session.lua
 Bars.lua
+Macros.lua

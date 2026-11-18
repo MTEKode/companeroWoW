@@ -959,6 +959,9 @@ func (w *window) onDPIChanged(wp, lp uintptr) {
 func (w *window) show(focus bool) {
 	w.refreshAvoid()
 	w.enforceAvoid()
+	if w.opts.PanelVisibility != nil {
+		w.opts.PanelVisibility(true)
+	}
 	if focus {
 		call(procShowWindow, w.hwnd, swShow)
 		call(procSetWindowPos, w.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
@@ -1036,6 +1039,17 @@ func (w *window) balloonFor(tip assistant.Tip) {
 func (w *window) hide() {
 	w.saveGeometry()
 	call(procShowWindow, w.hwnd, swHide)
+	if w.opts.PanelVisibility != nil {
+		w.opts.PanelVisibility(false)
+	}
+}
+
+// wakeStatus asks the UI thread to repaint the status bar (see ReportReading). It is called from
+// any goroutine; it does nothing before the window exists.
+func wakeStatus() {
+	if w := current; w != nil && w.hwnd != 0 {
+		postMessage(w.hwnd, msgStatus, 0, 0)
+	}
 }
 
 // toggle is the hotkey action: hide when shown, show with focus otherwise.
@@ -1271,6 +1285,15 @@ func (w *window) linkClicked(text string) {
 	if cmd, ok := CommandFromLink(text); ok {
 		if err := CopyText(cmd); err != nil {
 			w.setNotice("No pude copiar la marca: " + err.Error())
+		} else {
+			w.setNotice(CopiedNotice)
+		}
+		w.refreshStatus()
+		return
+	}
+	if body, ok := MacroBodyFromLink(text); ok {
+		if err := CopyText(body); err != nil {
+			w.setNotice("No pude copiar la macro: " + err.Error())
 		} else {
 			w.setNotice(CopiedNotice)
 		}

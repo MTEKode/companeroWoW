@@ -371,6 +371,16 @@ do
     check("coste por refresco < 5 ms en luajit", dt < 0.005)
 end
 
+-- Macros (Macros.lua): tipo 13, prioridad baja (al final de la lista), con su propio bloque.
+do
+    local t13 = C.TYPES[13]
+    check("tipo 13 = macros", t13 ~= nil and t13.name == "macros")
+    check("tipo 13 en la lista de prioridad", C.PRIORITY[#C.PRIORITY] == 13)
+    local built = t13 and t13.build({ macros = { account = { used = 1, max = 120, list = {} } } })
+    check("tipo 13 envia el bloque de macros", type(built) == "table" and built.account ~= nil)
+    check("tipo 13 sin macros no envia nada", t13 and t13.build({}) == nil)
+end
+
 if failures > 0 then
     print("FAILED: " .. failures .. " check(s)")
     os.exit(1)

@@ -9,6 +9,10 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/config"
 )
 
+// TipsOnDemandNote is shown under the mode selector while the mode is on demand: the tips are
+// disabled, because the app asks the AI only when the player asks.
+const TipsOnDemandNote = "En modo bajo demanda la IA solo responde cuando preguntas"
+
 // settingsForm is the settings screen's values as the user left them: text for the
 // numbers, so that a bad entry is reported instead of silently replaced.
 type settingsForm struct {
@@ -21,10 +25,12 @@ type settingsForm struct {
 	// QuotaCooldownMin is the text of the cooldown minutes (see config.MinQuotaCooldownMin).
 	QuotaCooldownMin string
 	HideInCombat     bool
-	TipsMode         string
-	TipsSound        bool
-	StartWithWoW     bool
-	WoWPath          string
+	// Mode is how the game is read: config.ModeOnDemand or config.ModeContinuous. "" keeps the base's.
+	Mode         string
+	TipsMode     string
+	TipsSound    bool
+	StartWithWoW bool
+	WoWPath      string
 	// Profile and VerifyAnswers come from the profile screen (see profile_settings.go).
 	Profile       config.Profile
 	VerifyAnswers bool
@@ -40,6 +46,7 @@ func formFromConfig(c config.Config) settingsForm {
 		AntigravityModels: append([]string(nil), c.AntigravityModels...),
 		QuotaCooldownMin:  strconv.Itoa(c.AntigravityQuotaCooldownMin),
 		HideInCombat:      c.HideInCombat,
+		Mode:              c.Mode,
 		TipsMode:          c.TipsMode,
 		TipsSound:         c.TipsSound,
 		StartWithWoW:      c.StartWithWoW,
@@ -122,6 +129,12 @@ func (f settingsForm) apply(base config.Config) (config.Config, error) {
 	next.AntigravityModels = models
 	next.AntigravityQuotaCooldownMin = cooldown
 	next.HideInCombat = f.HideInCombat
+	if f.Mode != "" {
+		if !config.ValidMode(f.Mode) {
+			return config.Config{}, fmt.Errorf("Funcionamiento: elige solo al preguntar o continuo")
+		}
+		next.Mode = f.Mode
+	}
 	if !config.ValidTipsMode(f.TipsMode) {
 		return config.Config{}, fmt.Errorf("Consejos: elige en el panel, notificación discreta o desactivados")
 	}

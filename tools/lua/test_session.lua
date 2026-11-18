@@ -395,6 +395,16 @@ local function simulate(npcCount, simSec, changeAt)
     c.professions = bulkList(4, 40)
     c.questie = { data = string.rep("q", 30000) }
     c.combats = {}
+    -- Macros al maximo (120 de cuenta y 18 de personaje, cuerpos de 255 bytes): tipo 13, el ultimo en prioridad.
+    local function macroList(n, base)
+        local out = {}
+        for i = 1, n do out[i] = { index = base + i, name = "Macro " .. i, icon = "INV_Misc_QuestionMark", body = string.rep("m", 255) } end
+        return out
+    end
+    c.macros = {
+        account = { used = 120, max = 120, list = macroList(120, 0) },
+        character = { used = 18, max = 18, list = macroList(18, 120) },
+    }
     CompaneroWoWDB.characters[KEY] = c
     CompaneroWoWDB.knowledge.quests = {}
     for i = 1, 200 do CompaneroWoWDB.knowledge.quests[i] = { questID = i, title = "Conocimiento " .. i } end

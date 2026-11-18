@@ -43,8 +43,9 @@ C.SNAPSHOT_SHARE = 0.5      -- parte del carril lento que puede usar el volcado 
 -- Prioridad de envio de los tipos (de mayor a menor).
 -- Contrato ON-DEMAND: status (siempre, en cada trama), personaje, hoja, misiones, equipo, sesion,
 -- bolsas, profesiones, y el resto. Se mantiene siempre (no hay "reactivacion" que el addon pueda ver).
--- knowledge (9) va al final: sus deltas solo usan lo que sobra, y su volcado completo va en el carril lento.
-C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 7, 8, 6, 11, 10, 9 }
+-- knowledge (9) va casi al final: sus deltas solo usan lo que sobra, y su volcado completo va en el carril lento.
+-- macros (13) al final: cambian poco y son lo menos urgente (macros de cuenta y de personaje, Macros.lua).
+C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 7, 8, 6, 11, 10, 9, 13 }
 local RANK = {}
 for i, t in ipairs(C.PRIORITY) do RANK[t] = i end
 C.RANK = RANK
@@ -390,6 +391,16 @@ C.TYPES = {
         build = function(c)
             if not (ns.Session and ns.Session.Public) then return nil end
             return ns.Session.Public(c.session)
+        end,
+    },
+    [13] = {
+        -- macros de cuenta y de personaje (Macros.lua). Prioridad baja: cambian poco.
+        name = "macros", period = 60, minGap = 2,
+        events = { "UPDATE_MACROS" },
+        build = function(c)
+            local m = c.macros
+            if type(m) ~= "table" then return nil end
+            return m
         end,
     },
     [11] = {

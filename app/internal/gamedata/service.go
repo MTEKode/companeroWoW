@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
@@ -42,6 +43,9 @@ type Service struct {
 	sessions *session.Tracker // optional: the running session, see SetSessions
 	pace     *PaceSampler     // optional: live samples for the leveling pace, see SetPace
 	killTime KillTimeFunc     // optional: time-to-kill model, see SetKillTime
+	// onDemand is the on-demand mode: the SavedVariables file is not polled, and the session
+	// comes from the addon's session block (see SetOnDemand and addon_session.go).
+	onDemand atomic.Bool
 
 	startOnce sync.Once
 }
@@ -65,6 +69,30 @@ func (g *Service) Start(ctx context.Context) {
 		g.watcher.Start(ctx)
 		go g.importLoop(ctx)
 	})
+}
+
+// SetOnDemand selects the on-demand mode, and may be called at any time. In that mode the
+// SavedVariables file is not polled: RefreshSavedVariables reads it when the app asks (on
+// activation and before each question), and the session comes from the addon. Leaving the mode
+// resumes the polling.
+func (g *Service) SetOnDemand(on bool) {
+	g.onDemand.Store(on)
+	if g.watcher != nil {
+		g.watcher.SetPaused(on)
+	}
+}
+
+// OnDemand reports whether the on-demand mode is selected.
+func (g *Service) OnDemand() bool { return g.onDemand.Load() }
+
+// RefreshSavedVariables checks the SavedVariables file once and reloads it if it changed. It is
+// a no-op without a watcher. The error is the watcher's (a missing file, or a load that failed
+// and kept the previous data).
+func (g *Service) RefreshSavedVariables() error {
+	if g.watcher == nil {
+		return nil
+	}
+	return g.watcher.Poll()
 }
 
 func (g *Service) importLoop(ctx context.Context) {
