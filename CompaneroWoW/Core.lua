@@ -360,6 +360,7 @@ local function showStatus()
     if ns.Session then say(ns.Session.StatusLine()) end
     if ns.MacrosStatusLine then say(ns.MacrosStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
+    if ns.WorldStatusLine then say(ns.WorldStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
