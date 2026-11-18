@@ -341,71 +341,138 @@ eq("json: lista vacia con marca", J.Encode(J.Array()), "[]")
 eq("json: tabla vacia sin marca", J.Encode({}), "{}")
 
 -- ---------------------------------------------------------------------------
-print("(j) Carrusel <= 15 s con reloj simulado y tamanos realistas")
-freshGame()
-login()
-tick()
+print("(j) Carrusel <= 15 s con knowledge grande (2000 PNJ), reloj simulado y tamanos realistas")
+local KEYS = { 1, 12, 2, 4, 14 }
+local STEP = 0.2
+local isKey = {}
+for _, t in ipairs(KEYS) do isKey[t] = true end
+
 local function bulkList(n, width)
     local out = {}
     for i = 1, n do out[i] = { id = i, title = "Misión " .. i, text = string.rep("t", width) } end
     return out
 end
-CompaneroWoWDB.characters[KEY].character = { name = "Tester", level = 18, money = 6000, class = "WARRIOR" }
-CompaneroWoWDB.characters[KEY].reputations = bulkList(30, 40)
-CompaneroWoWDB.characters[KEY].talents = { points = 10 }
-CompaneroWoWDB.characters[KEY].quests = bulkList(200, 60)
-CompaneroWoWDB.characters[KEY].location = { mapID = 1429 }
-CompaneroWoWDB.characters[KEY].native = bulkList(40, 50)
-CompaneroWoWDB.characters[KEY].equipment = bulkList(16, 30)
-CompaneroWoWDB.characters[KEY].gear = bulkList(20, 30)
-CompaneroWoWDB.characters[KEY].sheet = { text = string.rep("s", 6000) }
-CompaneroWoWDB.characters[KEY].inventory = { items = bulkList(120, 20) }
-CompaneroWoWDB.characters[KEY].professions = bulkList(4, 40)
-CompaneroWoWDB.characters[KEY].questie = { data = string.rep("q", 30000) }
-CompaneroWoWDB.characters[KEY].combats = {}
-CompaneroWoWDB.knowledge.quests = {}
-for i = 1, 200 do CompaneroWoWDB.knowledge.quests[i] = { questID = i, title = "Conocimiento " .. i } end
-C.state.sched = C.NewScheduler()
-C.state.carouselTodo = nil
-C.state.hash = {}
-C.state.lastBuilt = {}
-C.state.lastCheck = {}
-C.state.dirty = {}
-C.state.knowHash = { quests = {}, npcs = {} }
-C.state.completedSet = nil
 
-local KEYS = { 1, 12, 2, 4, 14 }
-local isKey = {}
-for _, t in ipairs(KEYS) do isKey[t] = true end
-local starts, completions = {}, {}
-local tickSum, tickMax, ticks = 0, 0, 0
-local SIM_SEC, STEP = 900, 0.2
-local t0sim = W.state.clock
-local nextSessionTick = 0
-for step = 1, SIM_SEC / STEP do
-    advance(STEP)
-    local now = W.state.clock
-    if step * STEP >= nextSessionTick then
-        P.xp = P.xp + 3
-        P.x = P.x + 0.001
-        Ses.Tick()
-        nextSessionTick = nextSessionTick + 5
+local function bytesToString(data)
+    local b = {}
+    for i = 1, #data do b[i] = string.char(data[i]) end
+    return table.concat(b)
+end
+
+-- Estado del canal limpio para una simulacion nueva.
+local function resetChannel()
+    C.state.sched = C.NewScheduler()
+    C.state.carouselTodo = nil
+    C.state.hash = {}
+    C.state.lastBuilt = {}
+    C.state.lastCheck = {}
+    C.state.dirty = {}
+    C.state.completedSet = nil
+    C.state.know = {
+        cache = { quests = {}, npcs = {} }, bytes = 0, scan = nil, scanned = false,
+        out = { items = {}, head = 1, set = { quests = {}, npcs = {} } },
+        snap = { items = {}, head = 1 }, snapAt = nil,
+    }
+end
+
+-- Simula simSec s con npcCount PNJ en knowledge (y 200 misiones). Si changeAt, cambia un PNJ a esa
+-- hora (s desde el inicio). Devuelve las medidas del canal.
+local function simulate(npcCount, simSec, changeAt)
+    freshGame()
+    login()
+    tick()
+    local c = {}
+    c.character = { name = "Tester", level = 18, money = 6000, class = "WARRIOR" }
+    c.reputations = bulkList(30, 40)
+    c.talents = { points = 10 }
+    c.quests = bulkList(200, 60)
+    c.location = { mapID = 1429 }
+    c.native = bulkList(40, 50)
+    c.equipment = bulkList(16, 30)
+    c.gear = bulkList(20, 30)
+    c.sheet = { text = string.rep("s", 6000) }
+    c.inventory = { items = bulkList(120, 20) }
+    c.professions = bulkList(4, 40)
+    c.questie = { data = string.rep("q", 30000) }
+    c.combats = {}
+    CompaneroWoWDB.characters[KEY] = c
+    CompaneroWoWDB.knowledge.quests = {}
+    for i = 1, 200 do CompaneroWoWDB.knowledge.quests[i] = { questID = i, title = "Conocimiento " .. i } end
+    CompaneroWoWDB.knowledge.npcs = {}
+    for i = 1, npcCount do
+        CompaneroWoWDB.knowledge.npcs[1000 + i] = {
+            npcID = 1000 + i, name = "PNJ número " .. i, mapID = 1429, x = 0.25, y = 0.5,
+            reaction = "friendly", isQuestGiver = true, firstSeen = 1700000000, lastSeen = 1700000000,
+        }
     end
-    local c0 = os.clock()
-    local ch = C.Tick(now, 860)
-    local dt = os.clock() - c0
-    tickSum, ticks = tickSum + dt, ticks + 1
-    if dt > tickMax then tickMax = dt end
-    if ch then
-        if ch.index == 0 then
-            starts[ch.type] = starts[ch.type] or {}
-            table.insert(starts[ch.type], now)
+    local knowBytes = 0
+    for _, kind in ipairs({ "quests", "npcs" }) do
+        for _, rec in pairs(CompaneroWoWDB.knowledge[kind]) do knowBytes = knowBytes + #ns.Json.Encode(rec) end
+    end
+    resetChannel()
+
+    local starts, completions = {}, {}
+    local tickSum, tickMax, ticks = 0, 0, 0
+    local dts = {}
+    local msgs9, partial9, bytes9Win = {}, {}, {}
+    local t0 = W.state.clock
+    local nextSessionTick = 0
+    local changedAt = nil
+    for step = 1, simSec / STEP do
+        advance(STEP)
+        local now = W.state.clock
+        local el = now - t0
+        if changeAt and not changedAt and el >= changeAt then
+            CompaneroWoWDB.knowledge.npcs[1005].name = "PNJ cambiado"
+            changedAt = el
         end
-        if ch.index == ch.count - 1 then
-            completions[ch.type] = completions[ch.type] or {}
-            table.insert(completions[ch.type], now)
+        if step * STEP >= nextSessionTick then
+            P.xp = P.xp + 3
+            P.x = P.x + 0.001
+            Ses.Tick()
+            nextSessionTick = nextSessionTick + 5
+        end
+        local c0 = os.clock()
+        local ch = C.Tick(now, 860)
+        local dt = os.clock() - c0
+        tickSum, ticks = tickSum + dt, ticks + 1
+        dts[#dts + 1] = dt
+        if dt > tickMax then tickMax = dt end
+        if ch then
+            if ch.index == 0 then
+                starts[ch.type] = starts[ch.type] or {}
+                table.insert(starts[ch.type], now)
+            end
+            if ch.index == ch.count - 1 then
+                completions[ch.type] = completions[ch.type] or {}
+                table.insert(completions[ch.type], now)
+            end
+            if ch.type == 9 then
+                local w = math.floor(el / 15)
+                bytes9Win[w] = (bytes9Win[w] or 0) + #ch.data
+                local p = partial9[ch.id] or { parts = {} }
+                partial9[ch.id] = p
+                p.parts[ch.index + 1] = bytesToString(ch.data)
+                if ch.index == ch.count - 1 then
+                    msgs9[#msgs9 + 1] = { t = el, s = table.concat(p.parts) }
+                    partial9[ch.id] = nil
+                end
+            end
         end
     end
+    return {
+        starts = starts, completions = completions, msgs9 = msgs9, bytes9Win = bytes9Win,
+        knowBytes = knowBytes, changedAt = changedAt, simSec = simSec,
+        tickSum = tickSum, tickMax = tickMax, ticks = ticks, dts = dts,
+    }
+end
+
+-- Percentil p (0..1) de una lista de tiempos.
+local function percentile(list, p)
+    local copy = {}
+    for i, v in ipairs(list) do copy[i] = v end
+    table.sort(copy)
+    return copy[math.max(1, math.ceil(#copy * p))]
 end
 
 local function maxGap(list)
@@ -416,43 +483,83 @@ local function maxGap(list)
     end
     return m
 end
-local SLACK = 0.25 -- un tick de 0.2 s y redondeo
-local keyOk = true
-for _, t in ipairs(KEYS) do
-    local list = starts[t] or {}
-    local g = maxGap(list)
-    if #list < 10 or g > 15 + SLACK then keyOk = false end
-    outln(string.format("  info  tipo %2d: %3d envios, hueco maximo entre envios %.1f s", t, #list, g))
-end
-check("tipos clave (1,12,2,4,14): cada uno se reenvia cada <= 15 s", keyOk)
 
-local worstLatency = 0
-for _, t in ipairs(KEYS) do
-    local st, co = starts[t] or {}, completions[t] or {}
-    for i = 1, math.min(#st, #co) do
-        local lat = co[i] - st[i]
-        if lat > worstLatency then worstLatency = lat end
+-- Comprobaciones de cadencia (tipos clave, pesado) y de latencia, sobre una simulacion.
+local SLACK = 0.25 -- un tick de 0.2 s y redondeo
+local function checkCadence(label, r)
+    local keyOk = true
+    for _, t in ipairs(KEYS) do
+        local list = r.starts[t] or {}
+        local g = maxGap(list)
+        if #list < 10 or g > 15 + SLACK then keyOk = false end
+        outln(string.format("  info  %s tipo %2d: %3d envios, hueco maximo %.1f s", label, t, #list, g))
+    end
+    check(label .. ": tipos clave (1,12,2,4,14) se reenvian cada <= 15 s", keyOk)
+    local worst = 0
+    for _, t in ipairs(KEYS) do
+        local st, co = r.starts[t] or {}, r.completions[t] or {}
+        for i = 1, math.min(#st, #co) do
+            if co[i] - st[i] > worst then worst = co[i] - st[i] end
+        end
+    end
+    check(label .. ": tipos clave terminan <= 5 s desde que empiezan", worst <= 5, tostring(worst))
+    local heavy = r.starts[10] or {}
+    outln(string.format("  info  %s tipo 10 (pesado): %d envios, hueco maximo %.1f s", label, #heavy, maxGap(heavy)))
+    check(label .. ": tipo pesado (10) <= 60 s", #heavy >= 2 and maxGap(heavy) <= 60 + SLACK)
+end
+
+-- Base: sin PNJ.
+local base = simulate(0, 900)
+checkCadence("sin PNJ", base)
+
+-- Grande: 2000 PNJ.
+local big = simulate(2000, 900, 450)
+checkCadence("2000 PNJ", big)
+outln(string.format("  info  2000 PNJ: knowledge %d bytes en total", big.knowBytes))
+
+-- Cobertura: cada PNJ llega en algun mensaje del tipo 9 (deltas o volcado).
+local all9 = {}
+for _, m in ipairs(big.msgs9) do all9[#all9 + 1] = m.s end
+local blob = table.concat(all9)
+local missing = 0
+for i = 1, 2000 do
+    if not string.find(blob, '"' .. (1000 + i) .. '":', 1, true) then missing = missing + 1 end
+end
+check("2000 PNJ: todos llegan en mensajes del tipo 9", missing == 0, tostring(missing) .. " sin enviar")
+
+-- Cambio: el PNJ modificado llega como delta en menos de 60 s.
+local changeOk, changeLag = false, nil
+for _, m in ipairs(big.msgs9) do
+    if m.t >= big.changedAt and string.find(m.s, "PNJ cambiado", 1, true) then
+        changeOk, changeLag = true, m.t - big.changedAt
+        break
     end
 end
-outln(string.format("  info  latencia maxima de los tipos clave (inicio -> ultimo trozo): %.1f s", worstLatency))
-check("tipos clave: terminan en <= 5 s desde que empiezan", worstLatency <= 5, tostring(worstLatency))
+check("cambio de un PNJ llega en <= 60 s (delta)", changeOk and changeLag <= 60, tostring(changeLag))
 
-local others = {}
-for t in pairs(starts) do
-    if not isKey[t] and t ~= 10 then others[#others + 1] = t end
+-- No se reenvia todo cada ciclo: en regimen, cada ventana de 15 s pesa una fraccion del volcado.
+local worstWin, sum9Late = 0, 0
+for w, bytes in pairs(big.bytes9Win) do
+    if w * 15 >= 400 then
+        sum9Late = sum9Late + bytes
+        if bytes > worstWin then worstWin = bytes end
+    end
 end
-table.sort(others)
-for _, t in ipairs(others) do
-    outln(string.format("  info  tipo %2d: %3d envios, hueco maximo %.1f s", t, #starts[t], maxGap(starts[t])))
-end
-local heavy = starts[10] or {}
-outln(string.format("  info  tipo 10 (pesado): %d envios, hueco maximo %.1f s", #heavy, maxGap(heavy)))
-check("tipo pesado (10): <= 60 s", #heavy >= 2 and maxGap(heavy) <= 60 + SLACK)
+outln(string.format("  info  2000 PNJ, regimen (>400 s): tipo 9 hasta %d bytes por 15 s y %d bytes en total (volcado = %d)",
+    worstWin, sum9Late, big.knowBytes))
+check("tipo 9 en regimen: cada ventana de 15 s < 25% del knowledge", worstWin < 0.25 * big.knowBytes)
+check("tipo 9 en regimen: menos de 1.5 volcados en 500 s", sum9Late < 1.5 * big.knowBytes)
+
+-- Coste por tick con el knowledge grande (la revision reparte el trabajo en tandas). os.clock tiene
+-- resolucion de ~1 ms en Windows: se da la media (sobre miles de ticks) y el maximo, no percentiles.
+local ticksOver1ms = 0
+for _, d in ipairs(big.dts) do if d >= 0.001 then ticksOver1ms = ticksOver1ms + 1 end end
+outln(string.format("  info  2000 PNJ: Tick medio %.1f us, maximo %.1f us, ticks >= 1 ms: %d de %d",
+    big.tickSum / big.ticks * 1e6, big.tickMax * 1e6, ticksOver1ms, big.ticks))
+check("2000 PNJ: Tick medio < 300 us", big.tickSum / big.ticks < 0.0003)
 
 -- ---------------------------------------------------------------------------
 print("(k) Medicion de coste por refresco (luajit, orientativa)")
-outln(string.format("  info  Canal: Tick medio %.1f us, maximo %.1f us (con el JSON de todos los tipos en el ciclo)",
-    tickSum / ticks * 1e6, tickMax * 1e6))
 do
     local c0 = os.clock()
     for _ = 1, 500 do Ses.Tick() end
@@ -460,7 +567,7 @@ do
     outln(string.format("  info  Session.Tick medio: %.1f us por tick (cada 5 s)", per * 1e6))
     check("coste de Session.Tick < 1 ms", per < 0.001)
 end
-check("coste medio del canal por refresco (0.2 s) < 1 ms", tickSum / ticks < 0.001)
+check("coste medio del canal por refresco (0.2 s) < 1 ms", big.tickSum / big.ticks < 0.001)
 
 if failures > 0 then
     print("FAILED: " .. failures .. " check(s)")

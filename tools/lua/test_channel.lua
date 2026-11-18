@@ -305,17 +305,29 @@ CompaneroWoWDB.characters[key].completedQuests = { 1, 3 }
 C.testing.refreshType(6, 3200)
 eq("completedQuests: si algo sale -> completo", lastJobOf(6).str, "[1,3]")
 
--- Knowledge: solo entradas nuevas o cambiadas.
+-- Knowledge: revision por tandas; solo entradas nuevas o cambiadas, en {"npcs":{},"quests":{...}}.
 CompaneroWoWDB.knowledge.quests[101] = { questID = 101, title = "A" }
 C.testing.refreshType(9, 4000)
+C.testing.scanAll()
+C.testing.knowledgeStep(4000)
 local kjob = lastJobOf(9)
-check("knowledge: la primera vez incluye la 101", kjob ~= nil and string.find(kjob.str, "101", 1, true) ~= nil)
+check("knowledge: la primera vez incluye la 101", kjob ~= nil and string.find(kjob.str, '"101":', 1, true) ~= nil)
+check("knowledge: el delta tiene la forma {npcs,quests}", kjob ~= nil and string.sub(kjob.str, 1, 9) == '{"npcs":{')
+check("knowledge: el delta va por el carril normal (no lento)", kjob ~= nil and kjob.heavy == false)
 CompaneroWoWDB.knowledge.quests[102] = { questID = 102, title = "B" }
 C.state.sched.jobs = {}
 C.testing.refreshType(9, 4100)
+C.testing.scanAll()
+C.testing.knowledgeStep(4100)
 kjob = lastJobOf(9)
-check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.str, "102", 1, true) ~= nil
-    and string.find(kjob.str, "101", 1, true) == nil)
+check("knowledge: el delta solo trae la 102", kjob ~= nil and string.find(kjob.str, '"102":', 1, true) ~= nil
+    and string.find(kjob.str, '"101":', 1, true) == nil)
+-- Sin cambios: la revision no encola nada.
+C.state.sched.jobs = {}
+C.testing.refreshType(9, 4200)
+C.testing.scanAll()
+C.testing.knowledgeStep(4200)
+check("knowledge: sin cambios no encola", lastJobOf(9) == nil)
 
 -- Combate en medio: se siguen enviando trozos ya encolados.
 C.state.sched.jobs = {}
