@@ -64,6 +64,7 @@ const (
 	MsgMacros          uint8 = 13 // account and character macros (Macros.lua, low priority)
 	MsgSession         uint8 = 14 // current play session and the last five: the same shape as characters[key].session (on demand)
 	MsgQuestion        uint8 = 15 // a question typed in the in-game frame (see ParseQuestion)
+	MsgWorld           uint8 = 16 // account-wide world data (flights, vendors, trainers, chains, consumables): changed parts only
 )
 
 // MsgNames maps each message type to its name in the addon and in --diag.
@@ -74,6 +75,7 @@ var MsgNames = map[uint8]string{
 	MsgSession:  "session",
 	MsgMacros:   "macros", // Macros.lua: account and character macros (low priority)
 	MsgQuestion: "question",
+	MsgWorld:    "world",
 }
 
 // ErrBadChunk reports a chunk header that cannot belong to a frame.

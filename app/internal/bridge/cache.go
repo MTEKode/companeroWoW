@@ -22,7 +22,10 @@ type CachedItem struct {
 func (d *LiveData) Export() []CachedItem {
 	all := d.All()
 	out := make([]CachedItem, 0, len(all))
-	for t := uint8(1); t <= MsgSession; t++ {
+	for t := uint8(1); t <= MsgWorld; t++ {
+		if t == MsgQuestion {
+			continue // a question is a one-off event, not data to keep
+		}
 		it, ok := all[t]
 		if !ok {
 			continue

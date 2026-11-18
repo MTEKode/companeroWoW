@@ -77,6 +77,8 @@ type questEstimate struct {
 	CopperMin  float64
 	NoCoords   bool
 	PrimaryPos *questStop // the stop the player goes to first; nil when the quest has no place
+	// TravelMeasured is true when a leg between maps used the character's measured flights.
+	TravelMeasured bool
 }
 
 // classicQuestXP estimates the XP of a quest from its level and the player's level. It is a
@@ -116,6 +118,12 @@ func travelSeconds(a, b questStop) float64 {
 // pos: the walk to the starter when it is not in the log, the objectives (nearest first) and
 // the turn-in. Missing coordinates make the travel zero and the estimate is marked NoCoords.
 func estimateQuest(c questCandidate, pos questStop, hasPos bool) questEstimate {
+	return estimateQuestHop(c, pos, hasPos, nil)
+}
+
+// estimateQuestHop is estimateQuest with the travel between maps taken from hop (the measured
+// flights, see travelHopper). A nil hop uses the map hop estimate.
+func estimateQuestHop(c questCandidate, pos questStop, hasPos bool, hop travelHop) questEstimate {
 	e := questEstimate{Candidate: c}
 	// The visiting order: the starter when the quest is not in the log yet, the objectives
 	// (nearest first, from the last stop), then the turn-in.
@@ -154,7 +162,13 @@ func estimateQuest(c questCandidate, pos questStop, hasPos bool) questEstimate {
 		}
 	}
 	for _, s := range seq {
-		e.TravelSec += travelSeconds(walk, s)
+		if hop != nil && walk.MapID >= 0 && walk.MapID != s.MapID {
+			sec, measured := hop(walk, s)
+			e.TravelSec += sec
+			e.TravelMeasured = e.TravelMeasured || measured
+		} else {
+			e.TravelSec += travelSeconds(walk, s)
+		}
 		walk = s
 	}
 	e.CombatSec = float64(c.Kills) * c.KillSec
@@ -298,6 +312,7 @@ func (g *Service) QuestValue(opts QuestValueOptions) (any, error) {
 	killSecs, killSrc := g.killSecondsFor(gd.Level, g.wonFightSeconds())
 	qx := g.questieOfActive()
 	zoneNeedle := fold(opts.Zona)
+	hop := g.travelHopper() // real flight times between maps when the addon has measured them; nil otherwise
 
 	var ests []questEstimate
 	for _, id := range sortedQuestIDs(gd.Quests) {
@@ -316,7 +331,7 @@ func (g *Service) QuestValue(opts QuestValueOptions) (any, error) {
 			continue
 		}
 		c := g.questCandidateOf(gd, q, qx, pos, killSecs)
-		ests = append(ests, estimateQuest(c, questStop{MapID: pos.MapID, X: pos.X, Y: pos.Y}, pos.OK))
+		ests = append(ests, estimateQuestHop(c, questStop{MapID: pos.MapID, X: pos.X, Y: pos.Y}, pos.OK, hop))
 	}
 
 	criterio := "xp por minuto"
@@ -361,6 +376,9 @@ func (g *Service) QuestValue(opts QuestValueOptions) (any, error) {
 		fmt.Sprintf("Caminar a %.0f yardas por segundo y 1 unidad del mapa ≈ %.0f yardas (estimado).", questSpeedYPS, questYardsPerUnit),
 		fmt.Sprintf("Un cambio de mapa cuenta %.0f s. Cada matanza cuenta %.0f s (%s).", questMapHopSec, killSecs, killSrc),
 		"El XP es el del addon cuando lo ha visto; si no, se estima por nivel de misión frente a tu nivel («estimado»).",
+	}
+	if hop != nil {
+		supuestos = append(supuestos, "Entre mapas usa el vuelo medido por el addon cuando es más rápido que caminar («viajeFuente»: medido); si no, un cambio de mapa cuenta 90 s (estimado).")
 	}
 	out := map[string]any{
 		"criterio":  criterio,
@@ -466,6 +484,12 @@ func questEstimateView(e questEstimate) map[string]any {
 		"xpFuente":   xpSourceText(c.XPKnown),
 		"minutos":    round1(e.Minutes),
 		"viajeMin":   round1(e.TravelSec / 60),
+		"viajeFuente": func() string {
+			if e.TravelMeasured {
+				return "medido (vuelos)"
+			}
+			return "estimado"
+		}(),
 		"combateMin": round1(e.CombatSec / 60),
 		"matas":      c.Kills,
 		"xpPorMin":   round1(e.XPPerMin),

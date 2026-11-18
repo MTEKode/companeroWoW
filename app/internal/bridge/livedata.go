@@ -136,6 +136,10 @@ func (d *LiveData) Put(t uint8, body []byte, now time.Time) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	prev := d.items[t]
+	if t == MsgWorld {
+		// The world block arrives as changed parts: keep one document and lay each delta over it.
+		v = mergeWorldValue(prev.Value, v)
+	}
 	d.items[t] = LiveItem{
 		Type:  t,
 		Name:  MsgNames[t],
