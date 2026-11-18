@@ -237,7 +237,9 @@ ns.RequestIntegrationsExport()
 local before = A.skillCalls
 SlashCmdList.COMPA("sync")
 check("/compa sync exporta sin esperar al throttle", A.skillCalls == before + 1)
-check("/compa sync recarga la interfaz", #W.callsNamed("ReloadUI") == 1)
+check("/compa sync (sin 'reload') no recarga la interfaz", #W.callsNamed("ReloadUI") == 0)
+SlashCmdList.COMPA("sync reload")
+check("/compa sync reload recarga la interfaz", #W.callsNamed("ReloadUI") == 1)
 
 -- Combate: no exporta; al salir de combate se hace la exportacion pendiente.
 advance(60)

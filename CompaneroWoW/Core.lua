@@ -305,9 +305,11 @@ end
 -- ---------------------------------------------------------------------------
 
 local function showHelp()
-    say("Comandos:")
-    say("  /compa sync - guarda los datos (misiones del juego, Questie si está, WhatsTraining, SkillUpForever, equipo) y recarga la interfaz (escribe SavedVariables)")
-    say("  /compa enviar - comparte los datos durante 20 s (igual que la tecla Compañero: compartir datos)")
+    say("Comandos (/compa sin texto abre el marco; /compa ? <pregunta> pregunta directamente):")
+    say("  /compa ? <texto> - envía una pregunta a Compañero (la respuesta llega por el portapapeles: pulsa Ctrl+V en el marco)")
+    say("  /compa sync - actualiza los datos (misiones del juego, Questie si está, WhatsTraining, SkillUpForever, equipo) y los envía todos durante 20 s, sin recargar")
+    say("  /compa sync reload - igual, y además recarga la interfaz (escribe SavedVariables)")
+    say("  /compa enviar - comparte los datos que han cambiado durante 20 s (igual que la tecla Compañero: compartir datos)")
     say("  /compa strip on|off - on: compartir con la tecla (por defecto); off: no compartir nunca")
     say("  /compa estado - muestra el estado actual")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
@@ -342,6 +344,7 @@ local function showStatus()
     for _ in pairs(db.knowledge.npcs) do nNpcs = nNpcs + 1 end
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     say("Compartir datos: " .. (ns.IsStripOn() and "activado" or "desactivado (/compa strip on)"))
+    if ns.Ask then say(ns.Ask.StatusLine()) end
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
     if ns.Native and ns.Native.SourcesStatusLine then say(ns.Native.SourcesStatusLine()) end
     if ns.GearStatusLines then
@@ -366,27 +369,54 @@ local function showStatus()
     end
 end
 
+-- Abre el marco y pone el cursor en la pregunta (/compa sin texto).
+local function openFrame()
+    if not ns.UI then return showHelp() end
+    if ns.UI.Open() then
+        ns.UI.FocusQuestion()
+    else
+        say("No se puede abrir el marco en este cliente.")
+    end
+end
+
 local function handleSlash(msg)
+    local question = string.match(msg or "", "^%s*%?%s*(.-)%s*$")
+    if question then
+        -- /compa ? <texto>: pregunta directa (el texto conserva sus mayusculas).
+        if ns.Ask then ns.Ask.Send(question) else say("Preguntas no disponibles.") end
+        return
+    end
     local cmd, rest = string.match(msg or "", "^%s*(%S*)%s*(.-)%s*$")
     rest = rest or ""
     local raw = rest -- con mayusculas: los textos de marca las conservan
     cmd = string.lower(cmd or "")
     rest = string.lower(rest)
-    if cmd == "sync" then
+    if cmd == "" then
+        openFrame()
+    elseif cmd == "ayuda" then
+        showHelp()
+    elseif cmd == "sync" then
         if ns.InCombat() then
             say("No se puede sincronizar en combate. Inténtalo al salir de combate.")
             return
         end
         if ns.ExportNativeNow then ns.ExportNativeNow() end -- misiones del juego (Native.lua)
-        if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita, antes de recargar
+        if ns.ExportQuestieNow then ns.ExportQuestieNow() end -- sin throttle: accion explicita
         if ns.ExportIntegrationsNow then ns.ExportIntegrationsNow() end
         if ns.FlushGear then ns.FlushGear() end -- equipo, misiones, candidatos y mazmorras (sin tope de tiempo)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
         if ns.ExportMacrosNow then ns.ExportMacrosNow() end -- macros de cuenta y personaje (Macros.lua)
         if ns.ExportSheetNow then ns.ExportSheetNow() end -- hoja de personaje y hechizos (Sheet.lua)
         ns.SnapshotAll()
-        say("Datos guardados. Recargando la interfaz...")
-        ns.Call("ReloadUI")
+        if rest == "reload" then
+            say("Datos guardados. Recargando la interfaz...")
+            ns.Call("ReloadUI")
+        elseif ns.Share then
+            -- Sin recarga: todo el personaje durante la ventana de envio (sin saltarse lo que no cambio).
+            ns.Share.Activate(true, { full = true })
+        else
+            say("Compartir no disponible.")
+        end
     elseif cmd == "enviar" then
         if ns.Share then ns.Share.Command() else say("Compartir no disponible.") end
     elseif cmd == "marca" then
