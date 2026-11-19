@@ -81,6 +81,7 @@ type Reader struct {
 	activeMu sync.Mutex
 	active   bool
 	watch    bool
+	disabled bool // set by Disable: the reader never captures again
 	wake     chan struct{}
 	// captures counts the screen and window copies made so far (see Captures).
 	captures atomic.Int64
@@ -164,6 +165,9 @@ func (r *Reader) Start(ctx context.Context) {
 // loop only waits; switching it on polls at once. The call never blocks.
 func (r *Reader) SetActive(on bool) {
 	r.activeMu.Lock()
+	if r.disabled {
+		on = false
+	}
 	changed := r.active != on
 	r.active = on
 	r.activeMu.Unlock()
@@ -189,7 +193,41 @@ func (r *Reader) Active() bool {
 func (r *Reader) SetWatch(on bool) {
 	r.activeMu.Lock()
 	defer r.activeMu.Unlock()
-	r.watch = on
+	r.watch = on && !r.disabled
+}
+
+// Disable turns the reader off for good: the screen is never captured again, whatever SetActive
+// and SetWatch are asked (the screenshot channel is in use: zero screen capture). The call never
+// blocks.
+func (r *Reader) Disable() {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	r.disabled = true
+	r.active = false
+	r.watch = false
+}
+
+// Disabled reports whether Disable was called.
+func (r *Reader) Disabled() bool {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	return r.disabled
+}
+
+// FeedFrame ingests a frame read from a screenshot (see internal/shots): the frame goes into the
+// channel exactly like a frame read from the strip, and its status is published the same way. now
+// is when the screenshot was read.
+func (r *Reader) FeedFrame(f FrameV3, now time.Time) {
+	r.channel.SetSource(SourceShot)
+	r.channel.Feed(f, now)
+	st := f.Status
+	st.ReadAt = now
+	r.statsMu.Lock()
+	r.stats.Source = SourceShot
+	r.stats.LastOKAt = now
+	r.stats.FramesOK++
+	r.statsMu.Unlock()
+	r.publish(st)
 }
 
 // Watching reports whether the watch is on (see SetWatch).

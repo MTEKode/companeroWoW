@@ -28,6 +28,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
 	"github.com/MTEKode/companeroWoW/app/internal/ondemand"
 	"github.com/MTEKode/companeroWoW/app/internal/session"
+	"github.com/MTEKode/companeroWoW/app/internal/shots"
 	"github.com/MTEKode/companeroWoW/app/internal/skill"
 	"github.com/MTEKode/companeroWoW/app/internal/store"
 	"github.com/MTEKode/companeroWoW/app/internal/tools"
@@ -215,6 +216,29 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	reader := bridge.NewReader(cfg.PixelPoll())
 	if onDemand {
 		reader.SetActive(false)
+	}
+	// The live data comes from the screenshots WoW saves (captura, the default): the screen is then
+	// never captured. "tira" keeps the strip on the screen, as before.
+	if cfg.Channel != config.ChannelStrip {
+		reader.Disable()
+	}
+	// The screenshot channel: the data panel of each new screenshot is read into the reader and the
+	// file is deleted (see internal/shots). It runs in both channels; only the addon's share draws panels.
+	if cfg.WoWPath != "" {
+		shotsWatch := shots.New(shots.Options{
+			Dir:   filepath.Join(cfg.WoWPath, "Screenshots"),
+			Since: time.Now(),
+			Sink:  reader,
+			Logf:  log.Printf,
+			OnChange: func(st shots.Status) {
+				if err := shots.WriteState(filepath.Join(dir, shots.StateFile), st); err != nil {
+					log.Printf("captura: estado: %v", err)
+				}
+			},
+		})
+		go shotsWatch.Run(ctx)
+	} else {
+		log.Printf("captura: no hay carpeta de WoW configurada; las capturas no se leen")
 	}
 	// The watcher looks the file up until it exists, so WoW set up or /compa sync run
 	// after the app started are picked up without a restart. On demand it is paused: it
@@ -666,8 +690,11 @@ type diagReport struct {
 	SkillVersion    string                 `json:"skillVersion"`
 	SkillInstalled  bool                   `json:"skillInstalled"`
 	Channel         *channelDiag           `json:"channel,omitempty"`
-	UIMode          string                 `json:"uiMode"`
-	AnswerSound     string                 `json:"answerSound"`
+	// Screenshots is the screenshot channel: the folder, the screenshots waiting in it and what the
+	// running app last wrote (see shots.StateFile).
+	Screenshots *screenshotDiag `json:"screenshots,omitempty"`
+	UIMode      string          `json:"uiMode"`
+	AnswerSound string          `json:"answerSound"`
 }
 
 // runDiag prints the diagnosis as JSON. The output goes to the parent console when the
@@ -712,7 +739,9 @@ func runDiag(cfg *config.Config, dir, diagOut string) int {
 	} else if ok {
 		rep.RunningApp = &st
 	}
-	if rep.WoWDetected {
+	rep.Screenshots = diagScreenshots(cfg, dir)
+	// The strip is read from the screen only when that is the channel: the default never captures.
+	if rep.WoWDetected && cfg.Channel == config.ChannelStrip {
 		rep.Channel = diagChannel(diagChannelWait)
 	}
 	rep.Providers = providerReport(cfg, dir)

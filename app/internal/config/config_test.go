@@ -139,3 +139,21 @@ func TestSavedVariablesPathNoAccount(t *testing.T) {
 		t.Fatal("expected error when no account has SavedVariables")
 	}
 }
+
+// The live data channel defaults to the screenshots; an unknown value falls back to them too.
+func TestChannelDefaultsToCapture(t *testing.T) {
+	c := Defaults()
+	if c.Channel != ChannelCapture {
+		t.Fatalf("default channel = %q, want %q", c.Channel, ChannelCapture)
+	}
+	c.Channel = "otra"
+	c.ClampChannel()
+	if c.Channel != ChannelCapture {
+		t.Fatalf("clamped channel = %q", c.Channel)
+	}
+	c.Channel = ChannelStrip
+	c.ClampChannel()
+	if c.Channel != ChannelStrip {
+		t.Fatalf("a valid channel was changed to %q", c.Channel)
+	}
+}
