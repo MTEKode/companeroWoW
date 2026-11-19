@@ -86,6 +86,7 @@ type FrameV3 struct {
 	Version    uint8 // ProtocolV3 or ProtocolV31: the layout the strip was read with
 	Seq        uint8
 	N          int       // blocks in the row
+	ShotID     uint16    // screenshot frames only (ProtocolV5): the shot the row belongs to; 0 otherwise
 	Status     LiveState // the status payload (Seq set)
 	MsgType    uint8     // 0 = no chunk pending
 	MsgID      uint16    // message id, the same on every chunk of a message

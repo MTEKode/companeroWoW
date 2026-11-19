@@ -114,6 +114,31 @@ type Config struct {
 	// Trace writes the detailed diagnostic lines to companero.log (every capture, frame and
 	// message). The --trace switch does the same for one run.
 	Trace bool `json:"trace"`
+	// Channel is where the live data comes from: ChannelCapture (the default) reads the data panel
+	// of the screenshots WoW saves and never captures the screen; ChannelStrip reads the live strip
+	// on the screen, as before.
+	Channel string `json:"channel"`
+}
+
+// The ways the live data reaches the app (Channel).
+const (
+	// ChannelCapture reads the data panel of the screenshots in <WoWPath>\Screenshots. The screen
+	// is never captured.
+	ChannelCapture = "captura"
+	// ChannelStrip reads the strip the addon draws at the top of the screen (/compa canal tira).
+	ChannelStrip = "tira"
+)
+
+// ValidChannel reports whether s is one of the Channel values.
+func ValidChannel(s string) bool {
+	return s == ChannelCapture || s == ChannelStrip
+}
+
+// ClampChannel makes Channel a known value (an empty or unknown one gets the screenshots).
+func (c *Config) ClampChannel() {
+	if !ValidChannel(c.Channel) {
+		c.Channel = ChannelCapture
+	}
 }
 
 // The ways the app reads the game (Mode).
@@ -256,6 +281,7 @@ func Defaults() Config {
 		AnswerCacheMin:  DefaultAnswerCacheMin,
 		Mode:            ModeOnDemand,
 		OnDemandWaitSec: DefaultOnDemandWaitSec,
+		Channel:         ChannelCapture,
 		UIMode:          UIModeGame,
 		AnswerSound:     AnswerVoice,
 		AnswerVolume:    80,
@@ -416,6 +442,10 @@ func (c *Config) migrate() bool {
 		changed = true
 	}
 	if c.clampMode() {
+		changed = true
+	}
+	if !ValidChannel(c.Channel) {
+		c.Channel = ChannelCapture
 		changed = true
 	}
 	return changed

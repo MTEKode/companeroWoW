@@ -230,6 +230,9 @@ func (d *LiveData) DecodeErrors() (int64, string) {
 const (
 	SourceScreen = "pantalla"
 	SourceWindow = "captura de ventana"
+	// SourceShot is the screenshot channel: the frames come from the data panel of the
+	// screenshots WoW saves (see internal/shots).
+	SourceShot = "captura"
 )
 
 // Channel is the v3 receiver: frames in, complete messages out into LiveData.
@@ -240,8 +243,11 @@ type Channel struct {
 	srcMu  sync.RWMutex
 	source string // SourceScreen or SourceWindow; empty until the first read
 
-	subMu sync.RWMutex
-	subs  []MessageFunc
+	// feedMu serialises Feed: the screen reader and the screenshot watcher may feed the same
+	// channel from different goroutines.
+	feedMu sync.Mutex
+	subMu  sync.RWMutex
+	subs   []MessageFunc
 }
 
 // MessageFunc receives each complete message: its type, its JSON body and when it arrived.
@@ -264,7 +270,7 @@ func NewChannel() *Channel {
 	return &Channel{re: NewReassembler(), Data: NewLiveData()}
 }
 
-// SetSource records where the strip is being read from: SourceScreen or SourceWindow.
+// SetSource records where the strip is being read from: SourceScreen, SourceWindow or SourceShot.
 func (c *Channel) SetSource(src string) {
 	c.srcMu.Lock()
 	c.source = src
@@ -281,7 +287,9 @@ func (c *Channel) Source() string {
 // Feed takes one decoded v3 frame read at now.
 func (c *Channel) Feed(f FrameV3, now time.Time) {
 	c.Data.noteFrame(now, len(f.Data))
+	c.feedMu.Lock()
 	t, body, ok := c.re.Add(f, now)
+	c.feedMu.Unlock()
 	if ok {
 		if err := c.Data.Put(t, body, now); err != nil { // a bad body is counted in DecodeErrors
 			log.Printf("canal: mensaje %s (tipo %d, id %d) no es JSON válido: %v", MsgNames[t], t, f.MsgID, err)

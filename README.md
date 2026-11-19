@@ -207,6 +207,7 @@ El archivo está en `%APPDATA%\CompaneroWoW\config.json`. Si no existe, la app l
 | `fontSize` | Tamaño del texto del panel en puntos, de 9 a 14 (por defecto 10). |
 | `webSources` | Dominios permitidos para buscar y leer páginas sobre WoW: Forever. El primero, `wowforevertalents.com`, es la fuente de clases, talentos, hechizos, builds, mazmorras y profesiones (ver «Fuentes web»). Las configuraciones antiguas lo reciben una vez al arrancar (`wftAdded`). |
 | `pixelPollMs` | Cada cuántos milisegundos se lee la franja de píxeles. |
+| `channel` | `captura` (por defecto): los datos llegan en las capturas de `<WoWPath>\Screenshots` y la pantalla no se captura. `tira`: se lee la franja de píxeles de la pantalla, como antes. |
 | `hotkeyMethod` | `escuchar` (por defecto: un hook que observa la tecla y no la consume) o `exclusivo` (RegisterHotKey: la tecla no llega a ninguna otra aplicación). Ver [Atajo de teclado](#atajo-de-teclado). |
 | `aiTimeoutSec` | Tiempo máximo por proveedor antes de probar el siguiente. |
 | `verifyAnswers` | `true` (por defecto): antes de mostrar una respuesta se comprueba que sus coordenadas, nombres entre «comillas», comandos `/compa barras` y los nombres de hechizo de las macros (`/compa macro`) salgan de las herramientas o del contexto del jugador. Si algo no cuadra, el mismo proveedor corrige una vez esos datos (sin pasarse del plazo); lo que siga sin respaldo sale con la línea «⚠ datos sin verificar». La pantalla Perfil lo cambia. |
@@ -273,7 +274,17 @@ Reglas del archivo: `CLAVE=valor` por línea; se admite `export` delante; las l�
 - `/compa macro borrar <nombre>` y `/compa macro deshacer` (vuelve a la copia anterior: recrea, edita o retira la macro), `/compa macro barra <nombre> <ranura>` (la pone en una barra; con copia, como `/compa barras deshacer`).
 - Las macros solo cambian cuando escribes el comando, fuera de combate, y se rechazan si las macros de personaje están llenas (18). Una macro es una acción por pulsación con las reglas del juego: el addon no crea macros que jueguen por ti.
 
-## Canal en vivo (franja superior)
+## Canal por capturas (por defecto)
+
+Los datos en vivo llegan en las capturas de pantalla que WoW guarda en `<WoWPath>\Screenshots` (la carpeta de tu instalación). El addon dibuja un panel de datos en la esquina superior izquierda de la captura, con bloques de 2 px, y la app lo lee del archivo:
+
+- **La pantalla no se captura.** Con `channel: "captura"` (por defecto) el lector de pantalla no corre nunca. La app solo vigila la carpeta de capturas, sin coste apreciable, y no necesita el atajo de teclado para los datos.
+- **Solo se borran las capturas propias.** Una captura se borra cuando su panel se decodifica por completo, o al menos su primera fila. Las demás capturas (las tuyas, las de otros addons, cualquier archivo) no se tocan. Las capturas anteriores al arranque de la app se ignoran.
+- **Preguntas.** Una pregunta escrita en el marco del juego llega en una captura y dispara la respuesta igual que antes (portapapeles y sonido).
+- **Diagnóstico.** `CompaneroWoW.exe --diag` muestra en `screenshots` la carpeta, las capturas que hay en ella, y lo que la app en ejecución escribió en `captura.json` (último panel leído, capturas con panel y errores).
+- **Volver a la franja.** `channel: "tira"` (o `/compa canal tira` en el addon) lee la franja de píxeles de la pantalla, como antes. Con `tira` el lector de pantalla vuelve a correr.
+
+## Canal en vivo, franja superior (`channel: "tira"`)
 
 El addon dibuja en la franja superior de la ventana de WoW (todo el ancho, 4 px por bloque) los datos de tu personaje: dinero, experiencia, misiones con objetivos, bolsas, equipo, profesiones, misiones completadas, combates, barras de acción, conocimiento y estado. La app los lee de la pantalla, sin pulsar nada y sin leer memoria del juego. Va en vivo solo mientras dura un envío: cada 0,2 s refresca la franja, y cada tipo de mensaje se manda una vez por envío.
 
