@@ -313,6 +313,7 @@ local function showHelp()
     say("  /compa sync reload - igual, y además recarga la interfaz (escribe SavedVariables)")
     say("  /compa enviar - comparte los datos que han cambiado durante 20 s (igual que la tecla Compañero: compartir datos)")
     say("  /compa strip on|off - on: compartir con la tecla (por defecto); off: no compartir nunca")
+    say("  /compa canal captura|tira - captura: datos en capturas de pantalla (por defecto); tira: franja de píxeles en vivo")
     say("  /compa estado - muestra el estado actual (datos guardados y bandeja)")
     say("  /compa limpiar - vacía la bandeja de envío (pide confirmación: /compa limpiar si)")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
@@ -348,6 +349,10 @@ local function showStatus()
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     if ns.Storage then say(ns.Storage.StatusLine()) end
     say("Compartir datos: " .. (ns.IsStripOn() and "activado" or "desactivado (/compa strip on)"))
+    if ns.Share then say("Canal de envío: " .. ns.Share.Channel()) end
+    if ns.Shot then
+        for _, line in ipairs(ns.Shot.StatusLines()) do say(line) end
+    end
     if ns.Ask then say(ns.Ask.StatusLine()) end
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
     if ns.Native and ns.Native.SourcesStatusLine then say(ns.Native.SourcesStatusLine()) end
@@ -426,6 +431,8 @@ local function handleSlash(msg)
         if ns.Share then ns.Share.Command() else say("Compartir no disponible.") end
     elseif cmd == "marca" then
         if ns.Marks then ns.Marks.Command(raw) else say("Marcas no disponibles.") end
+    elseif cmd == "canal" then
+        if ns.Share then ns.Share.ChannelCommand(rest) else say("Canal no disponible.") end
     elseif cmd == "strip" then
         if rest == "on" then
             ns.SetStripEnabled(true)

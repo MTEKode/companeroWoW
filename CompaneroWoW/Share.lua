@@ -29,10 +29,47 @@ local function nowSec()
     return ns.Now()
 end
 
+-- Canal de envio: "captura" (capturas de pantalla, Shot.lua; por defecto) o "tira" (franja de
+-- pixeles en vivo, Bridge.lua). Se guarda en settings.channel.
+Sh.CHANNELS = { captura = true, tira = true }
+Sh.DEFAULT_CHANNEL = "captura"
+
+function Sh.Channel()
+    local db = CompaneroWoWDB
+    local v = type(db) == "table" and type(db.settings) == "table" and db.settings.channel or nil
+    if v == "tira" then return "tira" end
+    return Sh.DEFAULT_CHANNEL
+end
+
+-- /compa canal [tira|captura]: sin argumento, muestra el canal en uso.
+function Sh.ChannelCommand(rest)
+    rest = string.lower(rest or "")
+    if rest == "" then
+        say("Canal de envío: " .. Sh.Channel() .. " (/compa canal tira|captura).")
+        return
+    end
+    if not Sh.CHANNELS[rest] then
+        say("Uso: /compa canal tira|captura")
+        return
+    end
+    if type(CompaneroWoWDB) == "table" then
+        if type(CompaneroWoWDB.settings) ~= "table" then CompaneroWoWDB.settings = {} end
+        CompaneroWoWDB.settings.channel = rest
+    end
+    if rest == "captura" then
+        say("Canal de envío: capturas de pantalla. Los datos salen en capturas del juego (Ctrl+V tras la respuesta sigue igual).")
+    else
+        say("Canal de envío: franja de píxeles en vivo (requiere ver la franja en pantalla).")
+    end
+end
+
 -- Activa la ventana de envio, o la reactiva (pulsar otra vez la alarga; solo sale lo que cambio).
 -- opts.full = true: envia todo (/compa sync). Antes pide una revision de datos (throttle de Core.lua:
 -- como mucho cada 120 s, fuera de combate). Devuelve true si la ventana empezo. Con la franja
 -- desactivada (/compa strip off) nunca.
+-- Canal "captura" (por defecto): Shot.Start hace la captura. Si no se puede (sin Screenshot, bloqueado,
+-- en combate sin pregunta), avisa y, salvo en combate, cae a la franja.
+-- opts.question = true: viene de una pregunta (sale aunque estemos en combate).
 function Sh.Activate(fromCommand, opts)
     if not ns.IsStripOn() then
         if fromCommand then
@@ -44,6 +81,26 @@ function Sh.Activate(fromCommand, opts)
     if not C then return false end
     if ns.RequestSnapshot then ns.SafeCall(ns.RequestSnapshot) end
     local now = nowSec()
+    if Sh.Channel() == "captura" and ns.Shot then
+        local res, why = ns.Shot.Start(now, opts)
+        if res == "started" then
+            if fromCommand then
+                say(opts and opts.full and "Sincronizando todo en una captura de pantalla (sin recargar la interfaz)."
+                    or "Enviando datos en una captura de pantalla.")
+            end
+            return true
+        elseif res == "combat" then
+            say("En combate no se envían datos: solo preguntas. Sal de combate para compartir.")
+            return false
+        elseif res == "busy" then
+            say("Ya se está enviando una captura. Espera un momento.")
+            return false
+        elseif res == "failed" then
+            return false
+        end
+        -- unavailable: se cae a la franja de pixeles.
+        say("Captura no disponible (" .. (why or "sin motivo") .. "): se envía por la franja de píxeles. /compa canal tira para usarla siempre.")
+    end
     C.Begin(now, opts)
     if not ns.StripStart() then
         C.Stop()
@@ -116,7 +173,7 @@ function Sh.StatusLine()
     local left = ns.Channel and ns.Channel.RemainingSec(nowSec()) or 0
     local state = left > 0 and string.format("Compartiendo (%d s)", left) or "Reposo"
     local key = Sh.CurrentKey() or "sin asignar (Teclas › AddOns › Compañero WoW)"
-    return "Envío: " .. state .. ". Tecla de compartir: " .. key
+    return "Envío: " .. state .. ". Canal: " .. Sh.Channel() .. ". Tecla de compartir: " .. key
 end
 
 -- Primera ejecucion: al entrar al juego y al salir de combate (si quedo pendiente).

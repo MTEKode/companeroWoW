@@ -185,6 +185,12 @@ function UI.Receive(text)
     return true
 end
 
+-- Llamado por Shot.lua al confirmarse una captura: estado y pista de Ctrl+V (si hay pregunta pendiente).
+function UI.OnShotSent(id)
+    setStatus(string.format("Enviado (captura %d).", id or 0))
+    updateHint()
+end
+
 -- Llamado por Ask.Send al enviar una pregunta: foco al campo de pegado y aviso.
 function UI.OnQuestionSent(id)
     setStatus(string.format("Pregunta #%d enviada.", id))

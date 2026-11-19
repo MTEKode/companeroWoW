@@ -102,13 +102,15 @@ function Ask.Send(text)
         say("La pregunta no se pudo codificar.")
         return false
     end
-    -- Primero la ventana (Begin reinicia el plan); luego la pregunta, que va delante de todo.
-    if not Sh.Activate(false) then
-        say("No se puede enviar: no hay franja de píxeles.")
-        return false
-    end
+    -- La pregunta va en la cola antes de abrir la ventana (la captura lee la cola al empezar);
+    -- la ventana la vuelve a encolar al principio si hace falta. Sin ventana, se retira.
     local now = ns.Num(Call("GetTime")) or ns.Now()
     C.SendQuestion(json, now)
+    if not Sh.Activate(false, { question = true }) then
+        C.DropQuestion()
+        say("No se puede enviar: no hay canal de envío disponible.")
+        return false
+    end
     a.lastId = msg.id
     a.questions[#a.questions + 1] = s
     while #a.questions > Ask.KEEP do table.remove(a.questions, 1) end

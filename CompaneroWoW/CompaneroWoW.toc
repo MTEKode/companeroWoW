@@ -20,6 +20,7 @@ Integrations.lua
 Marks.lua
 Bridge.lua
 Channel.lua
+Shot.lua
 World.lua
 Share.lua
 Sheet.lua
