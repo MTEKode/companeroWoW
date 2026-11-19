@@ -80,6 +80,9 @@ type RuntimeState struct {
 	LastDecodeAt    *time.Time `json:"lastDecodeAt,omitempty"`
 	// LastDecodeOKAt is when the last read decoded.
 	LastDecodeOKAt *time.Time `json:"lastDecodeOkAt,omitempty"`
+	// Gain is the colour gain the strip showed in the last read, when the display altered the
+	// colours beyond what the decoder reads (about 1.6 for a brightness or HDR setting); 0 otherwise.
+	Gain float64 `json:"gain,omitempty"`
 	// MessagesByType counts the complete messages received per message type, by name.
 	MessagesByType map[string]int64 `json:"messagesByType,omitempty"`
 	// HoldUntil is when the reader goes off if nothing keeps it on (only while it is on for a hold).

@@ -1,17 +1,17 @@
--- Channel.lua: canal de datos en vivo sobre la franja superior (protocolo v3), bajo demanda.
+-- Channel.lua: canal de datos en vivo sobre la franja superior (protocolo v3.1), bajo demanda.
 -- Parte pura (testeable offline): CRC-16, capacidad, trama y planificador de trozos.
 -- Parte de juego: el plan de envio de una activacion (tecla o /compa enviar). En reposo no hay
 -- nada que serializar: ni carrusel, ni JSON.
 --
--- Trama v3 (bytes, 1-based; todo big-endian salvo donde se indica):
---   [1] version=3  [2] seq  [3] N lo  [4] N hi            (N = bloques de la fila, u16 LE)
+-- Trama v3.1 (bytes, 1-based; todo big-endian salvo donde se indica):
+--   [1] version=4  [2] seq  [3] N lo  [4] N hi            (N = bloques de la fila, u16 LE)
 --   [5..36]  estado (32 bytes, mismo layout y CRC-8 que v2; byte 30 = shareRemainingSec)
 --   [37] msgType  [38..39] msgId (LE)  [40..41] chunkIndex (LE)  [42..43] chunkCount (LE)
 --   [44..45] dataLen (LE)
 --   [46..45+dataLen] datos del trozo
 --   [46+dataLen, 47+dataLen] CRC-16/CCITT-FALSE de los bytes 1..45+dataLen (big-endian)
 -- Sin trozo pendiente: msgType = 0 y dataLen = 0. Los nibbles sobrantes valen 0.
--- Capacidad de datos por trama: floor(3*(N-5)/2) - 47 bytes (N = 860 -> 1235 bytes).
+-- Capacidad de datos por trama: floor(3*(N-7)/2) - 47 bytes (N = 860 -> 1232 bytes).
 --
 -- Activacion (C.Begin): ventana de SHARE_SECONDS. Al empezar una ventana nueva (desde reposo):
 --  - cada item de la bandeja (Storage.lua) se encola como un mensaje propio, en orden de seq; su JSON
@@ -39,11 +39,11 @@ local tinsert, tremove = table.insert, table.remove
 local C = {}
 ns.Channel = C
 
-C.VERSION = 3
+C.VERSION = 4
 C.STATUS_LEN = 32
 C.CHUNK_HEADER_LEN = 9
 C.OVERHEAD = 4 + 32 + 9 + 2 -- cabecera + estado + cabecera de trozo + CRC-16
-C.CALIB_BLOCKS = 5
+C.CALIB_BLOCKS = 7
 C.SHARE_SECONDS = 20        -- duracion maxima de una activacion (se alarga si se vuelve a pulsar)
 C.SHARE_MIN_SEC = 3         -- minimo de una activacion: no acaba antes aunque la cola este vacia
 C.KEY_RESEND_SEC = 600      -- tipos clave: se reenvian si pasan 10 min (o tras recargar)

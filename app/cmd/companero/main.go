@@ -375,6 +375,8 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	announcer := gamemode.NewSystemAnnouncer(cfg.AnswerSound, cfg.AnswerVolume)
 	answers := gamemode.NewController(backend, gamemode.ClipboardFunc(ui.CopyText), announcer, answerGate,
 		g.ActiveCharacterKey, ui.FriendlyError)
+	// The colour-gain notice goes to the clipboard while a question is pending (see runGainNotice).
+	go runGainNotice(ctx, reader, answers)
 	reader.Channel().OnMessage(func(t uint8, body []byte, _ time.Time) {
 		if t != bridge.MsgQuestion {
 			return
@@ -431,6 +433,13 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		},
 		Status: func() ui.Status {
 			s := buildStatus(g, providers, watcher, mcpErrs.get())
+			// A colour gain the reader cannot decode for 2 s is told to the player in the status bar.
+			if gain, ok := reader.ColourGainAlert(time.Now()); ok {
+				if s.Notice != "" {
+					s.Notice += " · "
+				}
+				s.Notice += bridge.ColourGainText(gain)
+			}
 			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
 			s.Idle = !mode.isContinuous() && !ctl.Active()
 			return s

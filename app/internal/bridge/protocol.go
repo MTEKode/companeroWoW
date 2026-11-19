@@ -281,6 +281,9 @@ func fitLinearCal(blocks [NumBlocks][3]byte, c int) (linearCal, bool) {
 // for a clipping client. Choosing by the grid fit, not by trying both, keeps the CRC
 // at one chance in 256 per decode.
 func decodeAuto(blocks [NumBlocks][3]byte) (LiveState, error) {
+	if err := gainError(calExpected[:], blocks[:5]); err != nil {
+		return LiveState{}, err
+	}
 	var pw [3]levelMap
 	for c := 0; c < 3; c++ {
 		p, err := newChannelCal(blocks, c)

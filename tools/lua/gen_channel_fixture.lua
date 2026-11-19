@@ -1,4 +1,4 @@
--- gen_channel_fixture.lua: genera app/testdata/channel_v3_fixture.json con el addon real (Channel.lua,
+-- gen_channel_fixture.lua: genera app/testdata/channel_v31_fixture.json con el addon real (Channel.lua,
 -- Bridge.lua, Json.lua) en luajit. Cada trama se guarda como colores de los N bloques (6 hex por bloque),
 -- tal como se pintan en pantalla; el test de Go decodifica esas tramas y compara con los mensajes esperados.
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/gen_channel_fixture.lua
@@ -78,11 +78,16 @@ local function colorsHex(colors)
     return table.concat(parts)
 end
 
+-- Como Bridge.lua: abre la ventana, serializa por trama (C.Pump) y toma el trozo de la trama (C.NextChunk).
+C.Begin(now, { full = true })
 local colorsBuf = {}
 local sent = 0
+local frameNo = 0
 for i = 1, 400 do
     now = now + 0.2
-    local chunk = C.Tick(now, N)
+    C.Pump(now, C.PUMP_BUDGET_MS)
+    frameNo = frameNo + 1
+    local chunk = C.NextChunk(N, frameNo)
     local sch = C.state.sched
     local pending = sch and sch:pending() or 0
     if chunk then
@@ -124,7 +129,7 @@ for i, e in ipairs(expected) do
 end
 out[#out + 1] = "}\n}\n"
 
-local path = "app/testdata/channel_v3_fixture.json"
+local path = "app/testdata/channel_v31_fixture.json"
 local f = assert(io.open(path, "wb"))
 f:write(table.concat(out))
 f:close()

@@ -83,6 +83,7 @@ var ErrBadChunk = errors.New("bridge: bad chunk header")
 
 // FrameV3 is one decoded v3 frame.
 type FrameV3 struct {
+	Version    uint8 // ProtocolV3 or ProtocolV31: the layout the strip was read with
 	Seq        uint8
 	N          int       // blocks in the row
 	Status     LiveState // the status payload (Seq set)
@@ -133,6 +134,12 @@ func CRC16(b []byte) uint16 {
 
 // BuildFrameV3 composes the byte stream of one frame. A nil chunk means nothing pending.
 func BuildFrameV3(s LiveState, seq uint8, n int, chunk *ChunkV3) ([]byte, error) {
+	return buildFrame(ProtocolV3, calibrationBlocks, s, seq, n, chunk)
+}
+
+// buildFrame composes a frame of the given version whose strip has base fixed blocks. The byte
+// stream is the same for v3 and v3.1; only the version and the capacity of the row differ.
+func buildFrame(version uint8, base int, s LiveState, seq uint8, n int, chunk *ChunkV3) ([]byte, error) {
 	dlen := 0
 	var msgType uint8
 	var id, index, count uint16
@@ -142,14 +149,18 @@ func BuildFrameV3(s LiveState, seq uint8, n int, chunk *ChunkV3) ([]byte, error)
 		data = chunk.Data
 		dlen = len(data)
 	}
-	if n <= calibrationBlocks || n > MaxBlocksV3 {
+	if n <= base || n > MaxBlocksV3 {
 		return nil, fmt.Errorf("%w: %d blocks", ErrBadLength, n)
 	}
-	if dlen > CapacityV3(n) {
-		return nil, fmt.Errorf("bridge: chunk of %d bytes exceeds the %d-byte capacity of %d blocks", dlen, CapacityV3(n), n)
+	capacity := 3*(n-base)/2 - v3Overhead
+	if capacity < 0 {
+		capacity = 0
+	}
+	if dlen > capacity {
+		return nil, fmt.Errorf("bridge: chunk of %d bytes exceeds the %d-byte capacity of %d blocks", dlen, capacity, n)
 	}
 	f := make([]byte, 0, v3Overhead+dlen)
-	f = append(f, ProtocolV3, seq, byte(n), byte(n>>8))
+	f = append(f, version, seq, byte(n), byte(n>>8))
 	status := encodePayload(s)
 	f = append(f, status[:]...)
 	f = append(f, msgType, byte(id), byte(id>>8), byte(index), byte(index>>8),
@@ -162,11 +173,16 @@ func BuildFrameV3(s LiveState, seq uint8, n int, chunk *ChunkV3) ([]byte, error)
 
 // ParseFrameV3 reads a frame from its bytes, checking the version and the CRC-16.
 func ParseFrameV3(b []byte) (FrameV3, error) {
+	return parseFrame(b, ProtocolV3)
+}
+
+// parseFrame is ParseFrameV3 for the given version byte (ProtocolV3 or ProtocolV31).
+func parseFrame(b []byte, version uint8) (FrameV3, error) {
 	if len(b) < v3Overhead {
 		return FrameV3{}, fmt.Errorf("%w: %d bytes", ErrBadLength, len(b))
 	}
-	if b[0] != ProtocolV3 {
-		return FrameV3{}, fmt.Errorf("%w: got %d, want %d", ErrBadVersion, b[0], ProtocolV3)
+	if b[0] != version {
+		return FrameV3{}, fmt.Errorf("%w: got %d, want %d", ErrBadVersion, b[0], version)
 	}
 	dlen := int(b[43]) | int(b[44])<<8
 	crcAt := 45 + dlen
@@ -183,6 +199,7 @@ func ParseFrameV3(b []byte) (FrameV3, error) {
 	st := parsePayload(payload)
 	st.Seq = b[1]
 	f := FrameV3{
+		Version:    b[0],
 		Seq:        b[1],
 		N:          int(b[2]) | int(b[3])<<8,
 		Status:     st,
@@ -200,9 +217,16 @@ func ParseFrameV3(b []byte) (FrameV3, error) {
 // BlocksV3 returns the colours of the n blocks of a frame: blocks 0..4 are the fixed magic
 // and calibration colours, blocks 5..n-1 the nibbles of frame (missing nibbles are 0).
 func BlocksV3(frame []byte, n int) [][3]byte {
+	return nibbleBlocks(frame, n, calExpected[:], calibrationBlocks, func(v byte) byte { return v * nibbleStep })
+}
+
+// nibbleBlocks lays out the n blocks of a frame: the first base blocks are the fixed colours
+// fixed, the rest carry the nibbles of frame (3 per block, R G B), each nibble mapped to its
+// colour by value.
+func nibbleBlocks(frame []byte, n int, fixed [][3]byte, base int, value func(byte) byte) [][3]byte {
 	out := make([][3]byte, n)
-	for i := 0; i < calibrationBlocks && i < n; i++ {
-		out[i] = calExpected[i]
+	for i := 0; i < base && i < n; i++ {
+		out[i] = fixed[i]
 	}
 	nibble := func(k int) byte {
 		j := k / 2
@@ -214,9 +238,9 @@ func BlocksV3(frame []byte, n int) [][3]byte {
 		}
 		return frame[j] & 0x0f
 	}
-	for b := calibrationBlocks; b < n; b++ {
+	for b := base; b < n; b++ {
 		for c := 0; c < 3; c++ {
-			out[b][c] = nibble((b-calibrationBlocks)*3+c) * nibbleStep
+			out[b][c] = value(nibble((b-base)*3 + c))
 		}
 	}
 	return out
@@ -379,7 +403,7 @@ func DecodeFrameV3(img image.Image, hint float64) (FrameV3, float64, error) {
 	s := loadV3(img, b.Dx())
 	if hint > 0 {
 		if s.fitCostV3(hint) <= maxFitCost {
-			if f, p, err := s.decodeV3AtPitch(hint); err == nil {
+			if f, p, err := s.decodeFrameAtPitch(hint); err == nil {
 				return f, p, nil
 			}
 		}
@@ -388,15 +412,22 @@ func DecodeFrameV3(img image.Image, hint float64) (FrameV3, float64, error) {
 	if len(cands) == 0 {
 		return FrameV3{}, 0, fmt.Errorf("%w: no pitch in [%.1f, %d] gives uniform blocks", ErrNoMagic, minBlockPx, maxBlockPx)
 	}
-	var firstErr error
+	var firstErr, gainErr error
 	for _, c := range cands {
-		f, p, err := s.decodeV3AtPitch(c.p)
+		f, p, err := s.decodeFrameAtPitch(c.p)
 		if err == nil {
 			return f, p, nil
+		}
+		if _, ok := ColourGainOf(err); ok && gainErr == nil {
+			gainErr = err
 		}
 		if firstErr == nil && !errors.Is(err, ErrNoMagic) {
 			firstErr = err
 		}
+	}
+	// A colour gain is the reason the player must act on, so it is reported before the rest.
+	if gainErr != nil {
+		return FrameV3{}, 0, gainErr
 	}
 	if firstErr != nil {
 		return FrameV3{}, 0, firstErr
@@ -404,12 +435,29 @@ func DecodeFrameV3(img image.Image, hint float64) (FrameV3, float64, error) {
 	return FrameV3{}, 0, fmt.Errorf("%w: blocks 0-1 are not the magic colours", ErrNoMagic)
 }
 
-// Decoded is the result of DecodeAny: the status, and the v3 frame when the strip is v3.
+// decodeFrameAtPitch decodes a v3 or v3.1 frame at the coarse pitch p0. The version byte says
+// which layout the strip has, so v3.1 is tried first and v3 second (see ProtocolV31).
+func (s *v3Image) decodeFrameAtPitch(p0 float64) (FrameV3, float64, error) {
+	f, p, err := s.decodeV31AtPitch(p0)
+	if err == nil {
+		return f, p, nil
+	}
+	f3, p3, err3 := s.decodeV3AtPitch(p0)
+	if err3 == nil {
+		return f3, p3, nil
+	}
+	if _, ok := ColourGainOf(err); ok {
+		return FrameV3{}, 0, err
+	}
+	return FrameV3{}, 0, err3
+}
+
+// Decoded is the result of DecodeAny: the status, and the frame when the strip is v3 or v3.1.
 type Decoded struct {
 	Live    LiveState
 	Frame   *FrameV3 // nil for a v2 strip
 	Pitch   float64
-	Version int // 2 or 3
+	Version int // 2, 3 or 4 (ProtocolVersion, ProtocolV3, ProtocolV31)
 }
 
 // DecodeAny reads the strip of either protocol from img: v3 first, then v2 for addons that
@@ -417,7 +465,7 @@ type Decoded struct {
 func DecodeAny(img image.Image, hint float64) (Decoded, error) {
 	f, p, err := DecodeFrameV3(img, hint)
 	if err == nil {
-		return Decoded{Live: f.Status, Frame: &f, Pitch: p, Version: ProtocolV3}, nil
+		return Decoded{Live: f.Status, Frame: &f, Pitch: p, Version: int(f.Version)}, nil
 	}
 	st, p2, err2 := decodeStrip(img, hint)
 	if err2 == nil {

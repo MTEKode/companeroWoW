@@ -59,6 +59,7 @@ type ReaderStats struct {
 	Source            string    // where the strip was last read from (SourceScreen or SourceWindow)
 	Pitch             float64   // pitch of the last decode
 	ShareRemainingSec int       // the addon's share countdown in the last decoded status
+	Gain              float64   // the colour gain of the last read, when it failed for that reason (0 otherwise)
 }
 
 // Reader polls the top-left StripWidth x StripHeight region (NumBlocks blocks, up to 16 px
@@ -103,6 +104,8 @@ type Reader struct {
 	lastPath      string    // where the last read came from: SourceScreen, SourceWindow or ""
 	lastShare     int       // shareRemainingSec of the last decoded status
 	lastN         int       // blocks in the row of the last decoded v3 frame (0 for v2)
+	gainSince     time.Time // when the current run of colour-gain reads began (statsMu)
+	gainTraced    bool      // the trace has said that this run passed ColourGainAfter (poll goroutine)
 	sum           summary   // the reads since the last summary line (see flushSummary)
 
 	// channel receives the v3 frames: messages reassembled into LiveData. Set once in NewReader.
@@ -200,6 +203,21 @@ func (r *Reader) Watching() bool {
 // created. It does not move while the reader is inactive; --diag reports it.
 func (r *Reader) Captures() int64 {
 	return r.captures.Load()
+}
+
+// ColourGainAlert reports the colour gain of the strip when it has been out of the decodable range
+// for ColourGainAfter or longer while the reader is on. The player is then told to reset the
+// display settings (see ColourGainText).
+func (r *Reader) ColourGainAlert(now time.Time) (float64, bool) {
+	if !r.Active() {
+		return 0, false
+	}
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	if r.gainSince.IsZero() || now.Sub(r.gainSince) < ColourGainAfter {
+		return 0, false
+	}
+	return r.stats.Gain, true
 }
 
 // Stats returns the reader's counters (see ReaderStats).
@@ -329,7 +347,24 @@ func (r *Reader) note(spent time.Duration, err error, watch bool) {
 		st.LastError = err.Error()
 		st.LastErrorAt = now
 	}
+	gain, isGain := ColourGainOf(err)
+	if isGain {
+		if r.gainSince.IsZero() {
+			r.gainSince = now
+		}
+		st.Gain = gain
+	} else {
+		r.gainSince = time.Time{}
+		r.gainTraced = false
+		st.Gain = 0
+	}
+	since := r.gainSince
 	r.statsMu.Unlock()
+
+	if isGain && !r.gainTraced && now.Sub(since) >= ColourGainAfter {
+		r.gainTraced = true
+		diag.Tracef("colores alterados: ganancia x%.2f desde hace %.1f s; el juego no se lee (brillo/gamma/intensidad digital/HDR)", gain, now.Sub(since).Seconds())
+	}
 
 	if diag.Tracing() {
 		if err == nil {
