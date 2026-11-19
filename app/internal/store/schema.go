@@ -136,6 +136,7 @@ var migrations = [][]string{
 			fetched_at INTEGER NOT NULL
 		)`,
 	},
+	appSchemaMigration(), // migration 5: normalized tables, session key, read-only views (schema_app.go, views.go)
 }
 
 // latestVersion is the user_version after all migrations have run.

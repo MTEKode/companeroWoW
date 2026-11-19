@@ -23,9 +23,11 @@ const (
 
 // MaintenanceResult says what one Maintain run removed.
 type MaintenanceResult struct {
-	MessagesDeleted int64
-	CacheDeleted    int64
-	Vacuumed        bool
+	MessagesDeleted  int64
+	CacheDeleted     int64
+	CombatsDeleted   int64
+	SnapshotsDeleted int64
+	Vacuumed         bool
 }
 
 // Maintain trims the stored data: it keeps the newest keepChatMessages chat messages,
@@ -46,6 +48,11 @@ func (s *Store) Maintain() (MaintenanceResult, error) {
 		return res, err
 	}
 	res.CacheDeleted = n
+
+	res.CombatsDeleted, res.SnapshotsDeleted, err = s.trimHistory(now)
+	if err != nil {
+		return res, err
+	}
 
 	due, err := s.vacuumDue(now)
 	if err != nil {

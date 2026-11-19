@@ -105,6 +105,7 @@ func Build(g *gamedata.Service, ws *websearch.Client) *Registry {
 		g.SetKillTime(theoryKillTime(g, ws))
 	}
 	addWorldTools(r, g)
+	r.Add(consultarDB(g))
 	withProfileNotes(r)
 	return r
 }

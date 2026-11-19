@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -240,15 +241,49 @@ func withVerifyFooter(text string, violations []eval.Violation) string {
 	return strings.TrimRight(text, " \n") + "\n" + verifyWarning + detail
 }
 
-// outputsOf returns the text of each tool output of the calls, in order.
+// outputsOf returns the text of each tool output of the calls, in order. The rows of consultar_db
+// are data the answer may quote (dbRowsText).
 func outputsOf(calls []tools.CallRecord) []string {
 	out := make([]string, 0, len(calls))
 	for _, c := range calls {
-		if c.Text != "" {
-			out = append(out, c.Text)
+		if c.Text == "" {
+			continue
 		}
+		if c.Name == "consultar_db" {
+			out = append(out, dbRowsText(c.Text))
+			continue
+		}
+		out = append(out, c.Text)
 	}
 	return out
+}
+
+// dbRowsText turns the JSON answer of consultar_db into its plain values: one line of column names
+// and one line per row, the values separated by " | ". The JSON escapes would hide a quoted name
+// (a quote or a backslash inside a value), and the rows are grounded data, so the check compares
+// the values as they are. An answer that is not that JSON is returned as it is.
+func dbRowsText(s string) string {
+	var res struct {
+		Columnas []string `json:"columnas"`
+		Filas    [][]any  `json:"filas"`
+	}
+	if err := json.Unmarshal([]byte(s), &res); err != nil || res.Columnas == nil {
+		return s
+	}
+	var b strings.Builder
+	b.WriteString(strings.Join(res.Columnas, " | "))
+	for _, row := range res.Filas {
+		b.WriteString("\n")
+		for i, v := range row {
+			if i > 0 {
+				b.WriteString(" | ")
+			}
+			if v != nil {
+				b.WriteString(fmt.Sprint(v))
+			}
+		}
+	}
+	return b.String()
 }
 
 // limitTipLines is limitLines for a proactive tip, keeping the verifier's warning line: the

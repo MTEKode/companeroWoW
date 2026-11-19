@@ -400,7 +400,14 @@ Si uno de ellos no está instalado o falla, la herramienta correspondiente dice 
 
 Una **sesión** empieza con el primer dato del puente tras 10 minutos sin datos, y termina tras otros 10 minutos sin datos o al cerrar la app. Se guarda en la base de datos local (tabla `sessions`): hora de inicio y fin, nivel y XP ganados, cambio de oro, misiones completadas y entregadas, zonas visitadas y muertes. Al arrancar, las sesiones que quedaron abiertas por un cierre brusco se cierran en su último dato.
 
-## Privacidad
+## Base de datos (registro del juego) y `consultar_db`
+
+La app guarda en `companero.db` lo que el addon envía: personajes y su historial diario, misiones (registro, ventana y conocidas), PNJ con sus roles, vendedores, instructores, vuelos medidos, objetos con sus estadísticas, consumibles, combates con hechizos, daño recibido y muertes, sesiones, historial de equipo, candidatos de equipo, macros, barras y mazmorras. Es el registro del juego: el addon guarda en SavedVariables solo lo que necesita en juego y envía el resto en una bandeja (`outbox`, ver `docs/outbox-format.md` en la rama del addon). Cada registro entra una vez (por su `oseq` y su ruta), así que leer el mismo dato otra vez no cambia nada.
+
+- **Esquema**: migración 5 (`app/internal/store/schema_app.go`). Los combates se conservan hasta 5000 y las fotos diarias un año. Las vistas de lectura están en `app/internal/store/VIEWS.md`, con las columnas en español y ejemplos.
+- **`consultar_db`**: herramienta de solo lectura para el asistente. Acepta una sentencia `SELECT` (o `WITH ... SELECT`) sobre las vistas `v_*`, nunca sobre las tablas, con conexión de solo lectura, límite de filas (100 por defecto, 500 máximo) y 2 segundos de tiempo.
+- **Importar el SavedVariables antes de cargar el addon ligero**: `CompaneroWoW.exe --ingest-sv` guarda en la base lo que hay en `CompaneroWoW.lua` (esquema 1 o 2), registra la importación (ruta, tamaño, SHA-256 y esquema) y sale sin abrir la ventana. Hacerlo una vez antes de actualizar el addon evita perder el historial que el addon pasa a la bandeja. La app lo hace también al arrancar cada vez que el archivo cambia.
+
 
 Todo se guarda en tu equipo: la base de datos, el registro, la configuración y las capturas. Durante una pregunta salen del PC estos datos, hacia el proveedor de IA que elijas:
 

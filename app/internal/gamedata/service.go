@@ -47,6 +47,8 @@ type Service struct {
 	// comes from the addon's session block (see SetOnDemand and addon_session.go).
 	onDemand atomic.Bool
 
+	ingest    *ingestQueue // channel messages waiting to be stored, see ingest.go
+	combats   combatCache  // the combat history read from the store (ingest.go)
 	startOnce sync.Once
 }
 
@@ -110,12 +112,19 @@ func (g *Service) importLoop(ctx context.Context) {
 	}
 }
 
+// importKnowledge stores what the SavedVariables file holds (the outbox, knowledge, world and the
+// characters' history) in the store. Everything is an upsert, so a file read again changes nothing.
 func (g *Service) importKnowledge(sv *bridge.SavedVars) {
 	if g.store == nil {
 		return
 	}
-	if _, _, err := g.store.ImportKnowledge(sv); err != nil {
-		log.Printf("gamedata: import knowledge: %v", err)
+	imp, err := g.store.ImportSavedVariables(sv, time.Now())
+	if err != nil {
+		log.Printf("gamedata: ingest saved variables: %v", err)
+		return
+	}
+	if imp.Stats.Failed > 0 {
+		log.Printf("gamedata: saved variables: %d items not stored", imp.Stats.Failed)
 	}
 }
 
@@ -522,7 +531,8 @@ func (g *Service) activeCharacter() (charEntry, *bridge.SavedVars, bool) {
 		}
 	}
 	if found {
-		best = g.overlayLive(best) // bloques del canal en vivo mas nuevos que SavedVariables
+		best = g.overlayLive(best)      // bloques del canal en vivo mas nuevos que SavedVariables
+		best = g.withStoreCombats(best) // el historial de combates sale de la base (store) antes que de SavedVariables
 	}
 	return best, sv, found
 }

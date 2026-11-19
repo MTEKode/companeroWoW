@@ -131,6 +131,13 @@ func (g *Service) worldRaw() (map[string]any, time.Time, bool) {
 		base = asMap(sv.Raw["world"])
 		at = sv.ModTime
 	}
+	// The store holds the world the addon has sent and saved (flights, vendors, trainers, chains,
+	// consumables): it is read first, and the SavedVariables block only when the store has none.
+	if g.store != nil {
+		if doc, err := g.store.WorldDoc(); err == nil && doc != nil {
+			base = doc
+		}
+	}
 	if live := g.LiveChannel(); live != nil && live.Data != nil {
 		if it, ok := live.Data.Get(bridge.MsgWorld); ok {
 			if m := asMap(it.Value); m != nil {
