@@ -108,23 +108,78 @@ func refreshSavedVariables(g *gamedata.Service) {
 }
 
 // saveOnDemandState writes the runtime state of the app, and, when it goes inactive, the last
-// known game data (livecache.json). --diag reads the runtime state to report the captures of the
-// running app.
-func saveOnDemandState(dir string, reader *bridge.Reader, mode string, active bool) {
+// known game data (livecache.json). hold is when the reader goes off if nothing keeps it on (zero
+// when unknown). --diag reads the runtime state to report the captures of the running app.
+func saveOnDemandState(dir string, reader *bridge.Reader, mode string, active bool, hold time.Time) {
 	if !active {
 		if err := ondemand.SaveCache(filepath.Join(dir, ondemand.CacheFile), reader.Channel().Data, time.Now()); err != nil {
 			log.Printf("caché de datos: %v", err)
 		}
 	}
+	writeRuntime(dir, reader, mode, active, hold)
+}
+
+// writeRuntime writes runtime.json: the reads (captures, decoded and failed, the last error), the
+// complete messages per type and the hold. The app rewrites it each second while the reader is on
+// (see runRuntimeTicker), so a read of the file follows the game.
+func writeRuntime(dir string, reader *bridge.Reader, mode string, active bool, hold time.Time) {
+	stats := reader.Stats()
+	counts := make(map[string]int64)
+	for _, it := range reader.Channel().Data.All() {
+		counts[it.Name] = it.Count
+	}
 	st := ondemand.RuntimeState{
-		PID:      os.Getpid(),
-		Mode:     mode,
-		Active:   active,
-		Captures: reader.Captures(),
-		At:       time.Now(),
+		PID:             os.Getpid(),
+		Mode:            mode,
+		Active:          active,
+		Captures:        stats.Captures,
+		At:              time.Now(),
+		Source:          stats.Source,
+		FramesOK:        stats.FramesOK,
+		FramesErr:       stats.FramesErr,
+		LastDecodeError: stats.LastError,
+		LastDecodeAt:    timePtr(stats.LastErrorAt),
+		LastDecodeOKAt:  timePtr(stats.LastOKAt),
+		MessagesByType:  counts,
+		HoldUntil:       timePtr(hold),
 	}
 	if err := ondemand.SaveRuntime(filepath.Join(dir, ondemand.RuntimeFile), st); err != nil {
 		log.Printf("estado de la app: %v", err)
+	}
+}
+
+// logReadingEnd writes the counts of the reads that ended with a hold: how many captures and
+// decoded or failed reads it made, and the last error. The controller has already logged why the
+// reader went off.
+func logReadingEnd(reader *bridge.Reader) {
+	st := reader.Stats()
+	line := fmt.Sprintf("lectura del juego: fin: capturas %d, leídas %d, fallidas %d", st.Captures, st.FramesOK, st.FramesErr)
+	if st.LastError != "" {
+		line += "; último error: " + st.LastError
+	}
+	log.Print(line)
+}
+
+// timePtr returns &t, or nil for the zero time (omitted from the runtime state).
+func timePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// runRuntimeTicker calls tick each second until ctx ends. The app uses it to keep runtime.json
+// current while the reader is on.
+func runRuntimeTicker(ctx context.Context, tick func()) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			tick()
+		}
 	}
 }
 

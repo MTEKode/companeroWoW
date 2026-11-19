@@ -46,11 +46,11 @@ func runTestAnswer(cfg *config.Config, dir string) int {
 	}
 
 	ann := gamemode.NewSystemAnnouncer(cfg.AnswerSound, cfg.AnswerVolume)
-	if err := ann.Play(gamemode.CueReady); err != nil {
+	if how, err := ann.PlayReport(gamemode.CueReady); err != nil {
 		report("sonido (%s, volumen %d): ERROR %v", cfg.AnswerSound, cfg.AnswerVolume, err)
 		ok = false
 	} else {
-		report("sonido: %s, volumen %d", cfg.AnswerSound, cfg.AnswerVolume)
+		report("sonido: %s, volumen %d", how, cfg.AnswerVolume)
 	}
 	report("log: %s", filepath.Join(dir, "companero.log"))
 	if !ok {

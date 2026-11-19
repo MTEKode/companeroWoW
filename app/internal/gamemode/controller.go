@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/ai"
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
@@ -99,9 +100,17 @@ func (c *Controller) Submit(q bridge.Question) bool {
 // run answers one question and delivers the result if it is still the current one.
 func (c *Controller) run(ctx context.Context, seq uint64, q bridge.Question) {
 	defer c.finish(seq)
+	c.logf("gamemode: pregunta #%d: consulta iniciada", q.ID)
+	began := time.Now()
 	resp, err := c.asker.Ask(ctx, q.Text, false)
+	took := time.Since(began).Round(time.Millisecond)
 	if err == nil && strings.TrimSpace(resp.Text) == "" {
 		err = errEmptyAnswer
+	}
+	if err == nil {
+		c.logf("gamemode: pregunta #%d: respondida por %s en %s (%d caracteres)", q.ID, resp.Provider, took, len([]rune(resp.Text)))
+	} else {
+		c.logf("gamemode: pregunta #%d: consulta terminada en %s sin respuesta: %v", q.ID, took, err)
 	}
 	if ctx.Err() != nil {
 		c.logf("gamemode: respuesta a la pregunta #%d descartada (llegó otra más nueva)", q.ID)

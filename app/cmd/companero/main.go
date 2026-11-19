@@ -22,6 +22,7 @@ import (
 	"github.com/MTEKode/companeroWoW/app/internal/assistant"
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
 	"github.com/MTEKode/companeroWoW/app/internal/config"
+	"github.com/MTEKode/companeroWoW/app/internal/diag"
 	"github.com/MTEKode/companeroWoW/app/internal/gamedata"
 	"github.com/MTEKode/companeroWoW/app/internal/gamemode"
 	"github.com/MTEKode/companeroWoW/app/internal/mcpserver"
@@ -62,6 +63,7 @@ func init() {
 // options are the command-line switches.
 type options struct {
 	ingestSV     bool
+	trace        bool
 	diag         bool
 	diagOut      string
 	eval         bool
@@ -78,6 +80,7 @@ type options struct {
 func main() {
 	var o options
 	flag.BoolVar(&o.ingestSV, "ingest-sv", false, "guarda en la base de la app lo que hay en CompaneroWoW.lua (SavedVariables) y sale; hacerlo antes de cargar el addon ligero")
+	flag.BoolVar(&o.trace, "trace", false, "escribe en companero.log el detalle de cada captura, trama y mensaje del juego (diagnóstico; también trace en config.json)")
 	flag.BoolVar(&o.diag, "diag", false, "imprime el estado (WoW, SavedVariables, proveedores de IA) y sale, sin abrir la ventana")
 	flag.StringVar(&o.diagOut, "diag-out", "", "con --diag, escribe el JSON en este archivo")
 	flag.BoolVar(&o.eval, "eval", false, "responde las preguntas de evaluación con la cadena real, escribe el informe y sale")
@@ -113,6 +116,10 @@ func run(o options) int {
 	if err != nil {
 		log.Printf("config: %v", err)
 		return 1
+	}
+	if o.trace || cfg.Trace {
+		diag.SetTrace(true)
+		log.Printf("diagnóstico: trazas detalladas activas (--trace o trace en config.json)")
 	}
 
 	if o.ingestSV {
@@ -263,18 +270,36 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	// transitions switch the reader, check the SavedVariables file when the app becomes active,
 	// and keep the last data on disk when it goes inactive.
 	ctl := ondemand.NewController(time.Now, onDemandAfter, func(on bool) {
-		reader.SetActive(mode.isContinuous() || on)
-		idle.SetActive(mode.isContinuous() || on)
-		if mode.isContinuous() {
+		continuous := mode.isContinuous()
+		reader.SetActive(continuous || on)
+		// A hold watches for the addon's share: the strip is polled at the watch rate (see bridge).
+		reader.SetWatch(!continuous && on)
+		idle.SetActive(continuous || on)
+		if continuous {
 			return
 		}
 		if on {
 			go refreshSavedVariables(g)
+		} else {
+			logReadingEnd(reader)
 		}
-		saveOnDemandState(dir, reader, mode.modeName(), on)
+		saveOnDemandState(dir, reader, mode.modeName(), on, time.Time{})
+	})
+	ctl.SetLogf(log.Printf)
+	// A share seen by the reader keeps the hold open: the question the player types after it is read.
+	reader.Subscribe(func(ls bridge.LiveState) {
+		if ls.ShareRemainingSec > 0 && !mode.isContinuous() {
+			ctl.Touch()
+		}
+	})
+	// runtime.json follows the reads each second while the reader is on.
+	go runRuntimeTicker(ctx, func() {
+		if ctl.Active() {
+			writeRuntime(dir, reader, mode.modeName(), true, ctl.HoldUntil())
+		}
 	})
 	// The state file says what runs now: active for the continuous mode, idle at rest otherwise.
-	saveOnDemandState(dir, reader, mode.modeName(), !onDemand)
+	saveOnDemandState(dir, reader, mode.modeName(), !onDemand, time.Time{})
 
 	ws := websearch.New(cfg.WebSources, st)
 	// capturar_pantalla also saves each capture where the CLI providers can read it.
@@ -382,8 +407,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 				startSessions()
 			}
 			reader.SetActive(continuous || ctl.Active())
+			reader.SetWatch(!continuous && ctl.Active())
 			if !continuous {
-				saveOnDemandState(dir, reader, mode.modeName(), ctl.Active())
+				saveOnDemandState(dir, reader, mode.modeName(), ctl.Active(), time.Time{})
 			}
 		},
 		// The game-mode panel key only activates the reader for its hold; the panel stays closed.
@@ -397,6 +423,12 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		},
 		AnswerSettingsChanged: asst.SetAnswerSettings,
 		AnswerSoundChanged:    announcer.Set,
+		// Probar aviso: plays the answer sound with the settings on the screen (not the saved ones).
+		TestAnswerSound: func(mode string, volume int) (string, error) {
+			how, err := gamemode.NewSystemAnnouncer(mode, volume).PlayReport(gamemode.CueReady)
+			log.Printf("ajustes: probar aviso (%s, volumen %d): %s", mode, volume, how)
+			return how, err
+		},
 		Status: func() ui.Status {
 			s := buildStatus(g, providers, watcher, mcpErrs.get())
 			s.Model = ai.AntigravityStatusLabel(cfg, time.Now())
@@ -420,7 +452,7 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	// game data is kept for the next start.
 	sessions.Close()
 	if !mode.isContinuous() {
-		saveOnDemandState(dir, reader, mode.modeName(), false)
+		saveOnDemandState(dir, reader, mode.modeName(), false, time.Time{})
 	}
 
 	// Graceful shutdown: stop the MCP server, wait for it briefly, then the store closes.

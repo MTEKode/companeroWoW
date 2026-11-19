@@ -87,6 +87,10 @@ type Options struct {
 	// AnswerSoundChanged is called when the settings screen saves the answer sound (voz, pitido or
 	// ninguno) or its volume, so that the game-mode announcer follows them. It may be nil.
 	AnswerSoundChanged func(mode string, volume int)
+	// TestAnswerSound plays the answer sound with the mode and volume on the settings screen ("Probar
+	// aviso"). It returns how the sound was played (voz, pitido or silencio) and an error when no sound
+	// could be played. It may be nil, and then the button does nothing.
+	TestAnswerSound func(mode string, volume int) (string, error)
 	// AnswerSettingsChanged is called when the settings screen saves a new player profile or the
 	// answer verifier setting, so that the assistant follows them without a restart. It may be nil.
 	AnswerSettingsChanged func(profile config.Profile, verify bool)

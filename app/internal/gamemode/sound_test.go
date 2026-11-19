@@ -61,7 +61,8 @@ func TestToneWAVIsAValidWave(t *testing.T) {
 			v := int(int16(binary.LittleEndian.Uint16(wav[i:])))
 			peak = max(peak, abs(v))
 		}
-		if peak == 0 || float64(peak) > 0.36*32767 {
+		// 60 % of full scale at 100 %: 80 % of that is 48 %, and the tone must still be heard.
+		if float64(peak) < 0.4*32767 || float64(peak) > 0.5*32767 {
 			t.Fatalf("cue %d: peak %d out of range for volume 80", cue, peak)
 		}
 	}

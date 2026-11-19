@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/capture"
+	"github.com/MTEKode/companeroWoW/app/internal/diag"
 )
 
 const (
@@ -17,9 +19,17 @@ const (
 	defaultPollEvery = 250 * time.Millisecond
 	eventBuffer      = 16
 
+	// watchPollEvery is the poll interval while the reader watches for the addon's share (the
+	// on-demand hold). The addon draws a new frame every REFRESH_SEC (0.2 s) and sends each chunk
+	// once, in the frame that shows it. A poll slower than the frame rate skips frames, and the
+	// chunks in them are never sent again, so the messages of a share would not complete. 100 ms
+	// samples every frame at least once.
+	watchPollEvery = 100 * time.Millisecond
+
 	// retryEvery is the wait after a failed read. slowRetryEvery replaces it once
 	// slowAfterFails reads in a row have failed, so a strip that never decodes (WoW
-	// closed, loading screen, a cover window) costs little.
+	// closed, loading screen, a cover window) costs little. Neither applies while the reader
+	// watches (see SetWatch): there the strip is expected and a failed read waits watchPollEvery.
 	retryEvery     = 2 * time.Second
 	slowRetryEvery = 5 * time.Second
 	slowAfterFails = 5
@@ -27,12 +37,28 @@ const (
 	// from WoW's own render (a window covers WoW). The reader switches back as soon as the
 	// screen copy decodes.
 	screenRetryEvery = 5 * time.Second
+
+	// summaryEvery is the span of the one-line summary of the reads while the reader watches.
+	summaryEvery = time.Second
 )
 
 // FindWoWWindow returns the WoW window handle and its client-area rectangle in
 // screen coordinates. It matches class "GxWindowClass" or title "World of Warcraft".
 func FindWoWWindow() (hwnd uintptr, rect image.Rectangle, err error) {
 	return capture.FindWoWWindow()
+}
+
+// ReaderStats are the counters of the reader, for the runtime state and the log (see Stats).
+type ReaderStats struct {
+	Captures          int64     // screen and window copies made (each attempt counts)
+	FramesOK          int64     // reads that decoded a strip (v3 or v2)
+	FramesErr         int64     // reads that failed: no WoW, a failed copy or a strip that did not decode
+	LastError         string    // the error of the last failed read ("" when none yet)
+	LastErrorAt       time.Time // when LastError happened
+	LastOKAt          time.Time // when the last read decoded
+	Source            string    // where the strip was last read from (SourceScreen or SourceWindow)
+	Pitch             float64   // pitch of the last decode
+	ShareRemainingSec int       // the addon's share countdown in the last decoded status
 }
 
 // Reader polls the top-left StripWidth x StripHeight region (NumBlocks blocks, up to 16 px
@@ -42,18 +68,25 @@ func FindWoWWindow() (hwnd uintptr, rect image.Rectangle, err error) {
 // The reader can be switched off (SetActive). While it is off the poll goroutine waits on a
 // channel: no window is located, no pixel is copied and no capture is made. A new reader is
 // active, so the continuous mode and the tools that run a reader of their own are unchanged.
+// While it watches (SetWatch) it polls at watchPollEvery and does not back off on failures.
 type Reader struct {
 	pollEvery time.Duration
 	events    chan LiveState
 
 	startOnce sync.Once
 
-	// active gates the poll loop (see SetActive); wake ends the wait of an inactive loop.
+	// active gates the poll loop (see SetActive); watch selects the watch polling (see SetWatch);
+	// wake ends the wait of an inactive loop.
 	activeMu sync.Mutex
 	active   bool
+	watch    bool
 	wake     chan struct{}
 	// captures counts the screen and window copies made so far (see Captures).
 	captures atomic.Int64
+
+	// stats are the counters read by Stats; the poll goroutine writes them under statsMu.
+	statsMu sync.Mutex
+	stats   ReaderStats
 
 	mu      sync.RWMutex
 	latest  LiveState
@@ -67,6 +100,10 @@ type Reader struct {
 	pitch         float64   // pitch of the last successful decode; 0 when unknown
 	onWindow      bool      // the last good read came from WoW's own render (PrintWindow)
 	lastScreenTry time.Time // when the screen copy was last tried
+	lastPath      string    // where the last read came from: SourceScreen, SourceWindow or ""
+	lastShare     int       // shareRemainingSec of the last decoded status
+	lastN         int       // blocks in the row of the last decoded v3 frame (0 for v2)
+	sum           summary   // the reads since the last summary line (see flushSummary)
 
 	// channel receives the v3 frames: messages reassembled into LiveData. Set once in NewReader.
 	channel *Channel
@@ -77,6 +114,20 @@ type Reader struct {
 	grabWindow func(uintptr, image.Rectangle) (*image.RGBA, error)
 	now        func() time.Time
 	win        windowGrabber
+}
+
+// summary counts the reads of one summary span.
+type summary struct {
+	start    time.Time
+	reads    int
+	okScreen int
+	okWindow int
+	failed   int
+	lastErr  string
+	spent    time.Duration // time spent in the reads
+	share    int           // the last shareRemainingSec decoded
+	pitch    float64
+	blocks   int // blocks in the row of the last decoded v3 frame
 }
 
 // NewReader creates a Reader that reads the strip every pollEvery (default 250ms).
@@ -128,10 +179,36 @@ func (r *Reader) Active() bool {
 	return r.active
 }
 
+// SetWatch sets the watch of the on-demand hold: while it is on the reader polls at
+// watchPollEvery and a failed read is retried at that rate instead of backing off, because the
+// addon shows its strip only while it shares (a question is then sent in one frame). The call
+// never blocks.
+func (r *Reader) SetWatch(on bool) {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	r.watch = on
+}
+
+// Watching reports whether the watch is on (see SetWatch).
+func (r *Reader) Watching() bool {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	return r.watch
+}
+
 // Captures is the number of screen or window copies the reader has made since it was
 // created. It does not move while the reader is inactive; --diag reports it.
 func (r *Reader) Captures() int64 {
 	return r.captures.Load()
+}
+
+// Stats returns the reader's counters (see ReaderStats).
+func (r *Reader) Stats() ReaderStats {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	st := r.stats
+	st.Captures = r.captures.Load()
+	return st
 }
 
 // Channel returns the live data channel (v3 messages). Its store is safe to read from any goroutine.
@@ -168,6 +245,7 @@ func (r *Reader) run(ctx context.Context) {
 		}
 		if !r.Active() {
 			// Idle: no step, so no window lookup and no capture, until SetActive(true).
+			r.flushSummary()
 			select {
 			case <-ctx.Done():
 				return
@@ -182,21 +260,36 @@ func (r *Reader) run(ctx context.Context) {
 
 // step does one poll and returns how long to wait before the next one: the configured
 // interval while reads succeed, retryEvery after a failure, and slowRetryEvery once
-// slowAfterFails reads in a row have failed.
+// slowAfterFails reads in a row have failed. While the reader watches, the interval is
+// watchPollEvery and a failed read waits watchPollEvery too (WoW not found still backs off).
 func (r *Reader) step() time.Duration {
+	watch := r.Watching()
+	started := time.Now()
 	err := r.pollOnce()
+	r.note(time.Since(started), err, watch)
 	if err == nil {
 		r.failStreak = 0
-		return r.pollEvery
+		return r.interval(watch)
 	}
 	if errors.Is(err, capture.ErrWoWNotFound) {
 		r.lost()
 	}
 	r.failStreak++
+	if watch && !errors.Is(err, capture.ErrWoWNotFound) {
+		return watchPollEvery
+	}
 	if r.failStreak >= slowAfterFails {
 		return slowRetryEvery
 	}
 	return retryEvery
+}
+
+// interval is the wait after a successful read.
+func (r *Reader) interval(watch bool) time.Duration {
+	if watch && r.pollEvery > watchPollEvery {
+		return watchPollEvery
+	}
+	return r.pollEvery
 }
 
 func (r *Reader) pollOnce() error {
@@ -217,6 +310,81 @@ func (r *Reader) pollOnce() error {
 	return nil
 }
 
+// note records the outcome of one poll: the counters, the summary span and, with --trace, the
+// read itself. It runs on the poll goroutine.
+func (r *Reader) note(spent time.Duration, err error, watch bool) {
+	now := r.now()
+	path := r.lastPath
+	r.lastPath = ""
+	r.statsMu.Lock()
+	st := &r.stats
+	if err == nil {
+		st.FramesOK++
+		st.LastOKAt = now
+		st.Source = path
+		st.Pitch = r.pitch
+		st.ShareRemainingSec = r.lastShare
+	} else {
+		st.FramesErr++
+		st.LastError = err.Error()
+		st.LastErrorAt = now
+	}
+	r.statsMu.Unlock()
+
+	if diag.Tracing() {
+		if err == nil {
+			diag.Tracef("lectura: %s ok, pitch %.3f, compartiendo %d s, %.1f ms", path, r.pitch, r.lastShare, float64(spent.Microseconds())/1000)
+		} else {
+			diag.Tracef("lectura: fallo (%.1f ms): %v", float64(spent.Microseconds())/1000, err)
+		}
+	}
+	if !watch {
+		// Not watching (continuous mode): no summary lines, so nothing is kept for one.
+		r.sum = summary{}
+		return
+	}
+	if r.sum.start.IsZero() {
+		r.sum.start = now
+	}
+	s := &r.sum
+	s.reads++
+	s.spent += spent
+	if err == nil {
+		switch path {
+		case SourceWindow:
+			s.okWindow++
+		default:
+			s.okScreen++
+		}
+		s.pitch = r.pitch
+		s.share = r.lastShare
+		s.blocks = r.lastN
+	} else {
+		s.failed++
+		s.lastErr = err.Error()
+	}
+	if now.Sub(s.start) >= summaryEvery {
+		r.flushSummary()
+	}
+}
+
+// flushSummary writes the one-line summary of the reads since the last one, when there were any.
+func (r *Reader) flushSummary() {
+	s := &r.sum
+	if s.reads == 0 {
+		return
+	}
+	avg := float64(s.spent.Microseconds()) / 1000 / float64(s.reads)
+	span := r.now().Sub(s.start).Seconds()
+	line := fmt.Sprintf("lectura del juego: %d lecturas en %.1f s: pantalla ok %d, ventana ok %d, fallidas %d; %.1f ms por lectura; pitch %.3f; N %d; compartiendo %d s",
+		s.reads, span, s.okScreen, s.okWindow, s.failed, avg, s.pitch, s.blocks, s.share)
+	if s.failed > 0 && s.lastErr != "" {
+		line += "; último error: " + s.lastErr
+	}
+	log.Print(line)
+	*s = summary{}
+}
+
 // readStrip decodes the strip at the top-left of WoW's client area rect: the top
 // StripHeightV3 rows at the client's full width (v3 spans the width; v2 uses its
 // left 464 px).
@@ -226,7 +394,9 @@ func (r *Reader) pollOnce() error {
 // so the strip is read from WoW's own render (PrintWindow) instead, at the poll rate, for
 // as long as that decodes. While it does, the screen copy is retried every
 // screenRetryEvery, and the reader switches back to the screen as soon as it decodes.
+// r.lastPath is set to the source of a decoded strip.
 func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) {
+	r.lastPath = ""
 	now := r.now()
 	var screenErr error
 	if !r.onWindow || now.Sub(r.lastScreenTry) >= screenRetryEvery {
@@ -235,28 +405,36 @@ func (r *Reader) readStrip(hwnd uintptr, rect image.Rectangle) (Decoded, error) 
 		if err == nil {
 			r.onWindow = false
 			r.channel.SetSource(SourceScreen)
+			r.lastPath = SourceScreen
+			r.lastShare = int(dec.Live.ShareRemainingSec)
+			r.lastN = frameBlocks(dec)
 			return dec, nil
 		}
-		screenErr = err
+		screenErr = fmt.Errorf("pantalla: %w", err)
 	}
 	r.captures.Add(1)
 	own, err := r.grabWindow(hwnd, rect)
 	if err != nil {
+		err = fmt.Errorf("ventana: %w", err)
 		if screenErr != nil {
-			return Decoded{}, screenErr
+			return Decoded{}, fmt.Errorf("%w; %v", screenErr, err)
 		}
 		return Decoded{}, err
 	}
 	dec, err := DecodeAny(own, r.pitch)
 	if err != nil {
+		err = fmt.Errorf("ventana: %w", err)
 		if screenErr != nil {
-			return Decoded{}, screenErr
+			return Decoded{}, fmt.Errorf("%w; %v", screenErr, err)
 		}
 		return Decoded{}, err
 	}
 	r.pitch = dec.Pitch
 	r.onWindow = true
 	r.channel.SetSource(SourceWindow)
+	r.lastPath = SourceWindow
+	r.lastShare = int(dec.Live.ShareRemainingSec)
+	r.lastN = frameBlocks(dec)
 	return dec, nil
 }
 
@@ -328,4 +506,12 @@ func (r *Reader) send(st LiveState) {
 		default:
 		}
 	}
+}
+
+// frameBlocks is the block count of a decoded v3 frame (0 for a v2 strip).
+func frameBlocks(dec Decoded) int {
+	if dec.Frame == nil {
+		return 0
+	}
+	return dec.Frame.N
 }

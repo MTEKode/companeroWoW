@@ -111,6 +111,9 @@ type Config struct {
 	// OnDemandWaitSec is how long a question waits for fresh game data in ModeOnDemand before
 	// it goes ahead with what is cached (1..MaxOnDemandWaitSec).
 	OnDemandWaitSec int `json:"onDemandWaitSec"`
+	// Trace writes the detailed diagnostic lines to companero.log (every capture, frame and
+	// message). The --trace switch does the same for one run.
+	Trace bool `json:"trace"`
 }
 
 // The ways the app reads the game (Mode).
