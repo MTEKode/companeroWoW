@@ -228,6 +228,24 @@ function Sched:pending()
     return #self.jobs
 end
 
+-- Codifica los items que aun no tienen texto (make) y quita los que no se pueden codificar.
+function Sched:encodeAll()
+    local keep = {}
+    for _, job in ipairs(self.jobs) do
+        if job.str == nil and job.make then job.str = job.make() end
+        if job.str ~= nil then keep[#keep + 1] = job end
+    end
+    self.jobs = keep
+end
+
+-- Longitud en bytes de cada trabajo pendiente (tras codificar). Sin tocar el turno.
+function Sched:lengths()
+    self:encodeAll()
+    local out = {}
+    for i, job in ipairs(self.jobs) do out[i] = #job.str end
+    return out
+end
+
 -- Trabajos pendientes que no son optativos (el plan no ha acabado hasta que salgan).
 function Sched:requiredPending()
     local n = 0
@@ -718,6 +736,41 @@ end
 function C.NextChunk(N, frameNo)
     if not S.share or not S.sched then return nil end
     return S.sched:nextChunk(C.Capacity(N), frameNo)
+end
+
+-- Capturas (Shot.lua): ¿ya se ha serializado todo el plan de la activacion? (sin trozos en curso)
+function C.PlanDone()
+    local sh = S.share
+    return sh ~= nil and sh.planDone and S.cur == nil
+end
+
+-- Capturas: longitudes (bytes) de lo pendiente en la cola (items codificados al consultar).
+function C.PendingLengths()
+    if not S.sched then return {} end
+    return S.sched:lengths()
+end
+
+-- Capturas: trabajos pendientes en la cola (0 = nada que enviar).
+function C.Pending()
+    return S.sched and S.sched:pending() or 0
+end
+
+-- Capturas: siguiente trozo con capacidad cs (bytes por trama, la del formato de captura).
+function C.NextChunkCapacity(cs, frameNo)
+    if not S.share or not S.sched then return nil end
+    return S.sched:nextChunk(cs, frameNo)
+end
+
+-- Quita la pregunta pendiente (si la activacion no pudo empezar).
+function C.DropQuestion()
+    S.question = nil
+    if S.sched then
+        for i = #S.sched.jobs, 1, -1 do
+            if S.sched.jobs[i].type == C.QUESTION_TYPE and not S.sched.jobs[i].seq then
+                tremove(S.sched.jobs, i)
+            end
+        end
+    end
 end
 
 -- Lineas para /compa estado.
