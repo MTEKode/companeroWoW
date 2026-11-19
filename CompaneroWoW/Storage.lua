@@ -15,8 +15,9 @@
 -- Bandeja: cada registro aprendido (conocimiento 9, mundo 16, combates 7, hoja 12 cuando cambia) se
 -- anade con Storage.Learn como item con seq creciente. Payload (lo que viaja en el canal): { oseq, p, v }
 --   p = ruta del registro (array), v = registro en forma compacta (Storage.KEYS).
--- Un item se quita tras haber salido en MAX_SHARES ventanas distintas, o al superar MAX_ITEMS items o
--- MAX_BYTES de payload (el mas antiguo primero).
+-- Un item se quita tras haber salido en MAX_SHARES ventanas distintas, o al superar MAX_SV_BYTES (tamano
+-- estimado del item serializado como SavedVariables, no del JSON) o MAX_ITEMS items (el mas antiguo primero).
+-- Formato exacto del canal para la app: docs/outbox-format.md.
 --
 -- Codificacion compacta: claves largas -> cortas (Storage.KEYS); x/y y coordenadas de giver/turnIn con
 -- 3 decimales; lastSeen/lastOffered no se guardan (son volatiles y no cambian el registro).
@@ -32,8 +33,8 @@ local Storage = {}
 ns.Storage = Storage
 
 Storage.SCHEMA = 2
-Storage.MAX_ITEMS = 2000          -- tope de items de la bandeja
-Storage.MAX_BYTES = 120 * 1024    -- tope de bytes (JSON del payload) de la bandeja
+Storage.MAX_ITEMS = 2000          -- tope secundario: items de la bandeja
+Storage.MAX_SV_BYTES = 60 * 1024  -- tope principal: bytes estimados de la bandeja serializada (SavedVariables)
 Storage.MAX_SHARES = 3            -- un item sale en este numero de ventanas y se quita
 Storage.ANSWER_MAX_BYTES = 2048   -- texto de cada respuesta guardada (Ask.lua)
 
@@ -89,25 +90,46 @@ local function isArray(t)
     return count == maxi
 end
 
--- Copia v traduciendo las claves con map. round: redondear el numero v a 3 decimales.
-local function convert(v, map, round, depth)
-    if type(v) == "number" then
-        if round then return floor(v * 1000 + 0.5) / 1000 end
+-- Escape de claves: una clave que no tiene codigo corto pero que coincide con uno (o empieza por ESC)
+-- se escribe con ESC delante. Asi Expand(Compact(x)) = x para cualquier clave, sin ambiguedad.
+local ESC = "~"
+local function shortKey(k)
+    if type(k) ~= "string" then return k end
+    if SHORT[k] then return SHORT[k] end
+    if LONG[k] or string.sub(k, 1, 1) == ESC then return ESC .. k end
+    return k
+end
+local function longKey(k)
+    if type(k) ~= "string" then return k end
+    if string.sub(k, 1, 1) == ESC then return string.sub(k, 2) end
+    if LONG[k] then return LONG[k] end
+    return k
+end
+
+-- Copia de v con las claves traducidas (toCompact: largas -> cortas; si no, al reves).
+-- Solo al compactar se redondean los numeros de las claves de Storage.ROUND y se quitan las volatiles.
+local function convert(v, toCompact, depth)
+    if type(v) ~= "table" then
         return v
     end
-    if type(v) ~= "table" then return v end
     if depth > 12 then return nil end
+    local keyFn = toCompact and shortKey or longKey
     local out = {}
     if isArray(v) then
-        for i = 1, #v do out[i] = convert(v[i], map, false, depth + 1) end
+        for i = 1, #v do out[i] = convert(v[i], toCompact, depth + 1) end
         return out
     end
     for k, val in pairs(v) do
-        if type(val) ~= "function" and type(val) ~= "userdata" and type(val) ~= "thread"
-            and not (type(k) == "string" and Storage.DROP[k]) then
-            local nk = k
-            if type(k) == "string" and map[k] then nk = map[k] end
-            out[nk] = convert(val, map, type(k) == "string" and Storage.ROUND[k] or false, depth + 1)
+        local vt = type(val)
+        if vt ~= "function" and vt ~= "userdata" and vt ~= "thread"
+            and not (toCompact and type(k) == "string" and Storage.DROP[k]) then
+            local nv = val
+            if toCompact and type(k) == "string" and Storage.ROUND[k] and type(val) == "number" then
+                nv = floor(val * 1000 + 0.5) / 1000
+            else
+                nv = convert(val, toCompact, depth + 1)
+            end
+            out[keyFn(k)] = nv
         end
     end
     return out
@@ -115,12 +137,12 @@ end
 
 -- Registro en forma compacta (copia; el original no cambia).
 function Storage.Compact(v)
-    return convert(v, SHORT, false, 0)
+    return convert(v, true, 0)
 end
 
 -- Inversa de Compact: devuelve claves largas (lo volatil ya no esta).
 function Storage.Expand(v)
-    return convert(v, LONG, false, 0)
+    return convert(v, false, 0)
 end
 
 -- Texto tipo SavedVariables (Lua) de un valor, para estimar el tamano de lo guardado.
@@ -278,6 +300,11 @@ local function removeAt(box, i)
     S.byseq[item.seq] = nil
 end
 
+-- Tamano estimado de un item en SavedVariables: su texto serializado completo (no el JSON del canal).
+local function itemSize(item)
+    return #Storage.Serialize(item)
+end
+
 -- Recalcula los indices de la bandeja de la base db (una vez por base, y tras cargarla).
 local function indexOutbox(db)
     local box = outboxOf(db)
@@ -291,21 +318,21 @@ local function indexOutbox(db)
             if pjson and vjson then
                 kept[#kept + 1] = item
                 S.byseq[item.seq] = item
-                S.sizes[item.seq] = #pjson
-                S.total = S.total + #pjson
+                S.sizes[item.seq] = itemSize(item)
+                S.total = S.total + S.sizes[item.seq]
                 S.lastHash[tostring(item.msgType) .. "|" .. flat(pl.p)] = ns.HashText(vjson)
             end
         end
     end
     box.items = kept
-    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_BYTES do
+    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_SV_BYTES do
         removeAt(box, 1)
     end
 end
 
 -- Quita los items mas antiguos mientras se superen los topes.
 local function enforceCaps(box)
-    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_BYTES do
+    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_SV_BYTES do
         if #box.items == 0 then break end
         removeAt(box, 1)
     end
@@ -323,8 +350,9 @@ local function append(db, msgType, path, v, hash, lastKey, at)
     local item = { seq = seq, msgType = msgType, at = at, shares = 0, payload = payload }
     box.items[#box.items + 1] = item
     S.byseq[seq] = item
-    S.sizes[seq] = #pjson
-    S.total = S.total + #pjson
+    local isize = itemSize(item)
+    S.sizes[seq] = isize
+    S.total = S.total + isize
     S.lastHash[lastKey] = hash
     enforceCaps(box)
     if Storage.OnAppend and S.byseq[seq] then ns.SafeCall(Storage.OnAppend, item) end
@@ -384,6 +412,9 @@ function Storage.MarkShared(seq, win)
     if not item or win == nil or item.win == win then return false, false end
     item.win = win
     item.shares = (item.shares or 0) + 1
+    local oldSize = S.sizes[seq] or 0
+    S.sizes[seq] = itemSize(item)
+    S.total = S.total - oldSize + S.sizes[seq]
     if item.shares >= Storage.MAX_SHARES then
         local box = outboxOf(db)
         for i, it in ipairs(box.items) do
@@ -413,7 +444,7 @@ function Storage.Items()
     return outboxOf(db).items
 end
 
--- Numero de items y bytes (JSON del payload) de la bandeja.
+-- Numero de items y bytes estimados (serializados) de la bandeja.
 function Storage.Stats()
     local items = Storage.Items()
     return #items, S.total

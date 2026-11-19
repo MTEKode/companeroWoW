@@ -76,6 +76,17 @@ check("compacta: el JSON es mas corto que el registro largo", #shortJSON < #long
 local rawCopy = { name = "Sin tocar", x = 1 }
 St.Compact(rawCopy)
 eq("compacta no modifica el original", rawCopy.name, "Sin tocar")
+-- Claves sin codigo corto que coinciden con uno (n, c, ~...) se escapan: la ida y vuelta es exacta.
+local tricky = { n = "a", c = 2, ["~x"] = 3, id = 4, name = "b", deep = { m = 5, pn = 6 }, arr = { { r = 7 } } }
+local back = St.Expand(St.Compact(tricky))
+eq("escape: clave corta sin traducir (n) vuelve igual", back.n, "a")
+eq("escape: clave corta sin traducir (c) vuelve igual", back.c, 2)
+eq("escape: clave con ~ vuelve igual", back["~x"], 3)
+eq("escape: id (sin codigo) vuelve igual", back.id, 4)
+eq("escape: name (traducida) vuelve igual", back.name, "b")
+eq("escape: anidado con claves cortas", back.deep.m, 5)
+eq("escape: anidado pn", back.deep.pn, 6)
+eq("escape: dentro de arrays", back.arr[1].r, 7)
 
 -- ---------------------------------------------------------------------------
 outln("(b) Altas: dedupe por contenido y sin volatiles")
@@ -207,19 +218,29 @@ for i = 1, 8 do St.Learn(9, { "npcs", 100 + i }, { npcID = 100 + i, name = "PNJ 
 eq("tope de items: 5 en la bandeja", #St.Items(), 5)
 eq("tope de items: se quedan los 5 mas nuevos", St.Items()[1].payload.p[2], 104)
 St.MAX_ITEMS = savedMax
--- Tope de bytes: tres items de ~230 bytes caben en 800; el cuarto expulsa al mas antiguo.
-local savedBytes = St.MAX_BYTES
+-- Tope de bytes (serializados): tres items caben; el cuarto, de igual tamano, expulsa al mas antiguo.
+local savedBytes = St.MAX_SV_BYTES
 St.Clear()
-St.MAX_BYTES = 800
 for i = 1, 3 do St.Learn(9, { "npcs", 800 + i }, { npcID = 800 + i, name = string.rep("n", 200) }) end
+local _, three = St.Stats()
+St.MAX_SV_BYTES = three + 100
 eq("tope de bytes: tres items caben", #St.Items(), 3)
 St.Learn(9, { "npcs", 900 }, { npcID = 900, name = string.rep("n", 200) })
 local n2, bytes2 = St.Stats()
-check("tope de bytes: no se supera", bytes2 <= St.MAX_BYTES, string.format("%d > %d", bytes2, St.MAX_BYTES))
+check("tope de bytes: no se supera", bytes2 <= St.MAX_SV_BYTES, string.format("%d > %d", bytes2, St.MAX_SV_BYTES))
 eq("tope de bytes: sale solo el mas antiguo", n2, 3)
 check("tope de bytes: el registro nuevo entra", St.Items()[n2].payload.p[2] == 900)
 check("tope de bytes: el primero ya no esta", St.Items()[1].payload.p[2] == 802)
-St.MAX_BYTES = savedBytes
+-- El total es la suma de los tamanos serializados de los items (tambien tras una baja por ventanas).
+local function sumSerialized()
+    local s = 0
+    for _, it in ipairs(St.Items()) do s = s + #St.Serialize(it) end
+    return s
+end
+eq("bytes = suma de los items serializados", select(2, St.Stats()), sumSerialized())
+St.MarkShared(St.Items()[1].seq, 1)
+eq("tras contar una ventana, el total sigue cuadrando", select(2, St.Stats()), sumSerialized())
+St.MAX_SV_BYTES = savedBytes
 
 -- ---------------------------------------------------------------------------
 outln("(f) Limpieza: /compa limpiar si")
@@ -371,7 +392,7 @@ do
 end
 check("personaje realista: el esquema 2 pesa menos que el esquema 1", typicalSize < legacySize)
 
--- Tope de la bandeja (120 KB) incluso con mucho aprendizaje: no pasa de 2000 items ni de 120 KB.
+-- Tope de la bandeja (60 KB serializados) incluso con mucho aprendizaje: no pasa de 2000 items ni de 60 KB.
 CompaneroWoWDB = realisticDB()
 St.Sync()
 for i = 1, 2500 do
@@ -380,7 +401,7 @@ for i = 1, 2500 do
 end
 local nMax, bMax = St.Stats()
 check("tope: como mucho 2000 items", nMax <= St.MAX_ITEMS, tostring(nMax))
-check("tope: como mucho 120 KB de bandeja", bMax <= St.MAX_BYTES, tostring(bMax))
+check("tope: como mucho 60 KB serializados de bandeja", bMax <= St.MAX_SV_BYTES, tostring(bMax))
 check("tope: lo mas nuevo se conserva", St.Items()[nMax].payload.p[2] == 7500)
 
 -- ---------------------------------------------------------------------------
