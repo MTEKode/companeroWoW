@@ -215,6 +215,7 @@ function Sched:dropItems()
     local keep, n = {}, 0
     for _, job in ipairs(self.jobs) do
         if job.seq then
+            job.dead = true
             n = n + 1
         else
             keep[#keep + 1] = job
@@ -226,6 +227,38 @@ end
 
 function Sched:pending()
     return #self.jobs
+end
+
+-- Devuelve a la cola los trozos de una captura fallida: cada mensaje vuelve a su primer trozo no
+-- confirmado (chunk.index) y su onDone sigue sin llamarse. Los items vaciados (dead) no vuelven.
+function Sched:requeue(chunks)
+    local first, order = {}, {}
+    for _, ch in ipairs(chunks) do
+        local job = ch.job
+        if job and not job.dead then
+            if first[job] == nil then
+                order[#order + 1] = job
+                first[job] = ch.index
+            elseif ch.index < first[job] then
+                first[job] = ch.index
+            end
+            ch.finished = nil
+        end
+    end
+    for _, job in ipairs(order) do
+        job.next = first[job] + 1
+        local present = false
+        for _, j in ipairs(self.jobs) do
+            if j == job then present = true break end
+        end
+        if not present then
+            if job.seq then
+                tinsert(self.jobs, 1, job)
+            else
+                self.jobs[#self.jobs + 1] = job
+            end
+        end
+    end
 end
 
 -- Codifica los items que aun no tienen texto (make) y quita los que no se pueden codificar.
@@ -273,8 +306,10 @@ function Sched:pick(frameNo)
     return bestI
 end
 
--- Saca un trozo del trabajo i. Al salir el ultimo, llama a onDone.
-function Sched:serve(i, job, cs)
+-- Saca un trozo del trabajo i. Al salir el ultimo, llama a onDone; con deferred (capturas) no se
+-- llama: el trozo guarda el trabajo en chunk.finished y C.ConfirmChunks lo completa tras la captura.
+-- Cada trozo lleva chunk.job (C.RequeueChunks lo devuelve a la cola si la captura falla).
+function Sched:serve(i, job, cs, deferred)
     tremove(self.jobs, i)
     if job.cs ~= cs then
         -- Capacidad distinta (p. ej. cambio de ancho): el trozado se rehace con un msgId nuevo.
@@ -286,7 +321,7 @@ function Sched:serve(i, job, cs)
     local from = (job.next - 1) * cs + 1
     local to = min(job.next * cs, #job.str)
     local data = { byte(job.str, from, to) } -- vacio si el texto no tiene bytes
-    local chunk = { type = job.type, id = job.id, index = job.next - 1, count = job.count, data = data }
+    local chunk = { type = job.type, id = job.id, index = job.next - 1, count = job.count, data = data, job = job }
     job.next = job.next + 1
     if job.next <= job.count then
         if job.seq then
@@ -295,7 +330,11 @@ function Sched:serve(i, job, cs)
             self.jobs[#self.jobs + 1] = job -- al final: turno rotatorio entre mensajes
         end
     elseif job.onDone then
-        job.onDone()
+        if deferred then
+            chunk.finished = job
+        else
+            job.onDone()
+        end
     end
     return chunk
 end
@@ -303,14 +342,14 @@ end
 -- Trozo siguiente segun la prioridad y el turno. cs = capacidad de datos de la trama.
 -- Devuelve el trozo { type, id, index (0-based), count, data } o nil si no hay nada que enviar
 -- en esta trama. frameNo sirve para limitar los tipos pesados.
-function Sched:nextChunk(cs, frameNo)
+function Sched:nextChunk(cs, frameNo, deferred)
     if cs <= 0 then return nil end
     while #self.jobs > 0 do
         local bestI = self:pick(frameNo)
         if not bestI then return nil end
         local job = self.jobs[bestI]
         if job.str == nil and job.make then job.str = job.make() end
-        if job.str ~= nil then return self:serve(bestI, job, cs) end
+        if job.str ~= nil then return self:serve(bestI, job, cs, deferred) end
         tremove(self.jobs, bestI) -- item que no se puede codificar: se descarta
     end
     return nil
@@ -756,9 +795,30 @@ function C.Pending()
 end
 
 -- Capturas: siguiente trozo con capacidad cs (bytes por trama, la del formato de captura).
+-- El mensaje no se da por enviado hasta C.ConfirmChunks; si la captura falla, C.RequeueChunks.
 function C.NextChunkCapacity(cs, frameNo)
     if not S.share or not S.sched then return nil end
-    return S.sched:nextChunk(cs, frameNo)
+    return S.sched:nextChunk(cs, frameNo, true)
+end
+
+-- Capturas: la captura salio bien. Completa los mensajes que acabaron en ella (MarkShared, etc.).
+function C.ConfirmChunks(chunks)
+    for _, ch in ipairs(chunks or {}) do
+        local job = ch.finished
+        if job then
+            ch.finished = nil
+            if job.onDone then
+                local done = job.onDone
+                job.onDone = nil
+                done()
+            end
+        end
+    end
+end
+
+-- Capturas: la captura fallo. Devuelve sus trozos a la cola (nada se pierde).
+function C.RequeueChunks(chunks)
+    if S.sched and chunks and #chunks > 0 then S.sched:requeue(chunks) end
 end
 
 -- Quita la pregunta pendiente (si la activacion no pudo empezar).

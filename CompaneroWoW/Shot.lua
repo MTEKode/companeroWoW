@@ -11,9 +11,11 @@
 --      Cabecera de la trama = 6 bytes (la v4 tiene 4); sobrecarga = 49 bytes.
 --      Fila final ("end"): msgType 0, dataLen 0, chunkCount = numero de filas de datos de la captura.
 --   3. Panel: bloques cuadrados de BLOCK_PX (2) px fisicos, esquina superior izquierda, por encima de
---      todo (FULLSCREEN_DIALOG), opaco. Una fila de bloques por trama, de arriba abajo, y el resto de
---      la altura en negro. W = N * bloque (256, 512 o 1024 px), H >= 64 px, <= 512 px.
---      Si el cliente solo deja jpg, el bloque es de JPG_BLOCK_PX (4) px y la calidad es 10.
+--      todo (FULLSCREEN_DIALOG), opaco. Una fila de bloques por trama, de arriba abajo, y el resto del
+--      marco (minimo 256x64 px) en negro. W = N * bloque (256, 512 o 1024 px). Cada captura usa como
+--      mucho MAX_BLOCKS (4096) bloques = texturas: N * filas <= 4096. Las texturas se crean una vez
+--      (pool) y se reutilizan entre capturas. Si el cliente solo deja jpg, el bloque es de
+--      JPG_BLOCK_PX (4) px y la calidad es 10.
 --   4. Se guardan screenshotFormat y screenshotQuality, se fija el formato sin perdidas (png; si no,
 --      tga; si no, jpg), se espera un frame, se llama a Screenshot() y, al recibir
 --      SCREENSHOT_SUCCEEDED / SCREENSHOT_FAILED (o al cabo de TIMEOUT_SEC), se oculta el panel y se
@@ -39,8 +41,8 @@ Shot.CALIB_BLOCKS = 7         -- bloques fijos de magia, calibracion y blanco (v
 Shot.BLOCK_PX = 2             -- bloque del panel, en pixeles fisicos
 Shot.JPG_BLOCK_PX = 4         -- si solo hay jpg (calidad 10)
 Shot.MIN_W, Shot.MIN_H = 256, 64
-Shot.MAX_W, Shot.MAX_H = 1024, 512
-Shot.WIDTHS = { 256, 512, 1024 }  -- anchos del panel, el menor que quepa en una captura
+Shot.MAX_BLOCKS = 4096        -- tope de bloques (texturas) por captura
+Shot.WIDTHS = { 256, 512, 1024 }  -- anchos del panel en px (N = ancho / bloque)
 Shot.MAX_SHOTS = 8            -- capturas por activacion
 Shot.GAP_SEC = 0.3            -- entre capturas
 Shot.TIMEOUT_SEC = 4          -- sin confirmacion del juego: se da por fallida
@@ -91,7 +93,8 @@ function Shot.BuildRow(status, seq, N, shotId, chunk)
     return f
 end
 
--- Fila final de la captura: msgType 0, dataLen 0, chunkCount = filas de datos.
+-- Fila final de la captura: msgType 0, dataLen 0, chunkCount = NUMERO DE FILAS DE DATOS (dataRows).
+-- Contrato para la app (T52): chunkCount de la fila final = filas de datos, no filas totales.
 function Shot.BuildEnd(status, seq, N, shotId, dataRows)
     return Shot.BuildRow(status, seq, N, shotId, { type = 0, id = 0, index = 0, count = dataRows, data = {} })
 end
@@ -129,42 +132,48 @@ function Shot.DataRows(lens, cap)
     return rows
 end
 
--- Geometria del panel para las longitudes lens y bloques de blockPx px.
--- Devuelve { W, N, blockPx, cap, rows (filas de datos), rowsPerShot, shots }.
--- W: el menor de WIDTHS que cabe en una sola captura; si ninguno cabe, MAX_W y varias capturas.
+-- Geometria del panel para las longitudes lens (bytes por mensaje) y bloques de blockPx px.
+-- Para cada ancho de WIDTHS: filas de datos necesarias (cap bytes por fila), capturas (cada una con
+-- como mucho floor(MAX_BLOCKS / N) - 1 filas de datos, mas la final) y bloques totales. Gana el de
+-- menos capturas y, a igualdad, el de menos bloques (menos texturas). Sin datos: 256x64 px.
+-- Devuelve { W, N, cap, rows (filas de datos), rowsPerShot, shots, blocks (texturas de la captura
+-- mayor), blockPx }.
 function Shot.Geometry(lens, blockPx)
     blockPx = blockPx or Shot.BLOCK_PX
-    local maxData = floor(Shot.MAX_H / blockPx) - 1 -- una fila es la final
-    local g
+    local best
     for _, W in ipairs(Shot.WIDTHS) do
         local N = floor(W / blockPx)
         local cap = Shot.Capacity(N)
-        local rows = Shot.DataRows(lens, cap)
-        if rows and rows <= maxData then
-            g = { W = W, N = N, cap = cap, rows = rows }
-            break
+        local maxData = floor(Shot.MAX_BLOCKS / N) - 1 -- una fila es la final
+        if cap > 0 and maxData >= 1 then
+            local rows = Shot.DataRows(lens, cap) or 0
+            local shots = max(1, ceil(rows / maxData))
+            local total = N * (rows + shots)
+            if not best or shots < best.shots or (shots == best.shots and total < best.total) then
+                best = {
+                    W = W, N = N, cap = cap, rows = rows, rowsPerShot = maxData,
+                    shots = shots, total = total,
+                    blocks = N * (min(rows, maxData) + 1),
+                }
+            end
         end
     end
-    if not g then
-        local N = floor(Shot.MAX_W / blockPx)
-        local cap = Shot.Capacity(N)
-        g = { W = Shot.MAX_W, N = N, cap = cap, rows = Shot.DataRows(lens, cap) or 0 }
-    end
-    g.blockPx = blockPx
-    g.rowsPerShot = maxData
-    g.shots = max(1, ceil(g.rows / maxData))
-    return g
+    best.blockPx = blockPx
+    return best
 end
 
--- Tamano en pixeles fisicos del panel con dataRows filas de datos (+ la final).
+-- Tamano en pixeles fisicos del marco con dataRows filas de datos (+ la final): ancho N bloques y
+-- alto de las filas, con minimo MIN_H (el marco negro; los bloques solo cubren las filas).
 function Shot.PanelSize(N, dataRows, blockPx)
     blockPx = blockPx or Shot.BLOCK_PX
     local h = max(Shot.MIN_H, (dataRows + 1) * blockPx)
-    return N * blockPx, min(h, Shot.MAX_H)
+    return N * blockPx, h
 end
 
 -- Filas de una captura: una trama por trozo (en orden) y la fila final. Puro: sin API del juego.
 -- chunks: lista de trozos de Channel (type, id, index, count, data), uno por fila.
+-- La fila final lleva chunkCount = NUMERO DE FILAS DE DATOS de la captura (no el numero de filas
+-- totales): la app lo usa para saber cuantas filas esperar. msgType 0, dataLen 0.
 function Shot.PanelFrames(status, chunks, N, shotId)
     local frames = {}
     for i, ch in ipairs(chunks) do
@@ -381,23 +390,23 @@ local function drainPlan(now)
     end
 end
 
--- Saca hasta maxRows trozos de la cola, con capacidad cap. Espera a los pesados si hace falta.
-local function takeRows(cap, maxRows)
+-- Saca hasta maxRows trozos de la cola (con capacidad cap) y los anade a out. Espera a los pesados.
+-- out se rellena aunque falle a mitad: asi un aborto puede devolver lo ya sacado a la cola.
+local function takeRows(cap, maxRows, out)
     local C = ns.Channel
-    local rows = {}
     local frameNo, guard = 0, 0
     local limit = maxRows * (C.HEAVY_EVERY or 3) + 1000
-    while #rows < maxRows and guard < limit do
+    while #out < maxRows and guard < limit do
         frameNo = frameNo + 1
         guard = guard + 1
         local ch = C.NextChunkCapacity(cap, frameNo)
         if ch then
-            rows[#rows + 1] = ch
+            out[#out + 1] = ch
         elseif C.Pending() == 0 then
             break
         end
     end
-    return rows
+    return out
 end
 
 -- Aborta la captura en curso (error inesperado): deja el estado limpio para la siguiente activacion.
@@ -407,12 +416,15 @@ local function abortRun(reason)
     run = nil
     r.waiting = nil
     hidePanel()
+    local list = r.chunks
+    r.chunks = nil
+    ns.Channel.RequeueChunks(list)
     ns.Channel.Stop()
     restoreCVars(r.saved)
     later(Shot.NOTICE_SEC, function() restoreNotices(r.notices) end)
     Shot.errors = Shot.errors + 1
     Shot.lastError = reason
-    say("La captura falló (" .. tostring(reason) .. "). Los datos de esa captura no se reenvían hasta que cambien.")
+    say("La captura falló (" .. tostring(reason) .. "). Sus datos vuelven a la cola y se envían en el siguiente envío.")
 end
 
 -- Ejecuta fn protegida: si falla, aborta la captura en curso y no deja nada a medias.
@@ -432,7 +444,10 @@ local function finish(ok, err)
     local notices = r.notices
     later(Shot.NOTICE_SEC, function() restoreNotices(notices) end)
     local C = ns.Channel
+    local list = r.chunks
+    r.chunks = nil
     if ok then
+        C.ConfirmChunks(list)
         Shot.sent = Shot.sent + 1
         Shot.last = { id = r.shotId, at = ns.Now(), rows = r.rows, bytes = r.bytes, format = r.fmt }
         if ns.UI and ns.UI.OnShotSent then ns.SafeCall(ns.UI.OnShotSent, r.shotId) end
@@ -443,9 +458,10 @@ local function finish(ok, err)
             return
         end
     else
+        C.RequeueChunks(list)
         Shot.errors = Shot.errors + 1
         Shot.lastError = err
-        say(err .. ". Los datos de esa captura no se reenvian hasta que cambien.")
+        say(err .. ". Sus datos vuelven a la cola y se envían en el siguiente envío.")
     end
     -- Fin de la activacion: restaura las CVar y deja lo que no quepo para la siguiente.
     run = nil
@@ -510,7 +526,8 @@ function Shot.NextShot()
     r.shotNo = r.shotNo + 1
     local C = ns.Channel
     local now = nowSec()
-    local chunks = takeRows(r.geo.cap, r.geo.rowsPerShot)
+    r.chunks = r.chunks or {}
+    local chunks = takeRows(r.geo.cap, r.geo.rowsPerShot, r.chunks)
     local status = ns.BuildPayload(ns.ReadLiveState(C.RemainingSec(now)))
     local shotId = nextShotId()
     local frames, why = Shot.PanelFrames(status, chunks, r.geo.N, shotId)
@@ -597,6 +614,7 @@ end
 -- Pruebas: acceso a internos del panel.
 Shot.testing = {
     panel = function() return G.frame, G.tex, G.shown end,
+    current = function() return run end,
     reset = function()
         run = nil
         G = { frame = nil, bg = nil, tex = {}, painted = {}, px = {}, py = {}, pb = {}, shown = 0 }

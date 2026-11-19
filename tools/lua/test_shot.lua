@@ -65,7 +65,9 @@ local function countTimers(sec)
     return n
 end
 
+local texCreated = 0 -- texturas creadas (pool: no deben recrearse entre capturas)
 local function newTexture()
+    texCreated = texCreated + 1
     local t = { shown = true }
     function t:SetColorTexture(r, g, b, a) self.color = { r, g, b } end
     function t:SetSize(w, h) self.size = { w, h } end
@@ -171,6 +173,7 @@ local C, Sh, Shot = ns.Channel, ns.Share, ns.Shot
 
 -- Personaje con datos pequenos (o grandes, con big = true: varias capturas).
 local function freshDB(big)
+    texCreated = 0
     CompaneroWoWDB = nil
     C.testing.reset()
     Shot.testing.reset()
@@ -209,39 +212,38 @@ end
 ns.InitBridge()
 
 -- ---------------------------------------------------------------------------
-outln("geometria del panel")
+outln("geometria del panel (tope 4096 bloques por captura)")
 -- ---------------------------------------------------------------------------
 local g = Shot.Geometry({ 100 }, 2)
 eq("payload pequeno: ancho minimo 256 px (N = 128)", g.W, 256)
 eq("payload pequeno: N = 128 bloques", g.N, 128)
 eq("payload pequeno: una fila de datos", g.rows, 1)
 eq("payload pequeno: una captura", g.shots, 1)
+eq("payload pequeno: 256 texturas (N x 2 filas)", g.blocks, 256)
 local W, H = Shot.PanelSize(g.N, g.rows, g.blockPx)
-eq("payload pequeno: panel 256 px de ancho", W, 256)
+eq("payload pequeno: marco 256 px de ancho", W, 256)
 eq("payload pequeno: altura minima 64 px", H, 64)
 
 g = Shot.Geometry({}, 2)
-eq("sin datos: panel minimo 256 px", g.W, 256)
+eq("sin datos: panel de 256 px", g.W, 256)
 eq("sin datos: cero filas de datos", g.rows, 0)
 eq("sin datos: una captura (estado)", g.shots, 1)
 
-g = Shot.Geometry({ 20000 }, 2)
-eq("payload mediano: 256 px si cabe en 255 filas", g.W, 256)
+g = Shot.Geometry({ 4000 }, 2)
+eq("4 KB (cambios tipicos): 512 px, una captura", g.W, 512)
+check("4 KB: menos de 4096 texturas", g.blocks <= 4096, tostring(g.blocks))
 W, H = Shot.PanelSize(g.N, g.rows, g.blockPx)
-eq("payload mediano: altura = (filas + final) x 2 px", H, (g.rows + 1) * 2)
+eq("4 KB: altura = max(64, (filas + final) x 2 px)", H, math.max(64, (g.rows + 1) * 2))
 
-g = Shot.Geometry({ 50000 }, 2)
-eq("payload mayor: pasa a 512 px", g.W, 512)
-W, H = Shot.PanelSize(g.N, g.rows, g.blockPx)
-check("payload mayor: altura <= 512 px", H <= 512, tostring(H))
+g = Shot.Geometry({ 20000 }, 2)
+check("20 KB: una captura o varias, sin pasar de 8", g.shots <= 8, tostring(g.shots))
+check("20 KB: texturas de la captura mayor <= 4096", g.blocks <= 4096, tostring(g.blocks))
 
 g = Shot.Geometry({ 200000 }, 2)
-eq("payload grande: 1024 px", g.W, 1024)
-eq("payload grande: N = 512 bloques", g.N, 512)
-eq("payload grande: 255 filas de datos por captura", g.rowsPerShot, 255)
-eq("payload grande: dos capturas", g.shots, 2)
-W, H = Shot.PanelSize(g.N, g.rowsPerShot, g.blockPx)
-eq("payload grande: altura maxima 512 px", H, 512)
+eq("payload grande: 1024 px (N = 512)", g.W, 1024)
+eq("payload grande: 7 filas de datos por captura", g.rowsPerShot, 7)
+eq("payload grande: 4096 texturas como mucho", g.blocks, 4096)
+check("payload grande: mas capturas de las que caben en un envio", g.shots > Shot.MAX_SHOTS, tostring(g.shots))
 
 g = Shot.Geometry({ 100 }, 4)
 eq("jpg (bloque 4 px): ancho 256 px = 64 bloques", g.N, 64)
@@ -412,6 +414,92 @@ eq("sin confirmacion: contado como error", Shot.errors, 1)
 eq("sin confirmacion: CVar restaurada", cvars.screenshotFormat, "jpg")
 
 -- ---------------------------------------------------------------------------
+outln("fallo: los trozos vuelven a la cola (nada se pierde)")
+-- ---------------------------------------------------------------------------
+freshDB(false)
+res = Shot.Start(now, {})
+eq("requeue: arranca", res, "started")
+runTimers(0)
+local queuedBefore = C.Pending()
+eq("requeue: al enviar, la cola queda vacia", queuedBefore, 0)
+local firstBytes = Shot.testing.current() and Shot.testing.current().bytes
+fireEvent(false)
+check("requeue: tras el fallo, los mensajes vuelven a la cola", C.Pending() > 0, tostring(C.Pending()))
+eq("requeue: ningun envio confirmado", Shot.sent, 0)
+res = Shot.Start(now, {})
+runTimers(0)
+fireEvent(true)
+eq("requeue: el reintento envia lo mismo (bytes)", Shot.last and Shot.last.bytes, firstBytes or nil)
+check("requeue: reintento confirmado", Shot.sent == 1)
+
+-- Scheduler: completion diferida y reencolado desde el trozo no confirmado.
+do
+    local S2 = C.NewScheduler()
+    local done = 0
+    local big = {}
+    for k = 1, 300 do big[k] = string.char(k % 256) end
+    S2:enqueueItem(3, 99, function() return table.concat(big) end, function() done = done + 1 end)
+    local cap = 100
+    local c1 = S2:nextChunk(cap, 1, true)
+    local c2 = S2:nextChunk(cap, 2, true)
+    eq("sched: dos trozos tomados", c1 ~= nil and c2 ~= nil, true)
+    eq("sched: primer trozo indice 0", c1.index, 0)
+    eq("sched: segundo trozo indice 1", c2.index, 1)
+    eq("sched: aun no confirmado (onDone no llamado)", done, 0)
+    S2:requeue({ c1, c2 })
+    eq("sched: el trabajo vuelve a la cola", S2:pending(), 1)
+    local r1 = S2:nextChunk(cap, 3, true)
+    eq("sched: reenvio desde el trozo 0", r1.index, 0)
+    local r2 = S2:nextChunk(cap, 4, true)
+    local r3 = S2:nextChunk(cap, 5, true)
+    eq("sched: tercer trozo (indice 2) tiene el final", r3 and r3.index, 2)
+    eq("sched: onDone aun sin llamar", done, 0)
+    C.ConfirmChunks({ r1, r2, r3 })
+    eq("sched: confirmar completa el mensaje", done, 1)
+    eq("sched: cola vacia tras confirmar", S2:pending(), 0)
+    C.ConfirmChunks({ r3 })
+    eq("sched: confirmar dos veces no repite onDone", done, 1)
+end
+
+-- Fallo a mitad de captura (abort): los trozos de la captura vuelven a la cola.
+freshDB(true)
+local realLive = ns.ReadLiveState
+ns.ReadLiveState = function() error("fallo simulado al leer el estado") end
+res = Shot.Start(now, {})
+ns.ReadLiveState = realLive
+eq("abort: Start devuelve unavailable", res, "unavailable")
+eq("abort: sin captura en curso", Shot.Busy(), false)
+check("abort: los trozos ya tomados vuelven a la cola", C.Pending() > 0, tostring(C.Pending()))
+eq("abort: ningun envio confirmado", Shot.sent, 0)
+res = Shot.Start(now, {})
+eq("abort: la siguiente activacion arranca", res, "started")
+runTimers(0)
+fireEvent(true)
+check("abort: el reintento confirma datos", Shot.sent >= 1)
+
+-- ---------------------------------------------------------------------------
+outln("medida: creacion y pintado del panel (4096 bloques)")
+-- ---------------------------------------------------------------------------
+freshDB(true)
+local t0 = os.clock()
+Shot.Start(now, {})
+local tFirst = os.clock() - t0
+local texAfterFirst = texCreated
+runTimers(0)
+fireEvent(true)
+local t1 = os.clock()
+runTimers(Shot.GAP_SEC) -- segunda captura: pinta el panel (reutiliza el pool)
+local tSecond = os.clock() - t1
+runTimers(0)
+fireEvent(true)
+local _, texAll = Shot.testing.panel()
+outln(string.format("  info  panel 4096 bloques: 1a captura (crea + pinta) %.2f ms; 2a captura (reutiliza) %.2f ms; texturas de bloque creadas %d, en pool %d",
+    tFirst * 1000, tSecond * 1000, texCreated - 1, #texAll))
+local blockTex = texCreated - 1 -- una textura mas: el fondo negro del marco
+check("medida: texturas de bloque no pasan de 4096", blockTex <= 4096, tostring(blockTex))
+check("medida: la segunda captura no crea texturas nuevas", texCreated == texAfterFirst, string.format("%d vs %d", texCreated, texAfterFirst))
+
+-- ---------------------------------------------------------------------------
 outln("regla de combate")
 -- ---------------------------------------------------------------------------
 freshDB(false)
@@ -447,12 +535,18 @@ while rounds < 20 do
         break
     end
 end
-eq("grande: dos capturas", #shotLog, 2)
-eq("grande: enviadas 2", Shot.sent, 2)
-eq("grande: sin pendientes", C.Pending(), 0)
+eq("grande: ocho capturas (tope)", #shotLog, 8)
+eq("grande: enviadas 8", Shot.sent, 8)
+check("grande: quedan datos para el siguiente envio", C.Pending() > 0)
 eq("grande: CVar restaurada al final", cvars.screenshotFormat, "jpg")
-eq("grande: ids de captura 1 y 2 (persistidos)", CompaneroWoWDB.settings.shotId, 2)
-check("grande: aviso de datos enviados", chatHas("2 captura(s)"))
+eq("grande: ids de captura 1 a 8 (persistidos)", CompaneroWoWDB.settings.shotId, 8)
+check("grande: aviso de datos enviados", chatHas("8 captura(s)"))
+check("grande: aviso de lo que queda", chatHas("Quedan"))
+check("grande: cada captura <= 4096 texturas", (function()
+    local _, tex = Shot.testing.panel()
+    return #tex <= 4096
+end)())
+check("grande: texturas de bloque creadas <= 4096 (pool, una vez)", texCreated - 1 <= 4096, tostring(texCreated))
 
 -- Limite: con MAX_SHOTS = 1 se sale una captura y lo que no cabe queda en la cola (aviso).
 freshDB(true)
