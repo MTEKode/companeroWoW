@@ -16,6 +16,7 @@ end
 
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Channel.lua")
 
@@ -270,6 +271,7 @@ ns.CharKey = function() return key end
 ns.InCombat = function() return false end
 local function freshDB()
     CompaneroWoWDB = {
+        schema = 2,
         settings = {},
         characters = {
             [key] = {
@@ -280,7 +282,6 @@ local function freshDB()
                 inventory = { items = { { id = 1, n = 5 } } },
                 professions = { { name = "Tailoring" } },
                 actionBars = { { slot = 1, id = 7 } },
-                combats = { { id = 1, t = 10 } },
                 completedQuests = { 1, 2, 3 },
                 macros = { account = { used = 1, max = 120, list = {} } },
             },
@@ -302,7 +303,7 @@ eq("reposo: sin trabajos", C.state.sched and C.state.sched:pending() or 0, 0)
 -- conocimiento (9) no hay trozos de esos tipos; el resto sale en el orden del plan.
 local items = runShare(1000, 400)
 local order = firstOrder(items)
-eq("orden del primer envio (tipos con datos)", listOf(order), "1,2,4,3,5,13,8,7,6,11,10")
+eq("orden del primer envio (tipos con datos)", listOf(order), "1,2,4,3,5,13,8,6,11,10")
 C.Stop()
 
 -- Ventana: 20 s. Con todo enviado al menos una vez, vuelve al reposo 5 s despues.
@@ -350,47 +351,68 @@ end
 check("nueva activacion: el inventario trae n=6", string.find(bagText, '"n":6', 1, true) ~= nil, bagText)
 
 -- ---------------------------------------------------------------------------
-print("(g) Activacion: conocimiento (deltas y volcado), combate y completedQuests")
+print("(g) Activacion: bandeja (conocimiento y combates) y completedQuests")
 freshDB()
 ns.InCombat = function() return false end
-CompaneroWoWDB.knowledge.quests[101] = { questID = 101, title = "A" }
+local St = ns.Storage
+St.Learn(9, { "quests", 101 }, { questID = 101, title = "A", lastSeen = 5 })
+St.Learn(7, { "combats", 1 }, { id = 1, t = 10, zone = "Elwynn" })
+-- Mensajes completos que salen (reensamblados por msgId) desde el primer trozo pedido.
+local function messagesOf(startFrame)
+    local out, partial = {}, {}
+    local i, guard = startFrame or 1, 0
+    while C.state.sched and C.state.sched:pending() > 0 and guard < 5000 do
+        guard = guard + 1
+        local ch = C.NextChunk(860, i)
+        i = i + 1
+        if ch then
+            local k = ch.type .. ":" .. ch.id
+            local buf = partial[k] or { type = ch.type, parts = {} }
+            partial[k] = buf
+            for _, b in ipairs(ch.data) do buf.parts[#buf.parts + 1] = string.char(b) end
+            if ch.index == ch.count - 1 then
+                out[#out + 1] = { type = ch.type, text = table.concat(buf.parts) }
+                partial[k] = nil
+            end
+        end
+    end
+    return out
+end
+local function findMsg(list, t, needle)
+    for _, m in ipairs(list) do
+        if m.type == t and string.find(m.text, needle, 1, true) then return m end
+    end
+    return nil
+end
 C.Begin(7000)
 C.Pump(7000, 1e9)
-local function jobOf(t)
-    local found
-    for _, job in ipairs(C.state.sched.jobs) do
-        if job.type == t then found = job end
-    end
-    return found
-end
--- Vacia la cola de la activacion en curso (envia todos los trozos pendientes).
-local function drainQueue()
-    local i = 0
-    while C.state.sched and C.state.sched:pending() > 0 and i < 5000 do
-        i = i + 1
-        C.NextChunk(860, i)
-    end
-end
-local kjob = jobOf(9)
-check("knowledge: la primera activacion manda la 101 como delta", kjob ~= nil and string.find(kjob.str, '"101":', 1, true) ~= nil)
-check("knowledge: el delta tiene la forma {npcs,quests}", kjob ~= nil and string.sub(kjob.str, 1, 9) == '{"npcs":{')
-check("knowledge: el delta va por el carril normal (no lento)", kjob ~= nil and kjob.heavy == false and kjob.optional == false)
-drainQueue()
+local msgs1 = messagesOf(1)
+local m101 = findMsg(msgs1, 9, '"p":["quests",101]')
+check("bandeja: la 101 sale como mensaje tipo 9 con su ruta", m101 ~= nil)
+check("bandeja: el mensaje lleva oseq y el registro compacto", m101 ~= nil and string.find(m101.text, '"oseq":1', 1, true) ~= nil and string.find(m101.text, '"ti":"A"', 1, true) ~= nil)
+check("bandeja: lastSeen no viaja", m101 ~= nil and string.find(m101.text, "lastSeen", 1, true) == nil)
+check("bandeja: el combate sale como tipo 7", findMsg(msgs1, 7, '"p":["combats",1]') ~= nil)
+eq("bandeja: tras una ventana cuenta 1 envio", St.Items()[1].shares, 1)
 C.Stop()
--- Segunda activacion sin cambios: no hay delta (el volcado completo es opcional).
+-- Segunda ventana: los items siguen en la bandeja y cuentan otra ventana.
 C.Begin(7100)
 C.Pump(7100, 1e9)
-local kjob2 = jobOf(9)
-check("knowledge: sin cambios no hay delta", kjob2 == nil or kjob2.optional == true)
-drainQueue()
+check("bandeja: la 101 se reenvia en la siguiente ventana", findMsg(messagesOf(1), 9, '"p":["quests",101]') ~= nil)
+eq("bandeja: tras dos ventanas cuenta 2", St.Items()[1].shares, 2)
 C.Stop()
--- Cambio de un registro: el delta solo trae la 102 (la 101 no se reenvia).
-CompaneroWoWDB.knowledge.quests[102] = { questID = 102, title = "B" }
+-- Tercera ventana: al cumplir 3 envios el item se quita de la bandeja.
 C.Begin(7200)
 C.Pump(7200, 1e9)
-local kjob3 = jobOf(9)
-check("knowledge: el delta trae la 102", kjob3 ~= nil and string.find(kjob3.str, '"102":', 1, true) ~= nil)
-check("knowledge: el delta no repite la 101", kjob3 ~= nil and string.find(kjob3.str, '"101":', 1, true) == nil)
+messagesOf(1)
+eq("bandeja: tras tres ventanas se quita (la bandeja queda vacia)", #St.Items(), 0)
+C.Stop()
+-- Un registro nuevo entra en la siguiente ventana (y solo el).
+St.Learn(9, { "npcs", 7 }, { npcID = 7, name = "Guardia" })
+C.Begin(7300)
+C.Pump(7300, 1e9)
+local msgs4 = messagesOf(1)
+check("bandeja: el PNJ nuevo sale", findMsg(msgs4, 9, '"p":["npcs",7]') ~= nil)
+check("bandeja: la 101 ya no sale (se quito)", findMsg(msgs4, 9, '"p":["quests",101]') == nil)
 C.Stop()
 
 -- Combate: la activacion sigue sirviendo (solo se lee, no se recalcula nada del juego).
@@ -447,9 +469,8 @@ do
     local big = {}
     for i = 1, 1500 do big[i] = { questID = 10000 + i, title = "Mision de prueba numero " .. i, objectives = { "a", "b", i } } end
     CompaneroWoWDB.characters[key].quests = big
-    CompaneroWoWDB.knowledge = { quests = {}, npcs = {} }
     for i = 1, 2000 do
-        CompaneroWoWDB.knowledge.npcs[i] = { npcID = i, name = "PNJ " .. i, x = 0.5, y = 0.25, level = 60 }
+        ns.Storage.Learn(9, { "npcs", i }, { npcID = i, name = "PNJ " .. i, x = 0.5, y = 0.25, level = 60 })
     end
 
     -- Reposo: no hay trabajo que repartir.

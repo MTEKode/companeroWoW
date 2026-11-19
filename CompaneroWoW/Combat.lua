@@ -1,5 +1,6 @@
 -- Combat.lua: revision de los ultimos 10 combates (COMBAT REVIEW CONTRACT).
--- Escribe en CompaneroWoWDB.characters[key].combats (el mas nuevo primero).
+-- Guarda los ultimos 10 combates en memoria (characters[key].combats, el mas nuevo primero) y cada
+-- registro en la bandeja de envio (Storage.lua, msgType 7).
 -- Solo LEE la API oficial de C_DamageMeter (Blizzard_DamageMeter) y datos no secretos.
 --
 -- Trabajo dentro de combate: solo la marca de inicio (tiempo, zona, objetivos) al entrar
@@ -308,7 +309,14 @@ function C.Build(f)
     return rec
 end
 
+-- Cada combate (nuevo o actualizado) va a la bandeja de envio (Storage.lua, tipo 7).
+local function learnCombat(rec)
+    local St = ns.Storage
+    if St then St.Learn(St.TYPE_COMBAT, { "combats", rec.id }, rec) end
+end
+
 -- Escribe el registro: un combate ya guardado (mismo recordId) se sustituye; si no, entra el primero.
+-- La lista de los ultimos combates es memoria de juego; cada registro va tambien a la bandeja.
 local function store(f, rec)
     local key = ns.CharKey()
     if not key then return end
@@ -325,6 +333,7 @@ local function store(f, rec)
             if r.id == f.recordId then
                 rec.id = f.recordId
                 list[i] = rec
+                learnCombat(rec)
                 return
             end
         end
@@ -338,6 +347,7 @@ local function store(f, rec)
     f.recordId = rec.id
     table.insert(list, 1, rec)
     while #list > MAX_RECORDS do table.remove(list) end
+    learnCombat(rec)
 end
 
 -- Lee la sesion y guarda el registro del combate f. Idempotente por combate (recordId).

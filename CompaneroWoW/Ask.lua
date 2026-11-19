@@ -138,6 +138,30 @@ function Ask.LastShown()
     return a and a.lastShown or 0
 end
 
+-- Copia de la respuesta que se guarda en SavedVariables: bloques hasta ANSWER_MAX_BYTES de texto
+-- (si no hay bloques, el cuerpo cortado a ese tope). La respuesta mostrada no cambia.
+function Ask.StoredCopy(ans)
+    local limit = (ns.Storage and ns.Storage.ANSWER_MAX_BYTES) or 2048
+    local out = { id = ans.id, provider = ans.provider, at = ans.at, truncated = ans.truncated }
+    local used, blocks = 0, {}
+    for _, b in ipairs(ans.blocks or {}) do
+        local size = #(b.text or "") + #(b.args or "") + #(b.name or "")
+        for _, s in ipairs(b.segs or {}) do size = size + #(s.text or "") end
+        if used + size > limit then
+            out.truncated = true
+            break
+        end
+        used = used + size
+        blocks[#blocks + 1] = b
+    end
+    if #blocks > 0 then
+        out.blocks = blocks
+    elseif type(ans.body) == "string" then
+        out.body = string.sub(ans.body, 1, limit)
+    end
+    return out
+end
+
 -- Pega en el marco: parsea y guarda la respuesta. Devuelve la respuesta, o nil y el motivo.
 function Ask.Receive(text)
     local ans, err = ns.Markup.Parse(text)
@@ -149,10 +173,11 @@ function Ask.Receive(text)
     end
     ans.at = ns.Now()
     local n = #a.answers
+    local saved = Ask.StoredCopy(ans)
     if ans.id == a.lastShown and n > 0 and a.answers[n].id == ans.id then
-        a.answers[n] = ans -- la misma pregunta otra vez: reemplaza, no duplica
+        a.answers[n] = saved -- la misma pregunta otra vez: reemplaza, no duplica
     else
-        a.answers[n + 1] = ans
+        a.answers[n + 1] = saved
     end
     while #a.answers > Ask.KEEP do table.remove(a.answers, 1) end
     a.lastShown = ans.id

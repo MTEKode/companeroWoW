@@ -53,6 +53,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua") -- hash de campos del snapshot (Core.lua)
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Collectors.lua")
 load("CompaneroWoW/Native.lua")
 load("CompaneroWoW/Core.lua")

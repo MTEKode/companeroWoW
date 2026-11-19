@@ -5,7 +5,7 @@ ns = ns or {}
 local Call, Num, Clean = ns.Call, ns.Num, ns.Clean
 
 ns.VERSION = "0.1.0"
-ns.SCHEMA = 1
+ns.SCHEMA = 2 -- esquema de SavedVariables con bandeja (Storage.lua)
 
 local SNAPSHOT_THROTTLE = 120 -- segundos minimos entre dos snapshots (fuera de combate)
 local PERIODIC_SNAPSHOT = 120  -- segundos entre snapshots periodicos (dentro del mundo, fuera de combate)
@@ -23,11 +23,13 @@ local function say(msg)
 end
 ns.Say = say -- para Marks.lua y Questie.lua
 
--- Inicializa y migra CompaneroWoWDB sin borrar datos existentes.
+-- Inicializa y migra CompaneroWoWDB sin borrar datos existentes. Storage.Attach migra el esquema 1
+-- a la bandeja y enruta los campos de memoria (Storage.lua); despues se asegura la forma minima.
 function ns.EnsureDB()
     if type(CompaneroWoWDB) ~= "table" then CompaneroWoWDB = {} end
     local db = CompaneroWoWDB
-    if db.schema == nil then db.schema = ns.SCHEMA end -- migracion desde esquema sin version
+    if ns.Storage then ns.Storage.Attach() end
+    if db.schema == nil then db.schema = ns.SCHEMA end
     if type(db.settings) ~= "table" then db.settings = {} end
     if db.settings.strip == nil then db.settings.strip = true end
     if type(db.characters) ~= "table" then db.characters = {} end
@@ -311,7 +313,8 @@ local function showHelp()
     say("  /compa sync reload - igual, y además recarga la interfaz (escribe SavedVariables)")
     say("  /compa enviar - comparte los datos que han cambiado durante 20 s (igual que la tecla Compañero: compartir datos)")
     say("  /compa strip on|off - on: compartir con la tecla (por defecto); off: no compartir nunca")
-    say("  /compa estado - muestra el estado actual")
+    say("  /compa estado - muestra el estado actual (datos guardados y bandeja)")
+    say("  /compa limpiar - vacía la bandeja de envío (pide confirmación: /compa limpiar si)")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
     say("  /compa marca <mapID> <x> <y> [texto] - marca un punto en un mapa concreto")
     say("  /compa marca - marca el siguiente paso de tu misión (con las guías del juego; Questie si está instalado)")
@@ -343,6 +346,7 @@ local function showStatus()
     for _ in pairs(db.knowledge.quests) do nQuests = nQuests + 1 end
     for _ in pairs(db.knowledge.npcs) do nNpcs = nNpcs + 1 end
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
+    if ns.Storage then say(ns.Storage.StatusLine()) end
     say("Compartir datos: " .. (ns.IsStripOn() and "activado" or "desactivado (/compa strip on)"))
     if ns.Ask then say(ns.Ask.StatusLine()) end
     if ns.QuestieStatusLine then say(ns.QuestieStatusLine()) end
@@ -442,6 +446,16 @@ local function handleSlash(msg)
         end
     elseif cmd == "macro" then
         if ns.Macros then ns.Macros.Command(raw) else say("Macros no disponibles.") end
+    elseif cmd == "limpiar" then
+        if not ns.Storage then
+            say("Bandeja no disponible.")
+        elseif rest ~= "si" then
+            local n, bytes = ns.Storage.Stats()
+            say(string.format("Esto vacía la bandeja de envío (%d elementos, %.1f KB) sin enviarlos. Para confirmar: /compa limpiar si", n, bytes / 1024))
+        else
+            local n = ns.Storage.Clear()
+            say(string.format("Bandeja vaciada: %d elemento(s) eliminado(s).", n))
+        end
     elseif cmd == "estado" then
         showStatus()
     else

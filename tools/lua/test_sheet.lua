@@ -34,6 +34,7 @@ ns.InCombat = function() return W.state.inCombat == true end
 ns.IsFullyInWorld = function() return true end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Channel.lua")
 load("CompaneroWoW/Sheet.lua")
 
