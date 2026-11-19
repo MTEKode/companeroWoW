@@ -133,6 +133,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Collectors.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Channel.lua")
@@ -181,7 +182,6 @@ local function freshDB()
         inventory = { items = { { id = 1, n = 5 } } },
         professions = { { name = "Tailoring" } },
         actionBars = { { slot = 1, id = 7 } },
-        combats = { { id = 1, t = 10 } },
         completedQuests = { 1, 2, 3 },
         macros = { account = { used = 1, max = 120, list = {} } },
         sheet = { level = 60 },
@@ -302,6 +302,15 @@ check("pregunta: viaja como msgType 15 en la cola", jobOf(15) ~= nil)
 local _, id2 = Ask.Send("Segunda")
 eq("pregunta: id 2 (crece)", id2, 2)
 eq("pregunta: id persistido en SavedVariables", CompaneroWoWDB.characters[KEY].ask.lastId, 2)
+do
+    -- Respuestas guardadas: como mucho 2 KB de texto cada una (Storage.ANSWER_MAX_BYTES).
+    local blocks = {}
+    for i = 1, 6 do blocks[i] = { kind = "para", segs = { { text = string.rep("t", 1000), bold = false } } } end
+    local copy = Ask.StoredCopy({ id = 7, provider = "m", blocks = blocks, body = "x" })
+    check("respuesta guardada: bloques hasta 2 KB y marcada como truncada", #copy.blocks == 2 and copy.truncated == true, tostring(#copy.blocks))
+    local copy2 = Ask.StoredCopy({ id = 8, body = string.rep("y", 5000) })
+    eq("respuesta sin bloques: cuerpo cortado a 2 KB", #copy2.body, 2048)
+end
 -- Tras "recargar" el modulo (la cuenta sigue en SavedVariables), el id continua.
 Ask.pending = nil
 local _, id3 = Ask.Send("Tercera")

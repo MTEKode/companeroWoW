@@ -1,19 +1,49 @@
 -- Knowledge.lua: base de conocimiento que aprende SOLO de lo que el jugador observa.
--- Guarda misiones (CompaneroWoWDB.knowledge.quests) y PNJs (knowledge.npcs).
+-- Mantiene en memoria misiones (knowledge.quests) y PNJs (knowledge.npcs); cada cambio va a la
+-- bandeja de envio (Storage.lua, msgType 9). Al cargar se reconstruye desde la bandeja.
 -- Nunca guarda jugadores como PNJs. Todo valor secreto se descarta.
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
 local Call, Get, Num, Str, Clean = ns.Call, ns.Get, ns.Num, ns.Str, ns.Clean
 
--- Tablas de conocimiento (creadas si faltan). nil si la DB aun no existe.
+-- Epoca de la base con la que se reconstruyo la memoria de conocimiento (Storage.lua).
+local loadedEpoch = nil
+
+-- Tablas de conocimiento: memoria de juego (no se guarda). Al cargar la base se reconstruyen desde
+-- la bandeja (registros de tipo 9, el ultimo de cada ruta gana). nil si la DB aun no existe.
 local function kb()
     if type(CompaneroWoWDB) ~= "table" then return nil end
+    local St = ns.Storage
+    local epoch = St and St.Sync() or 0
     local db = CompaneroWoWDB
+    if loadedEpoch ~= epoch then
+        loadedEpoch = epoch
+        db.knowledge = { quests = {}, npcs = {} }
+        if St then
+            St.Replay(function(msgType, path, rec)
+                if msgType == St.TYPE_KNOWLEDGE and type(path) == "table" and type(rec) == "table" then
+                    local map = path[1]
+                    if (map == "quests" or map == "npcs") and path[2] ~= nil then
+                        db.knowledge[map][path[2]] = rec
+                    end
+                end
+            end)
+        end
+    end
     if type(db.knowledge) ~= "table" then db.knowledge = {} end
     if type(db.knowledge.quests) ~= "table" then db.knowledge.quests = {} end
     if type(db.knowledge.npcs) ~= "table" then db.knowledge.npcs = {} end
     return db.knowledge
+end
+
+-- Anade a la bandeja el registro kind/id si cambio (kind: "quests" | "npcs").
+local function persist(kind, id)
+    local St = ns.Storage
+    if not St then return end
+    local k = kb()
+    local rec = k and k[kind] and k[kind][id]
+    if type(rec) == "table" then St.Learn(St.TYPE_KNOWLEDGE, { kind, id }, rec) end
 end
 
 -- Asigna solo si el valor no es nil (no borra datos previos).
@@ -100,6 +130,7 @@ local function upsertNPC(npcID, info)
         rec.services = info.services
     end
     rec.lastSeen = now
+    persist("npcs", npcID)
 end
 
 -- Datos de una unidad PNJ (Creature/Vehicle, no jugador). nil si no aplica.
@@ -160,6 +191,7 @@ local function onQuestDetail()
         upsertNPC(npc.npcID, { name = npc.name, mapID = npc.mapID, x = npc.x, y = npc.y, isQuestGiver = true })
     end
     q.lastSeen = ns.Now()
+    persist("quests", qid)
 end
 
 local function onQuestComplete()
@@ -178,6 +210,7 @@ local function onQuestComplete()
     end
     captureRewards(q)
     q.lastSeen = ns.Now()
+    persist("quests", qid)
 end
 
 -- Completa titulo y nivel desde C_QuestLog si faltan.
@@ -196,6 +229,7 @@ local function onQuestAccepted(a, b)
     end
     if not q.title then q.title = Str(Call("C_QuestLog.GetTitleForQuestID", qid)) end
     q.lastSeen = ns.Now()
+    persist("quests", qid)
 end
 
 local function countEntries(t)
@@ -300,6 +334,7 @@ local function noteOffered(qid, info)
     q.offeredSource = "juego"
     q.lastOffered = ns.Now()
     q.lastSeen = ns.Now()
+    persist("quests", qid)
 end
 
 ns.Knowledge = {

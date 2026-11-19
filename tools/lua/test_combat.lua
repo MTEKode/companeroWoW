@@ -60,6 +60,8 @@ local function load(path)
     chunk("CompaneroWoW", ns)
 end
 load("CompaneroWoW/Util.lua")
+load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Combat.lua")
 load("CompaneroWoW/Bars.lua")
@@ -138,6 +140,7 @@ eq("ninguna sesion guardada mientras dura el combate", #combatsOf(), 0)
 endCombat(134.2)
 check("tras salir de combate se lee la sesion", #W.callsNamed("C_DamageMeter.GetCombatSessionFromType") > 0)
 eq("un combate guardado al salir", #combatsOf(), 1)
+check("bandeja: el combate va a la bandeja (tipo 7, ruta combats)", (function() for _, it in ipairs(ns.Storage.Items()) do if it.msgType == 7 and it.payload.p[1] == "combats" then return true end end return false end)())
 
 -- ---------------------------------------------------------------------------
 outln("Combat: registro completo")

@@ -183,6 +183,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Channel.lua")
 -- Posicion del jugador (en el juego la da Collectors.lua).
@@ -255,9 +256,8 @@ local function reset()
     W.testing.idx.indexed = false
     W.testing.idx.total, W.testing.idx.refused = 0, 0
     W.testing.idx.sizes, W.testing.idx.hashes, W.testing.idx.paths = {}, {}, {}
-    W.testing.idx.counts, W.testing.idx.dirty, W.testing.idx.sent = {}, {}, {}
+    W.testing.idx.counts = {}
     W.testing.idx.json = {}
-    W.testing.idx.fullAt = nil
     W.testing.S.taxiOpen, W.testing.S.taxiSnap, W.testing.S.pendingRide, W.testing.S.ride = false, nil, nil, nil
     W.testing.S.merchantOpen, W.testing.S.merchant = false, nil
     W.testing.S.trainerOpen, W.testing.S.trainer = false, nil
@@ -712,8 +712,17 @@ eq("estado: linea", W.StatusLine(), "Mundo: 2 vuelos, 1 vendedores, 1 instructor
 eq("estado: /compa estado usa la linea", ns.WorldStatusLine(), "Mundo: 2 vuelos, 1 vendedores, 1 instructores, 1 consumibles")
 
 -- ---------------------------------------------------------------------------
-print("(j) Canal: solo los bloques cambiados (msgType 16)")
+print("(j) Bandeja: los cambios del mundo son items del tipo 16 (Storage.lua)")
 reset()
+local St = ns.Storage
+local function worldItems()
+    local out = {}
+    for _, it in ipairs(St.Items()) do
+        if it.msgType == 16 then out[#out + 1] = it end
+    end
+    return out
+end
+local function itemJSON(it) return ns.Json.Encode(it.payload) end
 setNpc(1000, "Vendedor A")
 T.merchant = { { info = { name = "Pan", price = 1, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2001|h|r" } }
 fire("MERCHANT_SHOW")
@@ -722,33 +731,57 @@ setNpc(1200, "Vendedor B")
 T.merchant = { { info = { name = "Agua", price = 2, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2005|h|r" } }
 fire("MERCHANT_SHOW")
 fire("MERCHANT_CLOSED")
-local now = T.gettime
-local full = W.ShareMessage()
-check("primer envio: mensaje completo", full ~= nil)
-check("primer envio: incluye vendedores", full and string.find(full, '"1000"', 1, true) ~= nil and string.find(full, '"1200"', 1, true) ~= nil)
-eq("sin cambios: nada que enviar", W.ShareMessage(), nil)
-check("sin cambios: ya no queda pendiente", not W.ChannelPending())
-
+check("primer envio: un item por vendedor", #worldItems() >= 2, tostring(#worldItems()))
+local function itemFor(id)
+    for _, it in ipairs(worldItems()) do
+        local j = itemJSON(it)
+        if string.find(j, '"p":["vendors",' .. id .. "]", 1, true) then return it, j end
+    end
+    return nil
+end
+local it1000, j1000 = itemFor(1000)
+check("item del vendedor 1000: ruta y oseq", it1000 ~= nil and string.find(j1000, '"oseq":' .. it1000.seq, 1, true) ~= nil)
+check("item del vendedor 1000: lleva el articulo", it1000 ~= nil and string.find(j1000, "Pan", 1, true) ~= nil)
+local n0 = #St.Items()
+-- Mismo contenido otra vez: no hay item nuevo.
+T.time = T.time + 5
+setNpc(1200, "Vendedor B")
+fire("MERCHANT_SHOW")
+fire("MERCHANT_CLOSED")
+eq("sin cambios: ningun item nuevo", #St.Items(), n0)
+-- Cambio de precio: un item nuevo, del vendedor cambiado.
 setNpc(1200, "Vendedor B")
 T.merchant[1].info.price = 3
 T.time = T.time + 5
 fire("MERCHANT_SHOW")
 fire("MERCHANT_CLOSED")
-local delta = W.ShareMessage()
-check("cambio de un vendedor: mensaje", delta ~= nil)
-check("cambio: solo el vendedor cambiado", delta and string.find(delta, '"1200"', 1, true) ~= nil
-    and string.find(delta, '"1000"', 1, true) == nil)
-check("cambio: mensaje mas corto que el completo", delta and #delta < #full)
-check("cambio: la forma es el mismo esquema (vendors)", delta and string.sub(delta, 1, 11) == '{"vendors":')
-check("cambio: JSON valido (decodifica)", delta and J.Encode and (delta:match("^%b{}$") ~= nil))
-eq("cambio: nada mas pendiente", W.ShareMessage(), nil)
+eq("cambio: un item nuevo", #St.Items(), n0 + 1)
+local last = St.Items()[#St.Items()]
+check("cambio: el item nuevo es del vendedor 1200", string.find(itemJSON(last), '"p":["vendors",1200]', 1, true) ~= nil)
+check("cambio: el precio nuevo viaja", string.find(itemJSON(last), '"price":3', 1, true) ~= nil or string.find(itemJSON(last), '"pr":3', 1, true) ~= nil)
 
--- Reenvio completo cada CHANNEL_FULL_EVERY s.
-T.gettime = T.gettime + W.CHANNEL_FULL_EVERY + 1
-check("reenvio completo tras el plazo", W.ShareMessage() ~= nil)
-T.gettime = T.gettime - W.CHANNEL_FULL_EVERY - 1
+-- Ventana de compartir: los items salen como mensajes del tipo 16 y cada uno cuenta una ventana.
+reset()
+setNpc(1000, "Vendedor canal")
+T.merchant = { { info = { name = "Pan", price = 1, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2001|h|r" } }
+fire("MERCHANT_SHOW")
+fire("MERCHANT_CLOSED")
+local msgs = runShare()
+check("ventana: sale un mensaje 16", #msgs >= 1, tostring(#msgs))
+check("ventana: el mensaje contiene el vendedor", msgs[1] and string.find(msgs[1], '"p":["vendors",1000]', 1, true) ~= nil)
+check("ventana: el mensaje tiene oseq", msgs[1] and string.find(msgs[1], '"oseq":', 1, true) ~= nil)
+check("ventana: JSON de objeto", msgs[1] and string.sub(msgs[1], 1, 1) == "{")
+check("ventana: el item cuenta una ventana", worldItems()[1] ~= nil and worldItems()[1].shares == 1)
+-- Segunda activacion: el item sigue en la bandeja y se vuelve a enviar (cuenta 2).
+local again = runShare()
+check("ventana 2: el vendedor vuelve a salir", #again >= 1)
+check("ventana 2: cuenta 2", worldItems()[1] ~= nil and worldItems()[1].shares == 2)
 
--- Mensajes grandes: varios mensajes, cada uno dentro del presupuesto.
+-- Tercera ventana: al cumplir 3 envios sale de la bandeja.
+runShare()
+eq("tras tres ventanas el item se quita", #worldItems(), 0)
+
+-- Mensajes grandes: cada item es pequeno; todos salen, cada mensaje <= el tope del canal.
 reset()
 for i = 1, 40 do
     T.time = T.time + 1
@@ -761,49 +794,31 @@ for i = 1, 40 do
     fire("MERCHANT_SHOW")
     fire("MERCHANT_CLOSED")
 end
+-- La bandeja tope (MAX_BYTES) descarta lo mas antiguo: lo que queda es lo que debe llegar.
+local kept = {}
+for _, it in ipairs(worldItems()) do
+    local id = string.match(itemJSON(it), '"p":%["vendors",(%d+)%]')
+    if id then kept[#kept + 1] = tonumber(id) end
+end
+check("mensajes grandes: la bandeja conserva los mas nuevos (tope de bytes)", #kept > 0 and kept[#kept] == 7040, tostring(kept[#kept]))
 local parts, seen, maxLen = 0, {}, 0
-local msg = W.ShareMessage()
-while msg do
-    parts = parts + 1
-    if #msg > maxLen then maxLen = #msg end
-    for i = 7001, 7040 do
-        if string.find(msg, '"' .. i .. '"', 1, true) then seen[i] = true end
+for _ = 1, 10 do -- una ventana no basta para todo: se repiten hasta vaciar la bandeja
+    for _, m in ipairs(runShare()) do
+        parts = parts + 1
+        if #m > maxLen then maxLen = #m end
+        for _, i in ipairs(kept) do
+            if string.find(m, '"p":["vendors",' .. i .. "]", 1, true) then seen[i] = true end
+        end
     end
-    msg = W.ShareMessage()
 end
 check("mensajes grandes: varios mensajes", parts > 1, tostring(parts))
 check("mensajes grandes: cada uno <= 98304 bytes", maxLen <= 98304, tostring(maxLen))
 local allSeen = true
-for i = 7001, 7040 do if not seen[i] then allSeen = false end end
-check("mensajes grandes: todos los vendedores llegan", allSeen)
+for _, i in ipairs(kept) do if not seen[i] then allSeen = false end end
+check("mensajes grandes: todos los vendedores de la bandeja llegan", allSeen and #kept > 0)
 
--- Ventana de compartir: el tipo 16 va el ultimo y sale como trozos en la activacion.
-reset()
-setNpc(1000, "Vendedor canal")
-T.merchant = { { info = { name = "Pan", price = 1, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2001|h|r" } }
-fire("MERCHANT_SHOW")
-fire("MERCHANT_CLOSED")
-local msgs = runShare()
-check("ventana: sale un mensaje 16", #msgs >= 1, tostring(#msgs))
-check("ventana: el mensaje contiene el vendedor", msgs[1] and string.find(msgs[1], '"1000"', 1, true) ~= nil)
-check("ventana: JSON de objeto", msgs[1] and string.sub(msgs[1], 1, 1) == "{")
-eq("ventana: segunda activacion sin cambios no reenvia el mundo", #runShare(), 0)
-
--- Cambio posterior: la siguiente activacion manda solo ese bloque.
-setNpc(1000, "Vendedor canal")
-T.merchant[1].info.price = 9
-T.time = T.time + 5
-fire("MERCHANT_SHOW")
-fire("MERCHANT_CLOSED")
-local msgs2 = runShare()
-eq("ventana: un cambio, un mensaje", #msgs2, 1)
-check("ventana: el cambio es el vendedor 1000", msgs2[1] and string.find(msgs2[1], '"price":9', 1, true) ~= nil)
-
--- /compa sync: todo el mundo sale aunque no haya cambiado.
-local syncMsgs = runShare({ full = true })
-check("sync completo: reenvia el mundo", #syncMsgs >= 1)
-
--- Overflow: mas datos que un mensaje; la ventana sigue hasta sacarlos.
+-- Sobrante: lo que no cabe en una ventana sale en las siguientes (oldest first) hasta que la
+-- bandeja se vacia (cada item sale en 3 ventanas como maximo).
 reset()
 for i = 1, 30 do
     T.time = T.time + 1
@@ -816,22 +831,41 @@ for i = 1, 30 do
     fire("MERCHANT_SHOW")
     fire("MERCHANT_CLOSED")
 end
--- Una ventana dura SHARE_SECONDS: el resto sale en las siguientes activaciones.
-local big, activations, got = 0, 0, ""
+local expectIds = {}
+for _, it in ipairs(worldItems()) do
+    local id = string.match(itemJSON(it), '"p":%["vendors",(%d+)%]')
+    if id then expectIds[#expectIds + 1] = id end
+end
+local got, activations = "", 0
 for _ = 1, 10 do
     activations = activations + 1
-    local msgs = runShare()
-    big = big + #msgs
-    got = got .. table.concat(msgs, "|")
-    if not W.ChannelPending() then break end
+    got = got .. table.concat(runShare(), "|")
+    if #worldItems() == 0 then break end
 end
 local missing = 0
-for i = 1, 30 do
-    if not string.find(got, '"' .. (8000 + i) .. '"', 1, true) then missing = missing + 1 end
+for _, id in ipairs(expectIds) do
+    if not string.find(got, '"p":["vendors",' .. id .. "]", 1, true) then missing = missing + 1 end
 end
-eq("sobrante: ningun vendedor se pierde entre mensajes", missing, 0)
-check("sobrante: varios mensajes entre activaciones", big >= 2, tostring(big))
-check("sobrante: no queda nada pendiente tras drenar", not W.ChannelPending(), tostring(activations))
+check("sobrante: hay vendedores en la bandeja tras el tope", #expectIds > 0 and #expectIds < 30, tostring(#expectIds))
+eq("sobrante: ningun vendedor de la bandeja se pierde entre ventanas", missing, 0)
+eq("sobrante: la bandeja queda vacia tras las ventanas", #worldItems(), 0)
+check("sobrante: hizo falta mas de una ventana", activations >= 2, tostring(activations))
+
+-- Recarga: solo viaja lo que esta en SavedVariables (schema, outbox, settings, characters). El mundo
+-- se reconstruye desde la bandeja y no se guarda como bloque propio.
+reset()
+setNpc(1500, "Vendedor persistente")
+T.merchant = { { info = { name = "Sal", price = 1, stackCount = 1, numAvailable = -1 }, link = "|Hitem:2010|h|r" } }
+fire("MERCHANT_SHOW")
+fire("MERCHANT_CLOSED")
+local saved = CompaneroWoWDB
+local itemsBefore = #St.Items()
+local sv = { schema = saved.schema, outbox = saved.outbox, settings = saved.settings, characters = saved.characters }
+CompaneroWoWDB = sv -- simula recarga
+W.Counts() -- primera lectura del mundo tras recargar: reconstruye la memoria desde la bandeja
+check("recarga: el vendedor 1500 vuelve desde la bandeja", CompaneroWoWDB.world ~= nil and CompaneroWoWDB.world.vendors ~= nil and CompaneroWoWDB.world.vendors[1500] ~= nil)
+check("recarga: el mundo no esta en SavedVariables", rawget(CompaneroWoWDB, "world") == nil)
+eq("recarga: la bandeja no cambia al reconstruir", #St.Items(), itemsBefore)
 
 eq("sin errores capturados (canal)", ns.errorCount, 0)
 

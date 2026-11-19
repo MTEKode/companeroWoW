@@ -1,9 +1,9 @@
--- World.lua: aprende del mundo lo que el jugador observa y lo guarda en CompaneroWoWDB.world
--- (cuenta, compartido por personajes): vuelos (nodos y tiempos/costes medidos), vendedores,
--- instructores, cadenas de misiones y consumibles. Solo por eventos: sin OnUpdate y sin trabajo
--- por frame. Dentro de combate no se lee nada: el trabajo se aplaza hasta salir de combate.
--- Los cambios se envian en la ventana de compartir (msgType 16, Channel.lua), solo los bloques
--- cambiados desde el ultimo envio.
+-- World.lua: aprende del mundo lo que el jugador observa (cuenta, compartido por personajes):
+-- vuelos (nodos y tiempos/costes medidos), vendedores, instructores, cadenas de misiones y
+-- consumibles. Solo por eventos: sin OnUpdate y sin trabajo por frame. Dentro de combate no se lee
+-- nada: el trabajo se aplaza hasta salir de combate.
+-- Cada cambio va a la bandeja de envio (Storage.lua, msgType 16) y se envia en la ventana de
+-- compartir. La memoria del mundo no se guarda en SavedVariables: al cargar se reconstruye desde la bandeja.
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
@@ -30,8 +30,6 @@ W.CHAIN_WINDOW = 120       -- s entre entregar una mision y aceptar otra del mis
 W.BAG_THROTTLE = 5         -- s minimos entre barridos de bolsas
 W.READS_PER_EVENT = 25     -- tooltips de objetos leidos por evento (evita picos)
 W.RIDE_MAX_SEC = 3600      -- un trayecto mas largo se descarta
-W.CHANNEL_BUDGET = 50000   -- bytes de JSON por mensaje msgType 16 (Json.MAX_BYTES del canal: 98304)
-W.CHANNEL_FULL_EVERY = 600 -- s entre reenvios completos del mundo
 
 local MAX_PENDING = 80     -- trabajo aplazado por combate (se descarta lo que sobre)
 
@@ -46,7 +44,7 @@ local EVICTABLE = { vendors = true, trainers = true }
 local idx = {
     indexed = false, total = 0, refused = 0,
     sizes = {}, hashes = {}, paths = {}, json = {}, counts = {},
-    dirty = {}, sent = {}, fullAt = nil,
+    -- (la memoria del mundo se reconstruye desde la bandeja: ver db())
 }
 local S = {
     taxiOpen = false, taxiSnap = nil, pendingRide = nil, ride = nil,
@@ -119,11 +117,41 @@ local function whenOutOfCombat(fn)
 end
 
 -- ---------------------------------------------------------------------------
--- Base de datos: CompaneroWoWDB.world y su indice (tamanos, hashes, caps)
+-- Base de datos: memoria del mundo (CompaneroWoWDB.world, no se guarda) y su indice (tamanos, hashes,
+-- caps). Al cargar una base nueva se reconstruye desde la bandeja (registros de tipo 16; gana el ultimo).
 -- ---------------------------------------------------------------------------
+
+local worldEpoch = nil -- epoca de Storage.lua con la que se reconstruyo la memoria
+
+-- Coloca value en la ruta path de root (sin pasar por db(): se usa al reconstruir).
+local function placeAt(root, path, value)
+    local cur = root
+    for i = 1, #path - 1 do
+        local k = path[i]
+        if type(cur[k]) ~= "table" then cur[k] = {} end
+        cur = cur[k]
+    end
+    cur[path[#path]] = value
+end
 
 local function db()
     if type(CompaneroWoWDB) ~= "table" then return nil end
+    local St = ns.Storage
+    local epoch = St and St.Sync() or 0
+    if worldEpoch ~= epoch then
+        worldEpoch = epoch
+        local root = {}
+        CompaneroWoWDB.world = root
+        if St then
+            St.Replay(function(msgType, path, value)
+                if msgType == St.TYPE_WORLD and type(path) == "table" and #path > 0 and value ~= nil then
+                    placeAt(root, path, value)
+                end
+            end)
+        end
+        idx.indexed, idx.total, idx.refused = false, 0, 0
+        idx.sizes, idx.hashes, idx.paths, idx.json, idx.counts = {}, {}, {}, {}, {}
+    end
     local w = CompaneroWoWDB.world
     if type(w) ~= "table" then
         w = {}
@@ -190,9 +218,8 @@ end
 local function forget(flat, path)
     local sec = sectionOf(path)
     idx.total = idx.total - (idx.sizes[flat] or 0)
-    idx.sizes[flat], idx.hashes[flat], idx.paths[flat], idx.sent[flat] = nil, nil, nil, nil
+    idx.sizes[flat], idx.hashes[flat], idx.paths[flat] = nil, nil, nil
     idx.json[flat] = nil
-    idx.dirty[flat] = nil
     if sec and idx.counts[sec] then idx.counts[sec] = idx.counts[sec] - 1 end
     setAt(path, nil)
 end
@@ -286,7 +313,8 @@ local function store(path, value)
     idx.hashes[flat] = h
     idx.paths[flat] = copyPath(path)
     if isNew and sec then idx.counts[sec] = (idx.counts[sec] or 0) + 1 end
-    idx.dirty[flat] = true
+    -- Cada cambio va a la bandeja de envio (Storage.lua, tipo 16); la memoria del mundo no se guarda.
+    if ns.Storage then ns.Storage.Learn(ns.Storage.TYPE_WORLD, path, value) end
     return true
 end
 
@@ -970,84 +998,6 @@ function W.StatusLine()
         flights, vendors, trainers, consumables)
 end
 ns.WorldStatusLine = W.StatusLine
-
--- ---------------------------------------------------------------------------
--- Ventana de compartir (msgType 16): solo los bloques cambiados
--- ---------------------------------------------------------------------------
-
--- Arbol de claves -> JSON. Las hojas llevan el JSON ya codificado de su entrada (store), asi que
--- componer el mensaje no recorre tablas vivas (la serializacion puede ceder entre tramas).
-local function treeInsert(tree, path, json)
-    local cur = tree
-    for i = 1, #path - 1 do
-        local k = tostring(path[i])
-        local nxt = cur.kids[k]
-        if not nxt then
-            nxt = { kids = {} }
-            cur.kids[k] = nxt
-        end
-        cur = nxt
-    end
-    cur.kids[tostring(path[#path])] = { json = json }
-end
-
-local function treeJSON(node)
-    if node.json then return node.json end
-    local keys = {}
-    for k in pairs(node.kids) do keys[#keys + 1] = k end
-    sort(keys)
-    local parts = {}
-    for i, k in ipairs(keys) do
-        parts[i] = ns.Json.Quote(k) .. ":" .. treeJSON(node.kids[k])
-    end
-    return "{" .. concat(parts, ",") .. "}"
-end
-
--- Marca todo el mundo para reenviarlo (/compa sync): la siguiente ventana lo manda entero.
-function W.ForceFull()
-    idx.fullAt = nil
-    idx.sent = {}
-end
-
--- true si quedan bloques por enviar (la ventana lo vuelve a pedir si tiene tiempo).
-function W.ChannelPending()
-    return next(idx.dirty) ~= nil
-end
-
--- JSON con los bloques cambiados desde el ultimo envio, con el mismo esquema que
--- CompaneroWoWDB.world (solo las entradas cambiadas), o nil si no hay nada. Presupuesto
--- CHANNEL_BUDGET por mensaje; lo que no cabe queda pendiente. Cada CHANNEL_FULL_EVERY s reenvia todo.
--- Las entradas que salen se dan por enviadas aqui: Channel.lua no construye otro mensaje 16 hasta
--- que el anterior salga, asi que no se pierden.
-function W.ShareMessage()
-    if not index() then return nil end
-    local now = nowSec()
-    if idx.fullAt == nil or now - idx.fullAt >= W.CHANNEL_FULL_EVERY then
-        idx.fullAt = now
-        idx.sent = {}
-        for flat in pairs(idx.hashes) do idx.dirty[flat] = true end
-    end
-    if next(idx.dirty) == nil then return nil end
-    local list = {}
-    for flat in pairs(idx.dirty) do list[#list + 1] = flat end
-    sort(list)
-    local tree, used = { kids = {} }, 0
-    for _, flat in ipairs(list) do
-        local path, h, json = idx.paths[flat], idx.hashes[flat], idx.json[flat]
-        if path == nil or h == nil or json == nil or idx.sent[flat] == h then
-            idx.dirty[flat] = nil
-        else
-            local cost = #json + #flat + 8
-            if used > 0 and used + cost > W.CHANNEL_BUDGET then break end
-            treeInsert(tree, path, json)
-            used = used + cost
-            idx.sent[flat] = h
-            idx.dirty[flat] = nil
-        end
-    end
-    if used == 0 then return nil end
-    return treeJSON(tree)
-end
 
 -- ---------------------------------------------------------------------------
 -- Registro de eventos

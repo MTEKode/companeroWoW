@@ -50,6 +50,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Core.lua")
 load("CompaneroWoW/Channel.lua")
 load("CompaneroWoW/Session.lua")
@@ -367,14 +368,13 @@ local function fillGame(npcCount)
     c.questie = { data = string.rep("q", 30000) }
     c.combats = {}
     CompaneroWoWDB.characters[KEY] = c
-    CompaneroWoWDB.knowledge.quests = {}
-    for i = 1, 200 do CompaneroWoWDB.knowledge.quests[i] = { questID = i, title = "Conocimiento " .. i } end
-    CompaneroWoWDB.knowledge.npcs = {}
+    -- Conocimiento: cada registro aprendido entra en la bandeja (Storage.lua).
+    for i = 1, 200 do ns.Storage.Learn(9, { "quests", i }, { questID = i, title = "Conocimiento " .. i }) end
     for i = 1, npcCount do
-        CompaneroWoWDB.knowledge.npcs[1000 + i] = {
+        ns.Storage.Learn(9, { "npcs", 1000 + i }, {
             npcID = 1000 + i, name = "PNJ número " .. i, mapID = 1429, x = 0.25, y = 0.5,
             reaction = "friendly", isQuestGiver = true, firstSeen = 1700000000, lastSeen = 1700000000,
-        }
+        })
     end
     C.testing.reset()
 end
@@ -467,6 +467,11 @@ check("sin PNJ: vuelve al reposo al acabar", not C.IsSharing())
 -- 2000 PNJ: el conocimiento llega en varias activaciones (lo que cabe en cada ventana). Cuando
 -- una activacion ya no trae deltas, todos los PNJ han llegado al menos una vez.
 fillGame(2000)
+-- Lo que debe llegar: los PNJ de la bandeja antes de enviar (el tope de bytes descarta los mas antiguos).
+local expect = {}
+for _, it in ipairs(ns.Storage.Items()) do
+    if it.msgType == 9 and it.payload.p[1] == "npcs" then expect[#expect + 1] = tostring(it.payload.p[2]) end
+end
 local seen, runs, firstRun = {}, 0, nil
 local lastRun
 repeat
@@ -478,25 +483,29 @@ repeat
         check("2000 PNJ: el conocimiento sale como tipo 9 (delta)", #lastRun.msgs9 >= 1)
     end
     for _, m in ipairs(lastRun.msgs9) do
-        for id in string.gmatch(m, '"(%d+)":{') do seen[id] = true end
+        for id in string.gmatch(m, '"p":%["npcs",(%d+)%]') do seen[id] = true end
     end
-until #lastRun.msgs9 == 0 or runs >= 12
+until #lastRun.msgs9 == 0 or runs >= 80
 local missing = 0
-for i = 1, 2000 do
-    if not seen[tostring(1000 + i)] then missing = missing + 1 end
+for _, id in ipairs(expect) do
+    if not seen[id] then missing = missing + 1 end
 end
 outln(string.format("  info  2000 PNJ: %d activaciones; %d bytes de conocimiento en la primera", runs, firstRun.bytes9))
-check("2000 PNJ: todos los PNJ llegan en las activaciones (sin faltantes)", missing == 0, tostring(missing) .. " faltan")
+check("2000 PNJ: el tope de la bandeja descarta los mas antiguos", #expect < 2000 and #expect > 0, tostring(#expect))
+check("2000 PNJ: todos los PNJ de la bandeja llegan en las activaciones (sin faltantes)", missing == 0, tostring(missing) .. " faltan")
 check("2000 PNJ: la primera ventana no basta para todo (se reparte)", runs > 1)
-check("2000 PNJ: tras enviarlo todo, la activacion siguiente no reenvia deltas", #lastRun.msgs9 == 0)
+check("2000 PNJ: al vaciarse la bandeja la activacion siguiente no envia conocimiento", #lastRun.msgs9 == 0)
 
--- Cambio de un PNJ entre activaciones: el delta trae solo ese PNJ.
-CompaneroWoWDB.knowledge.npcs[1005].name = "PNJ cambiado"
+-- Cambio de un PNJ entre activaciones: entra un item nuevo y solo ese PNJ sale.
+ns.Storage.Learn(9, { "npcs", 1005 }, {
+    npcID = 1005, name = "PNJ cambiado", mapID = 1429, x = 0.25, y = 0.5, reaction = "friendly",
+    isQuestGiver = true, firstSeen = 1700000000, lastSeen = 1700000001,
+})
 local changed = shareRun()
 local deltaText = table.concat(changed.msgs9, "")
-check("cambio de un PNJ: hay delta", #changed.msgs9 >= 1)
-check("cambio de un PNJ: el delta trae el 1005", string.find(deltaText, '"1005":', 1, true) ~= nil)
-check("cambio de un PNJ: el delta no trae el 1500", string.find(deltaText, '"1500":', 1, true) == nil)
+check("cambio de un PNJ: hay mensaje", #changed.msgs9 >= 1)
+check("cambio de un PNJ: sale el 1005", string.find(deltaText, '"p":["npcs",1005]', 1, true) ~= nil)
+check("cambio de un PNJ: no sale el 1500", string.find(deltaText, '"p":["npcs",1500]', 1, true) == nil)
 
 
 -- ---------------------------------------------------------------------------

@@ -77,6 +77,7 @@ local function load(path)
 end
 load("CompaneroWoW/Util.lua")
 load("CompaneroWoW/Json.lua")
+load("CompaneroWoW/Storage.lua")
 load("CompaneroWoW/Collectors.lua")
 load("CompaneroWoW/Bridge.lua")
 load("CompaneroWoW/Channel.lua")
@@ -101,7 +102,6 @@ local function freshDB()
         inventory = { items = { { id = 1, n = 5 } } },
         professions = { { name = "Tailoring" } },
         actionBars = { { slot = 1, id = 7 } },
-        combats = { { id = 1, t = 10 } },
         completedQuests = { 1, 2, 3 },
         macros = { account = { used = 1, max = 120, list = {} } },
         sheet = { level = 60 },
@@ -185,9 +185,9 @@ freshDB()
 firstOrder = {}
 _G.CompaneroWoW_ShareKey()
 run(25, 0.05)
--- Con datos: personaje, hoja, misiones, equipo, bolsas, profesiones, macros, barras, combate,
+-- Con datos: personaje, hoja, misiones, equipo, bolsas, profesiones, macros, barras,
 -- misiones completadas, metadatos y, el ultimo, el pesado (10). Sesion (14) y conocimiento (9) vacios.
-eq("orden: 1,12,2,4,3,5,13,8,7,6,11,10", table.concat(firstOrder, ","), "1,12,2,4,3,5,13,8,7,6,11,10")
+eq("orden: 1,12,2,4,3,5,13,8,6,11,10", table.concat(firstOrder, ","), "1,12,2,4,3,5,13,8,6,11,10")
 
 -- ---------------------------------------------------------------------------
 outln("(d) Ventana de 20 s, reactivacion y expiracion")

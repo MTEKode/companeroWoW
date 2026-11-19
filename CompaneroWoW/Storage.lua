@@ -1,0 +1,580 @@
+-- Storage.lua: datos guardados (SavedVariables, esquema 2) y la BANDEJA (outbox) del addon.
+-- Contrato LEAN STORAGE (identico en el addon y en la app; la app SQLite es el sistema de registro).
+--
+-- SavedVariables (CompaneroWoWDB) tras la migracion:
+--   schema = 2, settings, maps, mark
+--   outbox = { seq = <ultimo seq>, win = <ultima ventana de envio>,
+--              items = { { seq, msgType, at, shares, win, payload = { oseq, p, v } }, ... } }
+--   characters[clave] = SOLO los campos de Storage.PERSIST_CHAR (personaje core, marcas de tiempo,
+--              marco, preguntas y respuestas, sesion, copias de seguridad de barras y macros,
+--              contador de combates y hashes del ultimo envio).
+-- Memoria de juego (nunca se guarda): el resto de campos del personaje (bloques de estado actual,
+-- recalculados en juego y enviados en cada ventana), y knowledge/world, que se reconstruyen desde la
+-- bandeja al cargar. Los campos de memoria se enrutan con metatablas: el codigo de los modulos no cambia.
+--
+-- Bandeja: cada registro aprendido (conocimiento 9, mundo 16, combates 7, hoja 12 cuando cambia) se
+-- anade con Storage.Learn como item con seq creciente. Payload (lo que viaja en el canal): { oseq, p, v }
+--   p = ruta del registro (array), v = registro en forma compacta (Storage.KEYS).
+-- Un item se quita tras haber salido en MAX_SHARES ventanas distintas, o al superar MAX_SV_BYTES (tamano
+-- estimado del item serializado como SavedVariables, no del JSON) o MAX_ITEMS items (el mas antiguo primero).
+-- Formato exacto del canal para la app: docs/outbox-format.md.
+--
+-- Codificacion compacta: claves largas -> cortas (Storage.KEYS); x/y y coordenadas de giver/turnIn con
+-- 3 decimales; lastSeen/lastOffered no se guardan (son volatiles y no cambian el registro).
+local ADDON_NAME, ns = ...
+ns = ns or {}
+
+local type, pairs, ipairs, tostring, tonumber = type, pairs, ipairs, tostring, tonumber
+local floor, sort = math.floor, table.sort
+local concat, format = table.concat, string.format
+local getmetatable, setmetatable, rawget, rawset = getmetatable, setmetatable, rawget, rawset
+
+local Storage = {}
+ns.Storage = Storage
+
+Storage.SCHEMA = 2
+Storage.MAX_ITEMS = 2000          -- tope secundario: items de la bandeja
+Storage.MAX_SV_BYTES = 60 * 1024  -- tope principal: bytes estimados de la bandeja serializada (SavedVariables)
+Storage.MAX_SHARES = 3            -- un item sale en este numero de ventanas y se quita
+Storage.ANSWER_MAX_BYTES = 2048   -- texto de cada respuesta guardada (Ask.lua)
+
+-- Campos de cada personaje que se quedan en SavedVariables. Cualquier otro campo es de memoria.
+Storage.PERSIST_CHAR = {
+    character = true, updatedAt = true, loggedOutAt = true, ui = true, ask = true,
+    session = true, sessionBase = true, actionBarsBackup = true, macroBackup = true,
+    combatSeq = true, sent = true,
+}
+-- Claves de primer nivel de CompaneroWoWDB que viven solo en memoria (se reconstruyen de la bandeja).
+Storage.LIVE_TOP = { knowledge = true, world = true }
+
+-- Tipos de mensaje de la bandeja.
+Storage.TYPE_COMBAT = 7
+Storage.TYPE_KNOWLEDGE = 9
+Storage.TYPE_SHEET = 12
+Storage.TYPE_WORLD = 16
+
+-- ---------------------------------------------------------------------------
+-- Codificacion compacta
+-- ---------------------------------------------------------------------------
+-- Clave larga -> corta. Los codigos cortos no deben coincidir con una clave larga que aparezca sin
+-- traducir en un registro (por eso no se usan id, t, at, p, v, k).
+Storage.KEYS = {
+    name = "n", mapID = "m", x = "x", y = "y", reaction = "r",
+    isQuestGiver = "qg", isVendor = "vd", isTrainer = "tr", availableCount = "ac", services = "sv",
+    firstSeen = "fs", npcID = "pn", questID = "qd", title = "ti", level = "lv",
+    objectivesText = "ot", descriptionText = "dt", rewards = "rw", money = "mo", xp = "xp",
+    items = "it", itemID = "i", link = "l", count = "c", choice = "ch",
+    giverNpcID = "gn", giverName = "gna", giverMapID = "gm", giverX = "gx", giverY = "gy",
+    turnInNpcID = "tn", turnInName = "tna", turnInMapID = "tm", turnInX = "tx", turnInY = "ty",
+    offeredAt = "oa", offeredSource = "os", nodeID = "nd", known = "kn",
+    copper = "cu", hops = "ho", seconds = "se", status = "st", slot = "sl",
+}
+-- Claves cuyo valor numerico se redondea a 3 decimales.
+Storage.ROUND = { x = true, y = true, giverX = true, giverY = true, turnInX = true, turnInY = true }
+-- Claves volatiles: no se guardan (no cambian el registro).
+Storage.DROP = { lastSeen = true, lastOffered = true }
+
+local SHORT, LONG = {}, {}
+for long, short in pairs(Storage.KEYS) do
+    SHORT[long] = short
+    LONG[short] = long
+end
+
+local function isArray(t)
+    local count, maxi = 0, 0
+    for k in pairs(t) do
+        if type(k) ~= "number" or k < 1 or floor(k) ~= k then return false end
+        count = count + 1
+        if k > maxi then maxi = k end
+    end
+    return count == maxi
+end
+
+-- Escape de claves: una clave que no tiene codigo corto pero que coincide con uno (o empieza por ESC)
+-- se escribe con ESC delante. Asi Expand(Compact(x)) = x para cualquier clave, sin ambiguedad.
+local ESC = "~"
+local function shortKey(k)
+    if type(k) ~= "string" then return k end
+    if SHORT[k] then return SHORT[k] end
+    if LONG[k] or string.sub(k, 1, 1) == ESC then return ESC .. k end
+    return k
+end
+local function longKey(k)
+    if type(k) ~= "string" then return k end
+    if string.sub(k, 1, 1) == ESC then return string.sub(k, 2) end
+    if LONG[k] then return LONG[k] end
+    return k
+end
+
+-- Copia de v con las claves traducidas (toCompact: largas -> cortas; si no, al reves).
+-- Solo al compactar se redondean los numeros de las claves de Storage.ROUND y se quitan las volatiles.
+local function convert(v, toCompact, depth)
+    if type(v) ~= "table" then
+        return v
+    end
+    if depth > 12 then return nil end
+    local keyFn = toCompact and shortKey or longKey
+    local out = {}
+    if isArray(v) then
+        for i = 1, #v do out[i] = convert(v[i], toCompact, depth + 1) end
+        return out
+    end
+    for k, val in pairs(v) do
+        local vt = type(val)
+        if vt ~= "function" and vt ~= "userdata" and vt ~= "thread"
+            and not (toCompact and type(k) == "string" and Storage.DROP[k]) then
+            local nv = val
+            if toCompact and type(k) == "string" and Storage.ROUND[k] and type(val) == "number" then
+                nv = floor(val * 1000 + 0.5) / 1000
+            else
+                nv = convert(val, toCompact, depth + 1)
+            end
+            out[keyFn(k)] = nv
+        end
+    end
+    return out
+end
+
+-- Registro en forma compacta (copia; el original no cambia).
+function Storage.Compact(v)
+    return convert(v, true, 0)
+end
+
+-- Inversa de Compact: devuelve claves largas (lo volatil ya no esta).
+function Storage.Expand(v)
+    return convert(v, false, 0)
+end
+
+-- Texto tipo SavedVariables (Lua) de un valor, para estimar el tamano de lo guardado.
+function Storage.Serialize(value)
+    local buf, n = {}, 0
+    local function put(s)
+        n = n + 1
+        buf[n] = s
+    end
+    local function ser(x, depth)
+        local t = type(x)
+        if t == "table" then
+            if depth > 20 then return end
+            put("{")
+            local first = true
+            for k, val in pairs(x) do
+                local vt = type(val)
+                if vt ~= "function" and vt ~= "userdata" and vt ~= "thread" then
+                    if not first then put(",") end
+                    first = false
+                    put("[")
+                    ser(k, depth + 1)
+                    put("]=")
+                    ser(val, depth + 1)
+                end
+            end
+            put("}")
+        elseif t == "string" then
+            put(format("%q", x))
+        elseif t == "number" then
+            put(format("%.14g", x))
+        elseif t == "boolean" then
+            put(x and "true" or "false")
+        else
+            put("nil")
+        end
+    end
+    ser(value, 0)
+    return concat(buf)
+end
+
+-- ---------------------------------------------------------------------------
+-- Estado en memoria (no se guarda) y enrutado de campos
+-- ---------------------------------------------------------------------------
+local S = {
+    db = nil,          -- CompaneroWoWDB con el que se inicializo el estado
+    epoch = 0,         -- sube cada vez que cambia la base (los modulos reconstruyen su memoria)
+    byseq = {},        -- [seq] = item de la bandeja
+    sizes = {},        -- [seq] = bytes del payload
+    total = 0,         -- bytes totales del payload de la bandeja
+    lastHash = {},     -- [msgType|ruta] = hash del ultimo registro guardado (evita duplicados)
+}
+
+local top = {}                               -- memoria de knowledge y world
+local live = setmetatable({}, { __mode = "k" }) -- [tabla de personaje] = campos de memoria
+
+local CHAR_MT = {
+    __index = function(t, k)
+        local m = live[t]
+        if m == nil then return nil end
+        return m[k]
+    end,
+    __newindex = function(t, k, v)
+        if Storage.PERSIST_CHAR[k] then
+            rawset(t, k, v)
+            return
+        end
+        local m = live[t]
+        if not m then
+            m = {}
+            live[t] = m
+        end
+        m[k] = v
+    end,
+}
+
+local TOP_MT = {
+    __index = function(_, k) return top[k] end,
+    __newindex = function(t, k, v)
+        if Storage.LIVE_TOP[k] then
+            top[k] = v
+        else
+            rawset(t, k, v)
+        end
+    end,
+}
+
+local CHARS_MT = {
+    __newindex = function(t, k, v)
+        rawset(t, k, Storage.AttachChar(v))
+    end,
+}
+
+-- Mueve a memoria los campos de un personaje que no son persistentes y activa el enrutado.
+function Storage.AttachChar(c)
+    if type(c) ~= "table" or getmetatable(c) == CHAR_MT then return c end
+    local m = live[c] or {}
+    live[c] = m
+    local moved = {}
+    for k in pairs(c) do
+        if not Storage.PERSIST_CHAR[k] then moved[#moved + 1] = k end
+    end
+    for _, k in ipairs(moved) do
+        m[k] = rawget(c, k)
+        rawset(c, k, nil)
+    end
+    setmetatable(c, CHAR_MT)
+    return c
+end
+
+-- Campos de memoria de la base y de los personajes (idempotente).
+local function attachDB(db)
+    for k in pairs(Storage.LIVE_TOP) do
+        local v = rawget(db, k)
+        if v ~= nil then
+            top[k] = v
+            rawset(db, k, nil)
+        end
+    end
+    if top.knowledge == nil then top.knowledge = { quests = {}, npcs = {} } end
+    if top.world == nil then top.world = {} end
+    if getmetatable(db) ~= TOP_MT then setmetatable(db, TOP_MT) end
+    local chars = rawget(db, "characters")
+    if type(chars) == "table" then
+        for key, c in pairs(chars) do chars[key] = Storage.AttachChar(c) end
+        if getmetatable(chars) ~= CHARS_MT then setmetatable(chars, CHARS_MT) end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Bandeja: indice, alta, topes y baja
+-- ---------------------------------------------------------------------------
+
+local function flat(path)
+    local parts = {}
+    for i = 1, #path do parts[i] = tostring(path[i]) end
+    return concat(parts, "|")
+end
+
+local function outboxOf(db)
+    if type(db.outbox) ~= "table" then db.outbox = {} end
+    local box = db.outbox
+    if type(box.seq) ~= "number" then box.seq = 0 end
+    if type(box.items) ~= "table" then box.items = {} end
+    return box
+end
+
+-- Quita el item en la posicion i de la lista (y de los indices).
+local function removeAt(box, i)
+    local item = table.remove(box.items, i)
+    if not item then return end
+    local size = S.sizes[item.seq] or 0
+    S.total = S.total - size
+    S.sizes[item.seq] = nil
+    S.byseq[item.seq] = nil
+end
+
+-- Tamano estimado de un item en SavedVariables: su texto serializado completo (no el JSON del canal).
+local function itemSize(item)
+    return #Storage.Serialize(item)
+end
+
+-- Recalcula los indices de la bandeja de la base db (una vez por base, y tras cargarla).
+local function indexOutbox(db)
+    local box = outboxOf(db)
+    S.byseq, S.sizes, S.total, S.lastHash = {}, {}, 0, {}
+    local kept = {}
+    for _, item in ipairs(box.items) do
+        local pl = type(item) == "table" and item.payload or nil
+        if type(pl) == "table" and type(pl.p) == "table" and type(item.seq) == "number" then
+            local pjson = ns.Json.Encode(pl)
+            local vjson = ns.Json.Encode(pl.v)
+            if pjson and vjson then
+                kept[#kept + 1] = item
+                S.byseq[item.seq] = item
+                S.sizes[item.seq] = itemSize(item)
+                S.total = S.total + S.sizes[item.seq]
+                S.lastHash[tostring(item.msgType) .. "|" .. flat(pl.p)] = ns.HashText(vjson)
+            end
+        end
+    end
+    box.items = kept
+    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_SV_BYTES do
+        removeAt(box, 1)
+    end
+end
+
+-- Quita los items mas antiguos mientras se superen los topes.
+local function enforceCaps(box)
+    while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_SV_BYTES do
+        if #box.items == 0 then break end
+        removeAt(box, 1)
+    end
+end
+
+-- Anade un item con la forma compacta v (ya comprobada). Devuelve su seq o nil.
+local function append(db, msgType, path, v, hash, lastKey, at)
+    local box = outboxOf(db)
+    local seq = box.seq + 1
+    local payload = { oseq = seq, p = {}, v = v }
+    for i = 1, #path do payload.p[i] = path[i] end
+    local pjson = ns.Json.Encode(payload)
+    if not pjson then return nil end
+    box.seq = seq
+    local item = { seq = seq, msgType = msgType, at = at, shares = 0, payload = payload }
+    box.items[#box.items + 1] = item
+    S.byseq[seq] = item
+    local isize = itemSize(item)
+    S.sizes[seq] = isize
+    S.total = S.total + isize
+    S.lastHash[lastKey] = hash
+    enforceCaps(box)
+    if Storage.OnAppend and S.byseq[seq] then ns.SafeCall(Storage.OnAppend, item) end
+    return seq
+end
+
+-- Base actual (CompaneroWoWDB) con el estado al dia. nil si no hay base.
+local function current()
+    if type(CompaneroWoWDB) ~= "table" then return nil end
+    if CompaneroWoWDB ~= S.db then Storage.Sync() end
+    if S.db ~= CompaneroWoWDB then return nil end
+    return S.db
+end
+
+-- Inicializa el estado para la base actual (si cambio): indices, migracion y enrutado.
+-- Devuelve la epoca (cambia cuando la base cambia; los modulos la usan para reconstruir su memoria).
+function Storage.Sync()
+    local db = CompaneroWoWDB
+    if type(db) ~= "table" then return S.epoch end
+    if S.db == db then return S.epoch end
+    S.db = db
+    indexOutbox(db)
+    if db.schema ~= Storage.SCHEMA then Storage.Migrate(db) end
+    db.schema = Storage.SCHEMA
+    attachDB(db)
+    S.epoch = S.epoch + 1
+    return S.epoch
+end
+
+-- Enrutado de campos (EnsureDB lo llama en cada uso: barato, idempotente).
+function Storage.Attach()
+    local epoch = Storage.Sync()
+    if type(CompaneroWoWDB) == "table" then attachDB(CompaneroWoWDB) end
+    return epoch
+end
+
+-- Anade un registro a la bandeja si cambio desde el ultimo guardado de su ruta.
+-- msgType: tipo de mensaje; path: ruta del registro (array); value: registro en claves largas.
+-- Devuelve el seq del item nuevo, o nil (sin cambios, sin base o no codificable).
+function Storage.Learn(msgType, path, value, at)
+    local db = current()
+    if not db or type(path) ~= "table" or value == nil then return nil end
+    local v = Storage.Compact(value)
+    local vjson = ns.Json.Encode(v)
+    if not vjson then return nil end
+    local hash = ns.HashText(vjson)
+    local lastKey = tostring(msgType) .. "|" .. flat(path)
+    if S.lastHash[lastKey] == hash then return nil end
+    return append(db, msgType, path, v, hash, lastKey, at or ns.Now())
+end
+
+-- Sale de la bandeja: la ventana win ha enviado el item seq. Lo quita al cumplir MAX_SHARES.
+-- Devuelve counted (contado en esta ventana) y dropped (se quito).
+function Storage.MarkShared(seq, win)
+    local db = current()
+    local item = db and S.byseq[seq] or nil
+    if not item or win == nil or item.win == win then return false, false end
+    item.win = win
+    item.shares = (item.shares or 0) + 1
+    local oldSize = S.sizes[seq] or 0
+    S.sizes[seq] = itemSize(item)
+    S.total = S.total - oldSize + S.sizes[seq]
+    if item.shares >= Storage.MAX_SHARES then
+        local box = outboxOf(db)
+        for i, it in ipairs(box.items) do
+            if it == item then
+                removeAt(box, i)
+                break
+            end
+        end
+        return true, true
+    end
+    return true, false
+end
+
+-- Numero de la ventana de envio nueva (se guarda en la base).
+function Storage.NewWindow()
+    local db = current()
+    if not db then return nil end
+    local box = outboxOf(db)
+    box.win = (type(box.win) == "number" and box.win or 0) + 1
+    return box.win
+end
+
+-- Items de la bandeja, del mas antiguo al mas nuevo (solo lectura).
+function Storage.Items()
+    local db = current()
+    if not db then return {} end
+    return outboxOf(db).items
+end
+
+-- Numero de items y bytes estimados (serializados) de la bandeja.
+function Storage.Stats()
+    local items = Storage.Items()
+    return #items, S.total
+end
+
+-- Vacia la bandeja (el seq sigue creciendo). Devuelve cuantos items habia.
+function Storage.Clear()
+    local db = current()
+    if not db then return 0 end
+    local box = outboxOf(db)
+    local n = #box.items
+    box.items = {}
+    S.byseq, S.sizes, S.total, S.lastHash = {}, {}, 0, {}
+    if Storage.OnClear then ns.SafeCall(Storage.OnClear) end
+    return n
+end
+
+-- Recorre la bandeja en orden: fn(msgType, ruta, registro en claves largas).
+function Storage.Replay(fn)
+    for _, item in ipairs(Storage.Items()) do
+        fn(item.msgType, item.payload.p, Storage.Expand(item.payload.v))
+    end
+end
+
+-- Estado para /compa estado: tamano estimado de lo guardado y de la bandeja.
+function Storage.StatusLine()
+    local n, bytes = Storage.Stats()
+    local saved = CompaneroWoWDB and #Storage.Serialize(CompaneroWoWDB) or 0
+    return string.format("Datos guardados: %.1f KB, bandeja: %d elementos (%.1f KB)",
+        saved / 1024, n, bytes / 1024)
+end
+
+-- ---------------------------------------------------------------------------
+-- Migracion desde el esquema 1
+-- ---------------------------------------------------------------------------
+-- Convierte knowledge, world y combates guardados en el esquema 1 en items de la bandeja (los mas
+-- antiguos primero, para que los topes descarten lo viejo). Los bloques de estado actual no se pasan:
+-- se recalculan en juego. Quita de SavedVariables los bloques grandes.
+local function collectMigrated(db, out)
+    local k = rawget(db, "knowledge")
+    if type(k) == "table" then
+        for _, kind in ipairs({ "quests", "npcs" }) do
+            local map = type(k[kind]) == "table" and k[kind] or {}
+            for id, rec in pairs(map) do
+                if type(rec) == "table" then
+                    out[#out + 1] = { at = tonumber(rec.lastSeen) or tonumber(rec.firstSeen) or 0,
+                        msgType = Storage.TYPE_KNOWLEDGE, path = { kind, id }, value = rec }
+                end
+            end
+        end
+    end
+    local w = rawget(db, "world")
+    if type(w) == "table" then
+        local flight = type(w.flight) == "table" and w.flight or {}
+        for faction, f in pairs(flight) do
+            if faction ~= "known" and type(f) == "table" then
+                for id, rec in pairs(f.nodes or {}) do
+                    out[#out + 1] = { at = tonumber(rec.lastSeen) or 0, msgType = Storage.TYPE_WORLD,
+                        path = { "flight", faction, "nodes", id }, value = rec }
+                end
+                for key, rec in pairs(f.costs or {}) do
+                    out[#out + 1] = { at = 0, msgType = Storage.TYPE_WORLD,
+                        path = { "flight", faction, "costs", key }, value = rec }
+                end
+            end
+        end
+        if type(flight.known) == "table" then
+            for ck, list in pairs(flight.known) do
+                out[#out + 1] = { at = 0, msgType = Storage.TYPE_WORLD,
+                    path = { "flight", "known", ck }, value = list }
+            end
+        end
+        for _, sec in ipairs({ "vendors", "trainers", "questChains", "consumables" }) do
+            for id, rec in pairs(type(w[sec]) == "table" and w[sec] or {}) do
+                out[#out + 1] = { at = tonumber(type(rec) == "table" and rec.lastSeen or nil) or 0,
+                    msgType = Storage.TYPE_WORLD, path = { sec, id }, value = rec }
+            end
+        end
+    end
+    local chars = rawget(db, "characters")
+    if type(chars) == "table" then
+        for key, c in pairs(chars) do
+            local list = type(c) == "table" and rawget(c, "combats") or nil
+            if type(list) == "table" then
+                for i = #list, 1, -1 do -- la lista guarda el mas nuevo primero
+                    local rec = list[i]
+                    if type(rec) == "table" and rec.id ~= nil then
+                        out[#out + 1] = { at = tonumber(rec.t) or 0, msgType = Storage.TYPE_COMBAT,
+                            path = { "combats", rec.id }, value = rec, owner = key }
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Pasa a la bandeja lo guardado en el esquema 1 y quita los bloques grandes de SavedVariables.
+function Storage.Migrate(db)
+    local migrated = {}
+    collectMigrated(db, migrated)
+    for i, m in ipairs(migrated) do m.order = i end
+    sort(migrated, function(a, b)
+        if a.at ~= b.at then return a.at < b.at end
+        return a.order < b.order
+    end)
+    for _, m in ipairs(migrated) do
+        local v = Storage.Compact(m.value)
+        local vjson = ns.Json.Encode(v)
+        if vjson then
+            local lastKey = tostring(m.msgType) .. "|" .. flat(m.path)
+            local hash = ns.HashText(vjson)
+            if S.lastHash[lastKey] ~= hash then append(db, m.msgType, m.path, v, hash, lastKey, m.at) end
+        end
+    end
+    rawset(db, "knowledge", nil)
+    rawset(db, "world", nil)
+    local chars = rawget(db, "characters")
+    if type(chars) == "table" then
+        for _, c in pairs(chars) do
+            if type(c) == "table" then rawset(c, "combats", nil) end
+        end
+    end
+    db.schema = Storage.SCHEMA
+    return #migrated
+end
+
+-- Tamano estimado (bytes) de lo que se guardaria en SavedVariables.
+function Storage.SavedBytes()
+    if type(CompaneroWoWDB) ~= "table" then return 0 end
+    return #Storage.Serialize(CompaneroWoWDB)
+end
+
+return Storage

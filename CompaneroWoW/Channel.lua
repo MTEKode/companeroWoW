@@ -1,7 +1,7 @@
 -- Channel.lua: canal de datos en vivo sobre la franja superior (protocolo v3), bajo demanda.
 -- Parte pura (testeable offline): CRC-16, capacidad, trama y planificador de trozos.
 -- Parte de juego: el plan de envio de una activacion (tecla o /compa enviar). En reposo no hay
--- nada que serializar: ni carrusel, ni revision de conocimiento, ni JSON.
+-- nada que serializar: ni carrusel, ni JSON.
 --
 -- Trama v3 (bytes, 1-based; todo big-endian salvo donde se indica):
 --   [1] version=3  [2] seq  [3] N lo  [4] N hi            (N = bloques de la fila, u16 LE)
@@ -13,12 +13,15 @@
 -- Sin trozo pendiente: msgType = 0 y dataLen = 0. Los nibbles sobrantes valen 0.
 -- Capacidad de datos por trama: floor(3*(N-5)/2) - 47 bytes (N = 860 -> 1235 bytes).
 --
--- Activacion (C.Begin): ventana de SHARE_SECONDS. El plan recorre C.PRIORITY en orden; cada tipo se
--- serializa una vez por activacion, de forma troceada: C.Pump reparte el trabajo en tramas con un
--- presupuesto de PUMP_BUDGET_MS por trama. Los trozos salen por el planificador (C.NextChunk).
--- Solo se encola lo que cambio: por tipo se guarda el hash del ultimo envio (S.sent). Los tipos clave
--- (KEY_TYPES) y el volcado de conocimiento se reenvian si el ultimo envio tiene mas de KEY_RESEND_SEC.
--- C.Begin(now, { full = true }) (/compa sync) envia todo sin saltarse nada.
+-- Activacion (C.Begin): ventana de SHARE_SECONDS. Al empezar una ventana nueva (desde reposo):
+--  - cada item de la bandeja (Storage.lua) se encola como un mensaje propio, en orden de seq; su JSON
+--    ({oseq, p, v}) se codifica al salir. Al salir entero, cuenta una ventana para el item.
+--  - el plan recorre el estado actual (C.TYPES, en orden C.PRIORITY): cada tipo se serializa una vez
+--    por activacion, troceado: C.Pump reparte el trabajo en tramas con PUMP_BUDGET_MS por trama.
+-- Solo se encola lo que cambio: por tipo se guarda el hash del ultimo envio (S.sent, persistido en
+-- el personaje como c.sent). Los tipos clave (KEY_TYPES) se reenvian si el ultimo envio tiene mas de
+-- KEY_RESEND_SEC, o si no hay hora de ese envio (tras recargar).
+-- C.Begin(now, { full = true }) (/compa sync) envia todo el estado sin saltarse nada.
 -- Pregunta (msgType 15, C.SendQuestion): prioridad maxima, reenviada cada QUESTION_RESEND_SEC.
 -- C.Update devuelve false al acabar la ventana: a los SHARE_SECONDS, o antes si la cola esta vacia
 -- y han pasado al menos SHARE_MIN_SEC.
@@ -43,7 +46,7 @@ C.OVERHEAD = 4 + 32 + 9 + 2 -- cabecera + estado + cabecera de trozo + CRC-16
 C.CALIB_BLOCKS = 5
 C.SHARE_SECONDS = 20        -- duracion maxima de una activacion (se alarga si se vuelve a pulsar)
 C.SHARE_MIN_SEC = 3         -- minimo de una activacion: no acaba antes aunque la cola este vacia
-C.KEY_RESEND_SEC = 600      -- tipos clave y volcado de conocimiento: se reenvian si pasan 10 min
+C.KEY_RESEND_SEC = 600      -- tipos clave: se reenvian si pasan 10 min (o tras recargar)
 C.QUESTION_TYPE = 15        -- pregunta del jugador (contrato in-game): msgType 15, prioridad maxima
 C.QUESTION_RESEND_SEC = 2   -- la pregunta se reenvia cada 2 s durante la ventana
 C.PUMP_BUDGET_MS = 1        -- presupuesto de serializacion por trama
@@ -51,13 +54,11 @@ C.HEAVY_TYPE = 10           -- tipo pesado: como mucho un trozo cada HEAVY_EVERY
 C.HEAVY_EVERY = 3
 C.MAX_MESSAGE_BYTES = 98304 -- tope de cada mensaje JSON (mas grande -> no se envia)
 C.TICK_SEC = 0.2            -- una trama cada 0.2 s (Bridge.lua REFRESH_SEC)
-C.SCAN_PER_STEP = 16        -- registros de knowledge que se codifican por paso de revision
-C.KNOW_SLICE_BYTES = 16384  -- tamano objetivo de cada mensaje de knowledge (tipo 9)
 
--- Orden de envio de una activacion (de mayor a menor prioridad en el planificador).
+-- Orden de envio (de mayor a menor prioridad en el planificador). Los tipos de la bandeja (7, 9, 16)
+-- y la hoja de cambios (12) ocupan su lugar en el orden; los que no tienen TYPES no entran en el plan.
 -- Personaje, hoja, misiones, equipo, sesion, bolsas, profesiones, macros, barras, combate,
--- misiones completadas, conocimiento (deltas y volcado), metadatos, el pesado (10) y, al final,
--- el mundo (16: solo los bloques cambiados, World.lua).
+-- misiones completadas, conocimiento (bandeja), metadatos, el pesado (10) y, al final, el mundo (bandeja).
 -- La pregunta (15) no esta aqui: va por delante de todo (RANK[15] = 0, ver SendQuestion).
 C.PRIORITY = { 1, 12, 2, 4, 14, 3, 5, 13, 8, 7, 6, 9, 11, 10, 16 }
 local RANK = {}
@@ -162,10 +163,12 @@ end
 -- ---------------------------------------------------------------------------
 -- Planificador (puro)
 -- ---------------------------------------------------------------------------
--- Cada mensaje (tipo) tiene como mucho un trabajo activo; encolar de nuevo el mismo tipo
--- reemplaza el trabajo (el mensaje nuevo gana y el receptor descarta el parcial).
--- Un trabajo: { type, id, str (JSON), cs (bytes por trozo), count, next (1-based), heavy, optional }.
--- optional: volcado de conocimiento que solo sale si hay tiempo (no cuenta para acabar antes).
+-- Cada tipo de estado tiene como mucho un trabajo activo; encolar de nuevo el mismo tipo reemplaza el
+-- trabajo (el mensaje nuevo gana y el receptor descarta el parcial). Los items de la bandeja (job.seq)
+-- son mensajes propios: no se reemplazan entre si ni a un tipo de estado.
+-- Un trabajo: { type, id, str (JSON), make (codifica str al salir), cs (bytes por trozo), count,
+--   next (1-based), heavy, optional, seq, onDone }.
+-- optional: volcado que solo sale si hay tiempo (no cuenta para acabar antes).
 
 local Sched = {}
 Sched.__index = Sched
@@ -182,11 +185,11 @@ local function newMsgId(s)
     return s.nextMsgId
 end
 
--- Encola el mensaje msgType con el texto JSON str. Reemplaza un trabajo pendiente del mismo tipo.
--- heavy: el mensaje va por el carril lento (un trozo de cada HEAVY_EVERY tramas). El tipo pesado siempre.
+-- Encola el mensaje msgType con el texto JSON str. Reemplaza un trabajo pendiente del mismo tipo
+-- (salvo los items de la bandeja). heavy: carril lento (un trozo de cada HEAVY_EVERY tramas).
 function Sched:enqueue(msgType, str, heavy, optional)
     for i, job in ipairs(self.jobs) do
-        if job.type == msgType then
+        if job.type == msgType and not job.seq then
             tremove(self.jobs, i)
             break
         end
@@ -196,6 +199,29 @@ function Sched:enqueue(msgType, str, heavy, optional)
         heavy = (heavy or msgType == C.HEAVY_TYPE) and true or false,
         optional = optional and true or false,
     }
+end
+
+-- Encola un item de la bandeja: mensaje propio. make() devuelve su JSON al salir (nil: se descarta).
+-- onDone() se llama al salir el ultimo trozo.
+function Sched:enqueueItem(msgType, seq, make, onDone)
+    self.jobs[#self.jobs + 1] = {
+        type = msgType, id = newMsgId(self), str = nil, make = make, cs = 0, count = 0, next = 1,
+        heavy = false, optional = false, seq = seq, onDone = onDone,
+    }
+end
+
+-- Quita todos los items de la bandeja de la cola (al vaciar la bandeja). Devuelve cuantos quito.
+function Sched:dropItems()
+    local keep, n = {}, 0
+    for _, job in ipairs(self.jobs) do
+        if job.seq then
+            n = n + 1
+        else
+            keep[#keep + 1] = job
+        end
+    end
+    self.jobs = keep
+    return n
 end
 
 function Sched:pending()
@@ -216,11 +242,8 @@ local function chunkCount(n, cs)
     return max(1, ceil(n / cs))
 end
 
--- Trozo siguiente segun la prioridad y el turno. cs = capacidad de datos de la trama.
--- Devuelve el trozo { type, id, index (0-based), count, data } o nil si no hay nada que enviar
--- en esta trama. frameNo sirve para limitar los tipos pesados.
-function Sched:nextChunk(cs, frameNo)
-    if cs <= 0 or #self.jobs == 0 then return nil end
+-- Indice del trabajo con mejor rango que puede salir en esta trama (nil si ninguno).
+function Sched:pick(frameNo)
     local bestI, bestRank = nil, math.huge
     for i, job in ipairs(self.jobs) do
         local r = RANK[job.type] or 99
@@ -229,8 +252,12 @@ function Sched:nextChunk(cs, frameNo)
             bestI, bestRank = i, r
         end
     end
-    if not bestI then return nil end
-    local job = tremove(self.jobs, bestI)
+    return bestI
+end
+
+-- Saca un trozo del trabajo i. Al salir el ultimo, llama a onDone.
+function Sched:serve(i, job, cs)
+    tremove(self.jobs, i)
     if job.cs ~= cs then
         -- Capacidad distinta (p. ej. cambio de ancho): el trozado se rehace con un msgId nuevo.
         job.cs = cs
@@ -244,9 +271,31 @@ function Sched:nextChunk(cs, frameNo)
     local chunk = { type = job.type, id = job.id, index = job.next - 1, count = job.count, data = data }
     job.next = job.next + 1
     if job.next <= job.count then
-        self.jobs[#self.jobs + 1] = job -- al final: turno rotatorio entre mensajes
+        if job.seq then
+            tinsert(self.jobs, 1, job) -- un item de la bandeja termina antes que el siguiente (mas antiguo primero)
+        else
+            self.jobs[#self.jobs + 1] = job -- al final: turno rotatorio entre mensajes
+        end
+    elseif job.onDone then
+        job.onDone()
     end
     return chunk
+end
+
+-- Trozo siguiente segun la prioridad y el turno. cs = capacidad de datos de la trama.
+-- Devuelve el trozo { type, id, index (0-based), count, data } o nil si no hay nada que enviar
+-- en esta trama. frameNo sirve para limitar los tipos pesados.
+function Sched:nextChunk(cs, frameNo)
+    if cs <= 0 then return nil end
+    while #self.jobs > 0 do
+        local bestI = self:pick(frameNo)
+        if not bestI then return nil end
+        local job = self.jobs[bestI]
+        if job.str == nil and job.make then job.str = job.make() end
+        if job.str ~= nil then return self:serve(bestI, job, cs) end
+        tremove(self.jobs, bestI) -- item que no se puede codificar: se descarta
+    end
+    return nil
 end
 
 -- true si hay un trabajo pendiente del tipo t.
@@ -258,10 +307,12 @@ function Sched:has(msgType)
 end
 
 -- ---------------------------------------------------------------------------
--- Tipos de mensaje (lado de juego)
+-- Tipos de mensaje de estado actual (lado de juego)
 -- ---------------------------------------------------------------------------
--- build(c, db) devuelve la tabla a enviar, o nil si no hay nada. c = CompaneroWoWDB.characters[key].
--- Cada tipo se serializa una vez por activacion, en el momento de su turno del plan.
+-- build(c) devuelve la tabla a enviar, o nil si no hay nada. c = CompaneroWoWDB.characters[key]
+-- (sus campos de memoria se leen como campos normales). Cada tipo se serializa una vez por
+-- activacion, en el momento de su turno del plan.
+-- Los tipos 7, 9 y 16 (combates, conocimiento, mundo) viajan por la bandeja (Storage.lua).
 
 C.TYPES = {
     [1] = {
@@ -302,26 +353,11 @@ C.TYPES = {
             return c.completedQuests -- lista de ids; vacia -> []
         end,
     },
-    [7] = {
-        name = "combat",
-        build = function(c)
-            -- combat: el ultimo combate; combats: los ultimos 10 (Combat.lua guarda como mucho 10)
-            local list = c.combats
-            if type(list) ~= "table" or type(list[1]) ~= "table" then return nil end
-            return { combat = list[1], combats = list }
-        end,
-    },
     [8] = {
         name = "actionBars",
         build = function(c)
             return { actionBars = c.actionBars }
         end,
-    },
-    [9] = {
-        -- conocimiento: revision de cambios y volcado por tandas (ver "Conocimiento" abajo).
-        -- Cada mensaje del tipo 9 es {"npcs":{id:registro},"quests":{id:registro}}; la app fusiona por id.
-        name = "knowledge",
-        pipeline = true,
     },
     [10] = {
         name = "heavy", heavy = true,
@@ -363,33 +399,19 @@ C.TYPES = {
             return ns.Session.Public(c.session)
         end,
     },
-    [16] = {
-        -- mundo (World.lua): solo los bloques cambiados desde el ultimo envio. Devuelve el JSON ya
-        -- compuesto (raw): no pasa por el codificador. nil si no hay nada que enviar.
-        name = "world", raw = true, account = true, -- cuenta, no de personaje
-        build = function()
-            local W = ns.World
-            if not W or not W.ShareMessage then return nil end
-            return W.ShareMessage()
-        end,
-    },
 }
 
 -- ---------------------------------------------------------------------------
 -- Estado del canal
 -- ---------------------------------------------------------------------------
-local function newQueue()
-    return { items = {}, head = 1, set = { quests = {}, npcs = {} } }
-end
-
 local S = {
     sched = nil,          -- planificador (sobrevive a la activacion: los trozos pendientes salen en la siguiente)
     share = nil,          -- activacion en curso (nil = reposo)
     cur = nil,            -- unidad de serializacion en curso { t, co }
-    cache = { quests = {}, npcs = {} }, -- conocimiento: [tipo][id] = JSON del registro en el ultimo envio
-    know = { scan = nil, out = newQueue(), snap = nil, snapDone = false, dumpAt = nil },
-    sent = {},            -- [msgType] = hash del ultimo mensaje encolado (solo se reenvia si cambia)
-    sentAt = {},          -- [msgType] = GetTime del ultimo encolado de ese tipo
+    win = nil,            -- numero de la ventana de envio actual (Storage.NewWindow)
+    queued = {},          -- [seq] = true: item de la bandeja ya encolado y sin salir
+    sent = {},            -- [msgType] = hash del ultimo mensaje de estado enviado (solo se reenvia si cambia)
+    sentAt = {},          -- [msgType] = GetTime del ultimo envio de ese tipo (nil tras recargar)
     skipped = 0,          -- mensajes que no se encolaron por no haber cambiado (estadistica)
     question = nil,       -- ultima pregunta { json, nextAt }: se reenvia durante la ventana
     sentCount = 0,        -- mensajes serializados (estadistica para /compa estado)
@@ -425,6 +447,59 @@ local function currentChar()
 end
 
 -- ---------------------------------------------------------------------------
+-- Bandeja (items de Storage.lua): cada item sale como mensaje propio
+-- ---------------------------------------------------------------------------
+
+-- Encola un item de la bandeja (si no esta ya encolado). Su JSON ({oseq, p, v}) se codifica al salir.
+local function enqueueItem(item)
+    if S.queued[item.seq] then return end
+    S.queued[item.seq] = true
+    local seq = item.seq
+    ensureScheduler():enqueueItem(item.msgType, seq,
+        function() return ns.Json.Encode(item.payload) end,
+        function()
+            S.queued[seq] = nil
+            if ns.Storage then ns.Storage.MarkShared(seq, S.win) end
+        end)
+end
+
+-- Item nuevo durante una activacion: entra en la cola de la ventana en curso.
+function C.OnAppend(item)
+    if S.share and item and type(item.payload) == "table" then enqueueItem(item) end
+end
+
+-- Al vaciar la bandeja (/compa limpiar si): se quitan sus mensajes de la cola.
+function C.ClearOutbox()
+    if S.sched then S.sched:dropItems() end
+    S.queued = {}
+end
+
+if ns.Storage then
+    ns.Storage.OnAppend = C.OnAppend
+    ns.Storage.OnClear = C.ClearOutbox
+end
+
+-- Restaura los hashes de envio guardados en el personaje (tras recargar).
+local function restoreSent()
+    local c = currentChar()
+    if not c or type(c.sent) ~= "table" then return end
+    for t, h in pairs(c.sent) do
+        if S.sent[t] == nil then S.sent[t] = h end
+    end
+end
+
+-- Ventana nueva: se abre el numero de ventana, se descartan los items que no salieron en la ventana
+-- anterior y se encolan todos los de la bandeja (el mas antiguo primero). Un item cuenta una ventana
+-- solo cuando sale entero: lo que no cabe en la ventana no se cuenta.
+local function startWindow()
+    if not ns.Storage then return end
+    S.win = ns.Storage.NewWindow()
+    if S.sched then S.sched:dropItems() end
+    S.queued = {}
+    for _, item in ipairs(ns.Storage.Items()) do enqueueItem(item) end
+end
+
+-- ---------------------------------------------------------------------------
 -- Unidades de serializacion (una por tipo; se reanudan trama a trama)
 -- ---------------------------------------------------------------------------
 
@@ -433,13 +508,9 @@ end
 local function unitBody(t)
     local def = C.TYPES[t]
     local c = currentChar()
-    if not def or not def.build or (not c and def.account ~= true) then return nil end
-    -- Mundo: no se construye otro mensaje mientras sale el anterior (enqueue lo reemplazaria y
-    -- los bloques marcados como enviados se perderian). Lo que queda se envia en la siguiente.
-    if def.raw and ensureScheduler():has(t) then return nil end
+    if not def or not def.build or not c then return nil end
     local value = def.build(c, CompaneroWoWDB)
     if value == nil then return nil end
-    if def.raw then return value end -- ya es JSON (mundo)
     if t == 6 and type(value) == "table" and next(value) == nil then return "[]" end
     coroutine.yield()
     return ns.Json.EncodeAsync(value)
@@ -449,12 +520,14 @@ local function startUnit(t)
     S.cur = { t = t, co = cocreate(function() return unitBody(t) end) }
 end
 
--- Reanuda la unidad en curso. "yield" si sigue; "done" si acabo (encola su JSON si lo hay).
 -- Un tipo ya enviado con el mismo hash se omite. Completo (/compa sync): nunca se omite. Tipo clave:
--- se reenvia si el ultimo envio tiene KEY_RESEND_SEC o mas.
+-- se reenvia si el ultimo envio tiene KEY_RESEND_SEC o mas, o si no hay hora de ese envio.
 local function unchanged(t, h, now, full)
     if full or S.sent[t] ~= h then return false end
-    if C.KEY_TYPES[t] and now - (S.sentAt[t] or now) >= C.KEY_RESEND_SEC then return false end
+    if C.KEY_TYPES[t] then
+        local at = S.sentAt[t]
+        if at == nil or now - at >= C.KEY_RESEND_SEC then return false end
+    end
     return true
 end
 
@@ -475,6 +548,11 @@ local function resumeUnit()
         else
             ensureScheduler():enqueue(u.t, json)
             S.sent[u.t], S.sentAt[u.t] = h, now
+            local c = currentChar()
+            if c then
+                if type(c.sent) ~= "table" then c.sent = {} end
+                c.sent[u.t] = h
+            end
             S.sentCount = S.sentCount + 1
         end
     elseif why then
@@ -501,192 +579,17 @@ local function fullJSON(t)
 end
 
 -- ---------------------------------------------------------------------------
--- Conocimiento (tipo 9): revision de cambios y volcado en tandas
--- ---------------------------------------------------------------------------
--- Una activacion revisa los registros (scanStep, SCAN_PER_STEP por paso): encola solo los nuevos o
--- cambiados (deltas) y los envia en mensajes de como mucho KNOW_SLICE_BYTES. Despues, si queda tiempo
--- en la ventana, sale el volcado completo desde la cache (optativo). El protocolo no tiene borrados:
--- un registro que sale de knowledge se quita de la cache y la app conserva su ultima copia.
-local KNOW_KINDS = { "quests", "npcs" }
-
-local function knowTables()
-    local k = CompaneroWoWDB and CompaneroWoWDB.knowledge
-    if type(k) ~= "table" then return nil end
-    return k
-end
-
--- Encola un delta (kind, id). Una sola vez hasta que sale: al enviar se lee la cache (lo mas nuevo).
-local function queueDelta(kind, id)
-    local out = S.know.out
-    if out.set[kind][id] then return end
-    out.set[kind][id] = true
-    out.items[#out.items + 1] = { kind = kind, id = id }
-end
-
--- Cierra la revision: quita de la cache lo que ya no esta en knowledge.
-local function finishScan(k)
-    for _, kind in ipairs(KNOW_KINDS) do
-        local map = type(k[kind]) == "table" and k[kind] or {}
-        for id in pairs(S.cache[kind]) do
-            if map[id] == nil then S.cache[kind][id] = nil end
-        end
-    end
-    S.know.scan = nil
-end
-
--- Un paso de revision: como mucho SCAN_PER_STEP registros codificados.
-local function scanStep()
-    local scan = S.know.scan
-    if not scan then return end
-    local k = knowTables()
-    if not k then
-        S.know.scan = nil
-        return
-    end
-    local budget = C.SCAN_PER_STEP
-    while budget > 0 do
-        local kind = KNOW_KINDS[scan.ki]
-        if not kind then
-            finishScan(k)
-            return
-        end
-        local map = type(k[kind]) == "table" and k[kind] or {}
-        if scan.keys == nil then
-            scan.keys = {}
-            for id in pairs(map) do scan.keys[#scan.keys + 1] = id end
-            scan.pos = 0
-        end
-        if scan.pos >= #scan.keys then
-            scan.ki, scan.keys = scan.ki + 1, nil
-        else
-            scan.pos = scan.pos + 1
-            budget = budget - 1
-            local id = scan.keys[scan.pos]
-            local rec = map[id]
-            if type(rec) == "table" then
-                local json = ns.Json.Encode(rec)
-                if json and json ~= S.cache[kind][id] then
-                    S.cache[kind][id] = json
-                    queueDelta(kind, id)
-                end
-            end
-        end
-    end
-end
-
--- Saca de la cola los registros que caben en un mensaje y devuelve su JSON, o nil si la cola esta vacia.
--- Lee la cache al sacar cada registro (el valor mas nuevo). Los que ya no estan en la cache se descartan.
-local function takeSlice(q)
-    local parts = { npcs = {}, quests = {} }
-    local size, any = 2, false
-    while q.head <= #q.items do
-        local it = q.items[q.head]
-        local json = S.cache[it.kind][it.id]
-        if json then
-            local cost = #json + #tostring(it.id) + 6
-            if any and size + cost > C.KNOW_SLICE_BYTES then break end
-            local list = parts[it.kind]
-            list[#list + 1] = ns.Json.Quote(tostring(it.id)) .. ":" .. json
-            size = size + cost
-            any = true
-        end
-        q.head = q.head + 1
-        if q.set then q.set[it.kind][it.id] = nil end
-    end
-    if q.head > #q.items then
-        q.items, q.head = {}, 1
-    end
-    if not any then return nil end
-    return '{"npcs":{' .. concat(parts.npcs, ",") .. '},"quests":{' .. concat(parts.quests, ",") .. '}}'
-end
-
--- Paso del tipo 9 del plan. Devuelve progreso (bool) y si el tipo ha acabado.
-local function knowledgeStep(sh)
-    if sh.know == "scan" then
-        if not knowTables() then
-            sh.know = "deltas"
-            return true, false
-        end
-        if not S.know.scan then S.know.scan = { ki = 1, keys = nil, pos = 0 } end
-        scanStep()
-        if not S.know.scan then sh.know = "deltas" end
-        return true, false
-    end
-    -- deltas: un mensaje cada vez, cuando el tipo 9 esta libre en el planificador
-    if ensureScheduler():has(9) then return false, false end
-    local msg = takeSlice(S.know.out)
-    if msg then
-        ensureScheduler():enqueue(9, msg)
-        return true, false
-    end
-    return true, true
-end
-
--- Volcado completo optativo (fuera del plan, si queda ventana y el tipo 9 esta libre).
--- Solo en /compa sync o si el ultimo volcado tiene KEY_RESEND_SEC o mas.
-local function dumpDue(sh)
-    if sh.full then return true end
-    return S.know.dumpAt == nil or sh.now - S.know.dumpAt >= C.KEY_RESEND_SEC
-end
-
-local function snapshotStep()
-    local know = S.know
-    if know.snapDone then return false end
-    if S.sched and S.sched:has(9) then return false end
-    if not know.snap then
-        if not dumpDue(S.share) then
-            know.snapDone = true
-            return false
-        end
-        know.dumpAt = S.share.now
-        local items = {}
-        for _, kind in ipairs(KNOW_KINDS) do
-            for id in pairs(S.cache[kind]) do items[#items + 1] = { kind = kind, id = id } end
-        end
-        know.snap = { items = items, head = 1 }
-        return true
-    end
-    local msg = takeSlice(know.snap)
-    if msg then
-        ensureScheduler():enqueue(9, msg, true, true)
-        return true
-    end
-    know.snapDone = true
-    return false
-end
-
--- ---------------------------------------------------------------------------
 -- Activacion: plan, presupuesto por trama y ventana
 -- ---------------------------------------------------------------------------
 
--- Un paso del plan (una reanudacion de unidad, o un tramo de revision). Devuelve progreso (bool).
+-- Un paso del plan (una reanudacion de unidad). Devuelve progreso (bool).
 local function planStep(sh)
     local t = sh.plan[sh.pos]
-    if C.TYPES[t] and C.TYPES[t].pipeline then
-        sh.know = sh.know or "scan"
-        local progressed, finished = knowledgeStep(sh)
-        if finished then
-            sh.pos = sh.pos + 1
-            sh.know = nil
-        end
-        return progressed
-    end
     if not S.cur then
         startUnit(t)
     elseif resumeUnit() == "done" then
         sh.pos = sh.pos + 1
     end
-    return true
-end
-
--- Sobrante del mundo: si tras el plan quedan bloques sin enviar (presupuesto por mensaje) y no hay
--- otro mensaje 16 en cola, serializa otro trozo. Es trabajo obligatorio: la ventana no acaba hasta
--- que sale, como mucho hasta SHARE_SECONDS.
-local function worldExtraStep()
-    local W = ns.World
-    if not (W and W.ChannelPending and W.ChannelPending()) then return false end
-    if S.cur or ensureScheduler():has(16) then return false end
-    startUnit(16)
     return true
 end
 
@@ -700,18 +603,19 @@ function C.Begin(now, opts)
         full = (opts and opts.full) and true or false,
         plan = {}, pos = 1, planDone = false, planDoneAt = nil,
     }
-    for i, t in ipairs(C.PRIORITY) do S.share.plan[i] = t end
+    for _, t in ipairs(C.PRIORITY) do
+        if C.TYPES[t] then S.share.plan[#S.share.plan + 1] = t end
+    end
     S.cur = nil
-    S.know.scan = nil
-    S.know.snap = nil
-    S.know.snapDone = false
+    if not again then
+        restoreSent()
+        startWindow()
+    end
     -- Si hay una pregunta, sale de nuevo al principio de la ventana.
     if S.question then
         ensureScheduler():enqueue(C.QUESTION_TYPE, S.question.json)
         S.question.nextAt = now + C.QUESTION_RESEND_SEC
     end
-    -- /compa sync: el mundo se reenvia entero (World.lua olvida lo enviado).
-    if S.share.full and ns.World and ns.World.ForceFull then ns.World.ForceFull() end
     return again
 end
 
@@ -733,9 +637,6 @@ end
 function C.Stop()
     S.share = nil
     S.cur = nil
-    S.know.scan = nil
-    S.know.snap = nil
-    S.know.snapDone = false
 end
 
 -- true si hay una activacion en curso.
@@ -752,7 +653,7 @@ function C.RemainingSec(now)
 end
 
 -- Llamar en cada trama durante la activacion. Devuelve false si la ventana ha acabado (y para).
--- Acaba a los SHARE_SECONDS, o antes cuando no queda nada por enviar (plan, cola, volcado y
+-- Acaba a los SHARE_SECONDS, o antes cuando no queda nada por enviar (plan, cola de la bandeja y
 -- pregunta) y han pasado al menos SHARE_MIN_SEC.
 function C.Update(now)
     local sh = S.share
@@ -767,9 +668,7 @@ function C.Update(now)
         ensureScheduler():enqueue(C.QUESTION_TYPE, q.json)
         q.nextAt = now + C.QUESTION_RESEND_SEC
     end
-    local dumping = S.know.snap ~= nil and not S.know.snapDone
     local idle = sh.planDone and not S.cur and (S.sched == nil or S.sched:requiredPending() == 0)
-        and S.know.out.head > #S.know.out.items and not dumping
     if idle and now - sh.startAt >= C.SHARE_MIN_SEC - 1e-9 then
         C.Stop()
         return false
@@ -785,20 +684,15 @@ function C.Pump(now, budgetMs)
     sh.now = now
     local deadline = clockMs() + (budgetMs or C.PUMP_BUDGET_MS)
     while true do
-        local progressed
+        local progressed = false
         if sh.pos <= #sh.plan then
             progressed = planStep(sh)
-        else
-            if not sh.planDone then
-                sh.planDone = true
-                sh.planDoneAt = now
-            end
-            if S.cur then -- sobrante del mundo en curso (el plan ya acabo)
-                resumeUnit()
-                progressed = true
-            else
-                progressed = snapshotStep() or worldExtraStep()
-            end
+        elseif not sh.planDone then
+            sh.planDone = true
+            sh.planDoneAt = now
+        elseif S.cur then -- la unidad en curso acaba de salir del plan
+            resumeUnit()
+            progressed = true
         end
         if not progressed or clockMs() >= deadline then break end
     end
@@ -843,13 +737,10 @@ C.HashText = ns.HashText
 -- Internos expuestos solo para tools/lua/test_channel.lua.
 C.testing = {
     fullJSON = fullJSON,
-    -- Revision de knowledge completa de una vez (la de juego va en pasos dentro del plan).
-    scanAll = function() while S.know.scan do scanStep() end end,
     -- Reinicia el estado del canal (pruebas).
     reset = function()
-        S.share, S.cur, S.sched = nil, nil, nil
-        S.cache = { quests = {}, npcs = {} }
-        S.know = { scan = nil, out = newQueue(), snap = nil, snapDone = false, dumpAt = nil }
+        S.share, S.cur, S.sched, S.win = nil, nil, nil, nil
+        S.queued = {}
         S.sent, S.sentAt, S.skipped, S.question = {}, {}, 0, nil
         S.sentCount, S.errors, S.lastError = 0, 0, nil
     end,
