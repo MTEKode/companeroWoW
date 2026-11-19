@@ -1,10 +1,12 @@
 -- Bridge.lua: franja de pixeles (addon -> app).
--- Protocolo v3 (activo): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo ancho de
--- la pantalla: N = min(floor(anchoDisponible / bloque) - 1, 1024) bloques, medidos en unidades
--- del propio marco (no en pixeles fisicos estimados). Bloques 1..5 = magia y calibracion
--- (igual que v2); bloques 6..N = flujo de nibbles (3 por bloque). El contenido del flujo lo
--- construye Channel.lua (cabecera, estado, trozo de mensaje y CRC-16).
--- Protocolo v2 (solo codificador de referencia para tests; el addon ya no lo emite).
+-- Protocolo v3.1 (activo, version 4): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo
+-- ancho de la pantalla: N = min(floor(anchoDisponible / bloque) - 1, 1024) bloques, medidos en
+-- unidades del propio marco (no en pixeles fisicos estimados). Bloques 1..7 = magia (2),
+-- calibracion (4: cada canal ve los niveles 0, 37, 73 y 110) y blanco (1); bloques 8..N = flujo de
+-- nibbles (3 por bloque). Cada nibble n se dibuja como round(n * 110 / 15), de 0 a 110: asi una
+-- ganancia de hasta x2.2 no satura el 255. El contenido del flujo lo construye Channel.lua
+-- (cabecera, estado, trozo de mensaje y CRC-16).
+-- Protocolo v2 (solo codificador de referencia para tests; el addon ya no lo emite; ver EncodeBlocks).
 -- BuildPayload, EncodeBlocks, EncodeFrameColors, StripBlocks y ComputePixelSize son funciones
 -- puras (testeables offline). GameWindowSize consulta la API y se prueba con stubs.
 -- Los arrays son 1-based: byte k (0-based del contrato) = array[k + 1].
@@ -17,23 +19,38 @@ local min, max = math.min, math.max
 
 local PAYLOAD_LEN = 32
 local PROTOCOL_V2 = 2
-local PROTOCOL_V3 = 3
+local PROTOCOL_V31 = 4          -- version de la trama v3.1 (la unica que emite el addon)
 local BLOCK_COUNT_V2 = 29       -- v2: 5 de magia/calibracion + 24 de datos
 local BLOCK_PX = 4              -- lado nominal de cada bloque, en pixeles fisicos
-local MAX_BLOCKS = 1024         -- tope de bloques de la fila (v3)
+local MAX_BLOCKS = 1024         -- tope de bloques de la fila (v3.1)
 local DEFAULT_BLOCKS = 256      -- ancho desconocido: fila de 1024 px fisicos
-local CALIB_BLOCKS = 5          -- bloques 1..5 fijos (magia y calibracion)
+local CALIB_BLOCKS = 7          -- v3.1: bloques 1..7 fijos (magia, calibracion y blanco)
 local REFRESH_SEC = 0.2
 local REFERENCE_UNITS = 768     -- fallback: 1 pixel fisico = 768 / altura fisica unidades de UI
-local NIBBLE_STEP = 17          -- nibble n se codifica como n * 17 (0..255)
+local NIBBLE_STEP = 17          -- v2: nibble n se codifica como n * 17 (0..255)
+local NIBBLE_TOP = 110          -- v3.1: el nibble 15 se dibuja como 110 (ver NIBBLE_VALUE)
 
--- Colores de los bloques 1..5 (v2 y v3): magia, magia, calibracion x3.
+-- Colores de los bloques 1..7 de v3.1: magia, magia, calibracion x4 (niveles 0, 37, 73 y 110 en
+-- cuadrado latino: cada canal ve los cuatro) y blanco (referencia y deteccion de saturacion).
 local CAL_COLORS = {
+    { 255, 0, 255 }, { 0, 255, 255 },
+    { 0, 37, 73 }, { 37, 73, 110 }, { 73, 110, 0 }, { 110, 0, 37 },
+    { 255, 255, 255 },
+}
+
+-- Bloques 1..5 de v2 (solo EncodeBlocks, la referencia de v2): magia, magia, calibracion x3.
+local V2_CAL_COLORS = {
     { 255, 0, 255 }, { 0, 255, 255 },
     { 5 * NIBBLE_STEP, 10 * NIBBLE_STEP, 0 },
     { 10 * NIBBLE_STEP, 5 * NIBBLE_STEP, 5 * NIBBLE_STEP },
     { 0, 15 * NIBBLE_STEP, 10 * NIBBLE_STEP },
 }
+
+-- Valor de color de cada nibble en v3.1: round(n * 110 / 15), indexado por n (0..15).
+local NIBBLE_VALUE = {}
+for n = 0, 15 do
+    NIBBLE_VALUE[n] = floor(n * NIBBLE_TOP / 15 + 0.5)
+end
 
 ns.bridge = ns.bridge or {}
 local B = ns.bridge
@@ -136,8 +153,8 @@ local function nibbleAt(frame, nbytes, k)
     return byte % 16
 end
 
--- Trama v3 (bytes, 1-based) -> colores de los N bloques (codigo r*65536+g*256+b).
--- Escribe en out (reutilizable) y lo devuelve. Bloques 1..5 fijos; 6..N = nibbles.
+-- Trama v3.1 (bytes, 1-based) -> colores de los N bloques (codigo r*65536+g*256+b).
+-- Escribe en out (reutilizable) y lo devuelve. Bloques 1..7 fijos; 8..N = nibbles (NIBBLE_VALUE).
 -- Nibbles mas alla de la trama valen 0.
 function ns.EncodeFrameColors(frame, N, out)
     out = out or {}
@@ -148,9 +165,9 @@ function ns.EncodeFrameColors(frame, N, out)
     local nbytes = #frame
     for b = CALIB_BLOCKS + 1, N do
         local k = (b - CALIB_BLOCKS - 1) * 3 -- nibble del canal R (0-based)
-        local r = nibbleAt(frame, nbytes, k) * NIBBLE_STEP
-        local g = nibbleAt(frame, nbytes, k + 1) * NIBBLE_STEP
-        local bl = nibbleAt(frame, nbytes, k + 2) * NIBBLE_STEP
+        local r = NIBBLE_VALUE[nibbleAt(frame, nbytes, k)]
+        local g = NIBBLE_VALUE[nibbleAt(frame, nbytes, k + 1)]
+        local bl = NIBBLE_VALUE[nibbleAt(frame, nbytes, k + 2)]
         out[b] = colorCode(r, g, bl)
     end
     for i = N + 1, #out do out[i] = nil end
@@ -179,8 +196,8 @@ function ns.EncodeBlocks(payload, seq)
     nib[72] = 0 -- relleno
 
     local blocks = {}
-    for i = 1, CALIB_BLOCKS do
-        local c = CAL_COLORS[i]
+    for i = 1, 5 do
+        local c = V2_CAL_COLORS[i]
         blocks[i] = { c[1], c[2], c[3] }
     end
     for b = 6, BLOCK_COUNT_V2 do
@@ -371,7 +388,7 @@ function ns.BridgeDebugLines()
         string.format("Marco de la franja: escala efectiva %s; ancho disponible %s unidades",
             num(B.frS, "%.4f"), num(B.avail, "%.1f")),
         string.format("Bloque: %s unidades (%d px fisicos nominales)", num(B.block, "%.4f"), BLOCK_PX),
-        string.format("Franja v%d: N = %d bloques (tope %d)", PROTOCOL_V3, B.blocks or 0, MAX_BLOCKS),
+        string.format("Franja v3.1: N = %d bloques (tope %d)", B.blocks or 0, MAX_BLOCKS),
         string.format("Pitch esperado: %s px; franja de %s px%s", num(pitch, "%.2f"), num(stripPx, "%.0f"),
             B.physW and string.format(" de %d", B.physW) or ""),
     }

@@ -260,3 +260,47 @@ func TestParsedQuestionFlowsThroughTheController(t *testing.T) {
 		t.Fatalf("got %q", r.clip.last())
 	}
 }
+
+// holdAsker answers only when release is closed (or its context ends): a question stays pending.
+type holdAsker struct{ release chan struct{} }
+
+func (h *holdAsker) Ask(ctx context.Context, question string, withScreenshot bool) (ai.Response, error) {
+	select {
+	case <-h.release:
+		return ai.Response{Text: "ok", Provider: "fake"}, nil
+	case <-ctx.Done():
+		return ai.Response{}, ctx.Err()
+	}
+}
+
+func TestNotifyCopiesOnlyWhileAQuestionIsPending(t *testing.T) {
+	r := newRig(t)
+	if r.ctl.Notify("aviso") {
+		t.Fatal("no question is pending: the notice must not be copied")
+	}
+	if r.clip.last() != "" {
+		t.Fatalf("clipboard written without a pending question: %q", r.clip.last())
+	}
+
+	hold := &holdAsker{release: make(chan struct{})}
+	r.ctl = NewController(hold, r.clip, r.sound, mustGate(t), func() string { return "Ana" }, nil)
+	r.ctl.logf = quietLog
+	r.ctl.Submit(question(21, "pregunta lenta"))
+	if !r.ctl.Notify("Los colores de la pantalla están alterados") {
+		t.Fatal("a pending question must take the notice")
+	}
+	if got := r.clip.last(); !strings.Contains(got, "CWOW1") || !strings.Contains(got, "Los colores de la pantalla están alterados") {
+		t.Fatalf("clipboard %q lacks the notice in a CWOW1 block", got)
+	}
+	close(hold.release)
+	r.ctl.Wait()
+}
+
+func mustGate(t *testing.T) Deduper {
+	t.Helper()
+	gate, err := NewGate("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gate
+}

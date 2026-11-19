@@ -88,6 +88,9 @@ func (s *v3Image) calibrateAt(p float64) ([3]levelMap, [5][3]byte, error) {
 	if !withinTolerance(cal5[0], magic0, magicTolerance) || !withinTolerance(cal5[1], magic1, magicTolerance) {
 		return [3]levelMap{}, cal5, ErrNoMagic
 	}
+	if err := gainError(calExpected[:], cal5[:]); err != nil {
+		return [3]levelMap{}, cal5, err
+	}
 	k := s.blocksFit(p) - calibrationBlocks
 	if k > v3FitBlocks {
 		k = v3FitBlocks

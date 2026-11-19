@@ -102,9 +102,9 @@ do
     end
     check("N + 1 bloque cabe siempre en el ancho disponible", bad == nil, bad)
 end
--- Capacidad sigue a N: N = 859 (3440 px a 4 px, con margen) -> 1234 bytes.
-eq("capacidad con N=StripBlocks(3440,4)=859 = 1234 bytes", C.Capacity(ns.StripBlocks(3440, 4)), 1234)
-eq("capacidad con N=860 = 1235 bytes", C.Capacity(860), 1235)
+-- Capacidad sigue a N (v3.1: 7 bloques fijos): N = 859 (3440 px a 4 px, con margen) -> 1231 bytes.
+eq("capacidad con N=StripBlocks(3440,4)=859 = 1231 bytes", C.Capacity(ns.StripBlocks(3440, 4)), 1231)
+eq("capacidad con N=860 = 1232 bytes", C.Capacity(860), 1232)
 eq("capacidad con N=5 = 0", C.Capacity(5), 0)
 eq("capacidad con N=6 = 0 (1 nibble de datos no basta)", C.Capacity(6), 0)
 
@@ -116,7 +116,7 @@ local body = "hola mundo, esto es un mensaje de prueba"
 local chunk = { type = 2, id = 513, index = 1, count = 4, data = bytesOf(body) }
 local frame = C.BuildFrame(status, 77, N, chunk)
 check("trama construida", frame ~= nil)
-eq("version 3", frame[1], 3)
+eq("version 4 (v3.1)", frame[1], 4)
 eq("seq", frame[2], 77)
 eq("N lo", frame[3], 860 % 256)
 eq("N hi", frame[4], math.floor(860 / 256))
@@ -153,12 +153,35 @@ check("trozo mayor que la capacidad -> nil", C.BuildFrame(status, 1, 6, chunk) =
 local colors = ns.EncodeFrameColors(frame, N, {})
 eq("bloque 1 = magia R", math.floor(colors[1] / 65536), 255)
 eq("bloque 2 = magia G", math.floor(colors[2] / 256) % 256, 255)
-eq("bloque 3 calibracion R = 85", math.floor(colors[3] / 65536), 85)
+-- v3.1: bloques 1..7 fijos (magia x2, calibracion x4 con niveles 0/37/73/110, blanco).
+local fixedWant = {
+    { 255, 0, 255 }, { 0, 255, 255 },
+    { 0, 37, 73 }, { 37, 73, 110 }, { 73, 110, 0 }, { 110, 0, 37 },
+    { 255, 255, 255 },
+}
+local fixedOK = true
+for i = 1, 7 do
+    local c = colors[i]
+    local rgb = { math.floor(c / 65536), math.floor(c / 256) % 256, c % 256 }
+    for ch = 1, 3 do
+        if rgb[ch] ~= fixedWant[i][ch] then fixedOK = false end
+    end
+end
+check("bloques 1..7 fijos: magia, calibracion (0/37/73/110) y blanco", fixedOK)
+eq("bloque 3 calibracion R = 0", math.floor(colors[3] / 65536), 0)
+-- Los nibbles dibujados llegan a 110 como mucho (con una ganancia de x2.2 quedan bajo 255).
+local maxData = 0
+for b = 8, N do
+    local c = colors[b]
+    maxData = math.max(maxData, math.floor(c / 65536), math.floor(c / 256) % 256, c % 256)
+end
+check("nibbles de datos <= 110 (v3.1)", maxData <= 110)
 local decodedNibbles = {}
-for b = 6, N do
+for b = 8, N do
     local c = colors[b]
     local rgb = { math.floor(c / 65536), math.floor(c / 256) % 256, c % 256 }
-    for ch = 1, 3 do decodedNibbles[#decodedNibbles + 1] = math.floor(rgb[ch] / 17 + 0.5) end
+    -- nibble = valor * 15 / 110 (el valor es round(n * 110 / 15))
+    for ch = 1, 3 do decodedNibbles[#decodedNibbles + 1] = math.floor(rgb[ch] * 15 / 110 + 0.5) end
 end
 local decodedBytes = {}
 for k = 1, #frame do

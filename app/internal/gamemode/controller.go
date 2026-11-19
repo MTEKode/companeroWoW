@@ -186,3 +186,20 @@ func (c *Controller) finish(seq uint64) {
 func (c *Controller) Wait() {
 	c.wg.Wait()
 }
+
+// Notify puts a notice on the clipboard, as an error block for the question being answered, when
+// a question is pending. It reports whether the notice was copied: with no question pending it
+// does nothing and returns false, so the caller can ask again later.
+func (c *Controller) Notify(text string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancel == nil || c.clip == nil {
+		return false
+	}
+	if err := c.clip.SetText(FormatError(c.currentQ, text)); err != nil {
+		c.logf("gamemode: el aviso no llegó al portapapeles: %v", err)
+		return false
+	}
+	c.logf("gamemode: aviso copiado al portapapeles para la pregunta #%d", c.currentQ)
+	return true
+}

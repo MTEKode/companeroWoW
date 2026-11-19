@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// channelFixture is app/testdata/channel_v3_fixture.json, written by
+// channelFixture is a fixture file such as app/testdata/channel_v3_fixture.json, written by
 // tools/lua/gen_channel_fixture.lua running the addon's own Channel.lua.
 type channelFixture struct {
 	N        int                        `json:"N"`
@@ -25,7 +25,13 @@ type channelFixture struct {
 
 func loadChannelFixture(t *testing.T) channelFixture {
 	t.Helper()
-	raw, err := os.ReadFile("../../testdata/channel_v3_fixture.json")
+	return loadChannelFixtureFile(t, "../../testdata/channel_v3_fixture.json")
+}
+
+// loadChannelFixtureFile reads a fixture written by tools/lua/gen_channel_fixture.lua.
+func loadChannelFixtureFile(t *testing.T, path string) channelFixture {
+	t.Helper()
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -55,12 +61,28 @@ func blocksOfHex(t *testing.T, s string, n int) [][3]byte {
 // messages and checks each one against the JSON the addon encoded.
 func TestChannelFixturePipeline(t *testing.T) {
 	fx := loadChannelFixture(t)
+	if len(fx.Frames) < 10 || len(fx.Messages) != 11 {
+		t.Fatalf("fixture has %d frames and %d messages; regenerate it", len(fx.Frames), len(fx.Messages))
+	}
+	runChannelFixturePipeline(t, fx)
+}
+
+// TestChannelV31FixturePipeline runs the same pipeline on the addon's v3.1 channel
+// (app/testdata/channel_v31_fixture.json, from tools/lua/gen_channel_fixture.lua): the frames
+// are version 4 and the messages must arrive as the addon encoded them.
+func TestChannelV31FixturePipeline(t *testing.T) {
+	fx := loadChannelFixtureFile(t, "../../testdata/channel_v31_fixture.json")
+	if len(fx.Frames) < 10 || len(fx.Messages) < 5 {
+		t.Fatalf("v3.1 fixture has %d frames and %d messages; regenerate it", len(fx.Frames), len(fx.Messages))
+	}
+	runChannelFixturePipeline(t, fx)
+}
+
+// runChannelFixturePipeline decodes the fixture's frames at two pitches and checks the messages.
+func runChannelFixturePipeline(t *testing.T, fx channelFixture) {
 	statusWant, err := hex.DecodeString(fx.Status)
 	if err != nil || len(statusWant) != PayloadLen {
 		t.Fatalf("fixture status: %v", err)
-	}
-	if len(fx.Frames) < 10 || len(fx.Messages) != 11 {
-		t.Fatalf("fixture has %d frames and %d messages; regenerate it", len(fx.Frames), len(fx.Messages))
 	}
 
 	for _, p := range []float64{4, 5.33} {

@@ -140,6 +140,7 @@ func writeRuntime(dir string, reader *bridge.Reader, mode string, active bool, h
 		LastDecodeError: stats.LastError,
 		LastDecodeAt:    timePtr(stats.LastErrorAt),
 		LastDecodeOKAt:  timePtr(stats.LastOKAt),
+		Gain:            stats.Gain,
 		MessagesByType:  counts,
 		HoldUntil:       timePtr(hold),
 	}
