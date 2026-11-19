@@ -423,5 +423,16 @@ func DecodeAny(img image.Image, hint float64) (Decoded, error) {
 	if err2 == nil {
 		return Decoded{Live: st, Pitch: p2, Version: ProtocolVersion}, nil
 	}
-	return Decoded{}, err2
+	// Both errors are kept: the trace says why the v3 strip failed, and errors.Is finds either.
+	return Decoded{}, &decodeError{v3: err, v2: err2}
 }
+
+// decodeError is the failure of DecodeAny: the v3 and the v2 reasons.
+type decodeError struct{ v3, v2 error }
+
+func (e *decodeError) Error() string {
+	return fmt.Sprintf("v3: %v; v2: %v", e.v3, e.v2)
+}
+
+// Unwrap exposes both reasons to errors.Is and errors.As.
+func (e *decodeError) Unwrap() []error { return []error{e.v3, e.v2} }

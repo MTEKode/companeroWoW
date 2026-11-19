@@ -196,7 +196,7 @@ func TestPulseActivatesForTheHoldWithoutPanel(t *testing.T) {
 	if !c.Active() {
 		t.Fatal("pulse must activate the reader")
 	}
-	clk.advance(HoldAfterHide - time.Second)
+	clk.advance(PulseHold - time.Second)
 	c.Check()
 	if !c.Active() {
 		t.Fatal("reader went off before the hold ended")

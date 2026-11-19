@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -28,12 +29,14 @@ const (
 )
 
 // Speaker says a short phrase aloud at a volume from 0 to 100. The Windows implementation uses
-// the speech API (SAPI); it returns when the phrase has been said.
+// the speech API (SAPI); it returns when the phrase has been said, or with an error when no voice
+// is installed or the voice fails (the announcer then plays the tone).
 type Speaker interface {
 	Speak(text string, volume int) error
 }
 
-// Player plays a WAV file held in memory and returns when it has finished.
+// Player plays a WAV file held in memory and returns when it has finished. The Windows
+// implementation plays it through waveOut at the level the WAV was made with.
 type Player interface {
 	PlayWAV(wav []byte) error
 }
@@ -88,26 +91,42 @@ func (a *Announcer) Set(mode string, volume int) {
 	a.volume = min(max(volume, config.MinAnswerVolume), config.MaxAnswerVolume)
 }
 
-// Play announces cue with the current setting. It returns an error only when no sound could be
-// played at all; a silent setting or a zero volume is not an error.
+// Play announces cue with the current setting and logs how it was announced (see PlayReport). It
+// returns an error only when no sound could be played at all; a silent setting or a zero volume
+// is not an error.
 func (a *Announcer) Play(cue Cue) error {
+	how, err := a.PlayReport(cue)
+	if err != nil {
+		a.logf("gamemode: aviso sin sonido: %v", err)
+		return err
+	}
+	a.logf("gamemode: aviso: %s", how)
+	return nil
+}
+
+// PlayReport announces cue like Play and says how it did: "voz" (the spoken phrase), "pitido"
+// (the tone, after a voice that failed or when voices are not wanted), or "silencio".
+func (a *Announcer) PlayReport(cue Cue) (string, error) {
 	a.mu.Lock()
 	mode, volume := a.mode, a.volume
 	a.mu.Unlock()
 	if mode == config.AnswerNone || volume == 0 {
-		return nil
+		return "silencio", nil
 	}
 	if mode == config.AnswerVoice && a.speaker != nil {
 		err := a.speaker.Speak(phraseFor(cue), volume)
 		if err == nil {
-			return nil
+			return "voz (" + phraseFor(cue) + ")", nil
 		}
 		a.logf("gamemode: la voz no sonó, sigo con el pitido: %v", err)
 	}
 	if a.player == nil {
-		return errors.New("gamemode: no hay forma de reproducir el sonido")
+		return "", errors.New("no hay forma de reproducir el sonido")
 	}
-	return a.player.PlayWAV(ToneWAV(cue, volume))
+	if err := a.player.PlayWAV(ToneWAV(cue, volume)); err != nil {
+		return "", fmt.Errorf("pitido: %w", err)
+	}
+	return "pitido", nil
 }
 
 // phraseFor is the spoken text of a cue.
@@ -139,7 +158,8 @@ var cueTones = map[Cue][]tone{
 
 // ToneWAV returns the WAV file (16-bit mono PCM) of a cue at the given volume (percent).
 func ToneWAV(cue Cue, volume int) []byte {
-	amp := 0.35 * float64(min(max(volume, 0), 100)) / 100 * math.MaxInt16
+	// 60 % of full scale at 100 %: the tone must be heard at the level the player set.
+	amp := 0.6 * float64(min(max(volume, 0), 100)) / 100 * math.MaxInt16
 	var pcm []int16
 	for _, n := range cueTones[cue] {
 		count := int(n.sec * toneRate)
@@ -189,4 +209,50 @@ func wavBytes(pcm []int16) []byte {
 	_ = binary.Write(&out, binary.LittleEndian, dataLen)
 	out.Write(data.Bytes())
 	return out.Bytes()
+}
+
+// wavFormat is the sample format of a WAV file.
+type wavFormat struct {
+	Channels uint16
+	Rate     uint32
+	Bits     uint16
+}
+
+// parseWAV reads the format and the PCM data of a RIFF/WAVE file (PCM only). The data is a slice of
+// wav, so it must stay valid while it is played.
+func parseWAV(wav []byte) (wavFormat, []byte, error) {
+	var f wavFormat
+	if len(wav) < 12 || string(wav[0:4]) != "RIFF" || string(wav[8:12]) != "WAVE" {
+		return f, nil, errors.New("sonido: no es un WAV")
+	}
+	haveFmt := false
+	for p := 12; p+8 <= len(wav); {
+		id := string(wav[p : p+4])
+		size := int(binary.LittleEndian.Uint32(wav[p+4 : p+8]))
+		body := p + 8
+		end := min(body+size, len(wav))
+		switch id {
+		case "fmt ":
+			if end-body < 16 {
+				return f, nil, errors.New("sonido: fmt corto")
+			}
+			if tag := binary.LittleEndian.Uint16(wav[body:]); tag != 1 {
+				return f, nil, fmt.Errorf("sonido: formato %d, se espera PCM", tag)
+			}
+			f.Channels = binary.LittleEndian.Uint16(wav[body+2:])
+			f.Rate = binary.LittleEndian.Uint32(wav[body+4:])
+			f.Bits = binary.LittleEndian.Uint16(wav[body+14:])
+			haveFmt = true
+		case "data":
+			if !haveFmt {
+				return f, nil, errors.New("sonido: data antes de fmt")
+			}
+			if f.Channels == 0 || f.Rate == 0 || f.Bits == 0 {
+				return f, nil, errors.New("sonido: formato vacío")
+			}
+			return f, wav[body:end], nil
+		}
+		p = body + size + size%2
+	}
+	return f, nil, errors.New("sonido: sin datos")
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -36,6 +37,7 @@ const (
 	idSetModelDel     = 2017
 	idSetModelAdd     = 2018
 	idSetModelRefresh = 2019
+	idTestSound       = 2021
 )
 
 // msgModelsFetched is posted to the settings screen when the refresh of agy's model list ends.
@@ -95,6 +97,7 @@ type settingsWin struct {
 	uiGame, uiWindow                       uintptr // the interface: inside the game, or the external panel
 	ansVoice, ansBeep, ansNone             uintptr // the answer announcement: voice, tone or nothing
 	volume                                 uintptr // the announcement's volume, percent
+	testSound                              uintptr // "Probar aviso": plays the announcement with the settings on screen
 	startup, wowPath, browseBtn            uintptr
 	keyLabel, keyFolder, status            uintptr
 	wizard, cancel, saveBtn                uintptr
@@ -251,6 +254,7 @@ func (s *settingsWin) createControls() {
 	s.ansNone = s.radio("Ninguno", 334, 412, 90, 22, false)
 	s.label("Volumen del aviso (0-100 %)", 16, 438, 200, 20)
 	s.volume = s.edit(200, 435, 60, 24, esNumber)
+	s.testSound = s.button("Probar aviso", 270, 434, 120, 26, 0, idTestSound)
 
 	// The Antigravity models: the order in use (left), the ones agy offers (below). Adding
 	// takes a model from the offer, removing puts nothing back by itself.
@@ -289,7 +293,7 @@ func (s *settingsWin) createControls() {
 	for _, h := range []uintptr{s.hotkey, s.opacity, s.font, s.providers, s.up, s.down, s.hide,
 		s.modeOnDemand, s.modeContinuous, s.modeNote,
 		s.tipsPanel, s.tipsBandeja, s.tipsOff, s.tipsSound, s.startup, s.wowPath, s.browseBtn,
-		s.uiGame, s.uiWindow, s.ansVoice, s.ansBeep, s.ansNone, s.volume,
+		s.uiGame, s.uiWindow, s.ansVoice, s.ansBeep, s.ansNone, s.volume, s.testSound,
 		s.keyLabel, s.keyFolder, s.status, s.wizard, s.cancel, s.saveBtn,
 		s.models, s.modelUp, s.modelDown, s.modelDel, s.avail, s.modelAdd, s.modelRefresh, s.cooldown,
 		s.profileLabel, s.profileBtn} {
@@ -380,6 +384,31 @@ func (s *settingsWin) readUIMode() string {
 		return config.UIModeWindow
 	}
 	return ""
+}
+
+// testAnswerSound plays the answer sound with the mode and volume on the screen, so that the player
+// hears them before saving. The status line says how it was played, or why it was not.
+func (s *settingsWin) testAnswerSound() {
+	if s.owner.opts.TestAnswerSound == nil {
+		s.setStatus("El aviso no está disponible.", colBad)
+		return
+	}
+	mode := s.readAnswerSound()
+	if mode == "" {
+		s.setStatus("Elige cómo avisar antes de probarlo.", colBad)
+		return
+	}
+	volume, err := strconv.Atoi(strings.TrimSpace(getWindowText(s.volume)))
+	if err != nil || volume < config.MinAnswerVolume || volume > config.MaxAnswerVolume {
+		s.setStatus("El volumen va de 0 a 100.", colBad)
+		return
+	}
+	how, err := s.owner.opts.TestAnswerSound(mode, volume)
+	if err != nil {
+		s.setStatus("No pude reproducir el aviso: "+err.Error(), colBad)
+		return
+	}
+	s.setStatus("Aviso reproducido: "+how+".", colOK)
 }
 
 // setAnswerSound checks the radio of the answer announcement.
@@ -648,6 +677,8 @@ func settingsProc(hwnd, msg, wp, lp uintptr) uintptr {
 			s.owner.startWizard()
 		case idSetProfile:
 			s.openProfile()
+		case idTestSound:
+			s.testAnswerSound()
 		}
 		return 0
 	case wmCtlColorEdit, wmCtlColorList:

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"log"
 	"sync"
 	"time"
 )
@@ -282,7 +283,11 @@ func (c *Channel) Feed(f FrameV3, now time.Time) {
 	c.Data.noteFrame(now, len(f.Data))
 	t, body, ok := c.re.Add(f, now)
 	if ok {
-		_ = c.Data.Put(t, body, now) // a bad body is counted in DecodeErrors
+		if err := c.Data.Put(t, body, now); err != nil { // a bad body is counted in DecodeErrors
+			log.Printf("canal: mensaje %s (tipo %d, id %d) no es JSON válido: %v", MsgNames[t], t, f.MsgID, err)
+		} else {
+			log.Printf("canal: mensaje %s (tipo %d, id %d): %d bytes", MsgNames[t], t, f.MsgID, len(body))
+		}
 		c.subMu.RLock()
 		subs := c.subs
 		c.subMu.RUnlock()
