@@ -323,6 +323,7 @@ var playbookParts = map[Intent][]playbookPart{
 		{"misiones.disponibles", regexp.MustCompile(`disponib|puedo hacer|hacer ya|\bya\b`)},
 		{"misiones.zona", regexp.MustCompile(`zona|cerca|convien`)},
 		{"misiones.valor", regexp.MustCompile(`\bxp\b|oro|minuto|valor|ruta|mas oro`)},
+		{"misiones.consulta", regexp.MustCompile(`lista|cuant|cuales|filtr|de nivel|todas|todos|hay en`)},
 	},
 	IntentGear: {
 		{"equipo.analisis", regexp.MustCompile(`equip|mejor|conviene|pongo|analiz|ranura`)},
@@ -365,6 +366,7 @@ var playbookParts = map[Intent][]playbookPart{
 	},
 	IntentGeneral: {
 		{"general.pantalla", regexp.MustCompile(`pantalla|captur|ves|imagen`)},
+		{"general.datos", regexp.MustCompile(`lista|cuant|cuales|filtr|historial|ultim|compar|vend|instructor|vuelo|muert|combate|candidat|macro|barra|mazmorra|todos|todas`)},
 	},
 }
 

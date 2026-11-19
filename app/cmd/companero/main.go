@@ -61,6 +61,7 @@ func init() {
 
 // options are the command-line switches.
 type options struct {
+	ingestSV     bool
 	diag         bool
 	diagOut      string
 	eval         bool
@@ -76,6 +77,7 @@ type options struct {
 
 func main() {
 	var o options
+	flag.BoolVar(&o.ingestSV, "ingest-sv", false, "guarda en la base de la app lo que hay en CompaneroWoW.lua (SavedVariables) y sale; hacerlo antes de cargar el addon ligero")
 	flag.BoolVar(&o.diag, "diag", false, "imprime el estado (WoW, SavedVariables, proveedores de IA) y sale, sin abrir la ventana")
 	flag.StringVar(&o.diagOut, "diag-out", "", "con --diag, escribe el JSON en este archivo")
 	flag.BoolVar(&o.eval, "eval", false, "responde las preguntas de evaluación con la cadena real, escribe el informe y sale")
@@ -113,6 +115,9 @@ func run(o options) int {
 		return 1
 	}
 
+	if o.ingestSV {
+		return runIngestSV(cfg, dir)
+	}
 	if o.diag {
 		return runDiag(cfg, dir, o.diagOut)
 	}
@@ -210,6 +215,9 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 	watcher := bridge.NewSVWatcherFunc(cfg.SavedVariablesPath, 0)
 	g := gamedata.NewService(reader, watcher, st)
 	g.SetOnDemand(onDemand)
+	// The channel messages the store keeps go to it from a worker, started before anything reads.
+	g.StartIngest(ctx)
+	reader.Channel().OnMessage(g.QueueChannel)
 	cachePath := filepath.Join(dir, ondemand.CacheFile)
 	if onDemand {
 		// The last known data is loaded, so that an answer after a restart has it (with its age).
@@ -217,6 +225,7 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 			log.Printf("caché de datos: %v", err)
 		} else if n > 0 {
 			log.Printf("caché de datos: %d mensajes del último uso", n)
+			g.QueueLiveData(reader.Channel().Data)
 		}
 	}
 	g.Start(ctx)

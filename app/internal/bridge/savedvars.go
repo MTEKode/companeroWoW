@@ -3,6 +3,8 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -28,6 +30,9 @@ const (
 type SavedVars struct {
 	Raw     map[string]any
 	ModTime time.Time
+	Path    string // the file the data was read from (set by LoadSavedVariables)
+	Size    int64  // its size in bytes
+	SHA256  string // hex SHA-256 of its content, the identity of this import
 }
 
 // LoadSavedVariables executes the SavedVariables file in a sandboxed Lua state
@@ -55,7 +60,8 @@ func loadSavedVariables(parent context.Context, path string, timeout time.Durati
 	// Evaluating a SavedVariables file of a few MB makes hundreds of MB of Lua garbage, and the
 	// Go runtime keeps the peak as idle heap. Give it back now, so the app does not hold it.
 	debug.FreeOSMemory()
-	return &SavedVars{Raw: raw, ModTime: info.ModTime()}, nil
+	sum := sha256.Sum256(data)
+	return &SavedVars{Raw: raw, ModTime: info.ModTime(), Path: path, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}, nil
 }
 
 // evalSavedVariables runs data in a sandbox that has only base and table functions

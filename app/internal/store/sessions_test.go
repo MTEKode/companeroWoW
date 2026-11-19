@@ -152,8 +152,31 @@ func TestMigrationFromVersionOneKeepsMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(`DROP TABLE sessions; DROP TABLE feedback; DROP TABLE wft_pages; DROP TABLE wft_sitemap; DROP TABLE wft_meta; DROP TABLE wft_parsed; PRAGMA user_version = 1`); err != nil {
-		t.Fatalf("downgrade fixture: %v", err)
+	// Drop everything that version 1 did not have: the views and every table outside the version-1 set.
+	v1 := map[string]bool{"quests": true, "npcs": true, "maps": true, "cache": true, "messages": true}
+	var drops []string
+	rows, err := raw.Query(`SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var typ, name string
+		if err := rows.Scan(&typ, &name); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case typ == "view":
+			drops = append(drops, `DROP VIEW "`+name+`"`)
+		case typ == "table" && !v1[name]:
+			drops = append(drops, `DROP TABLE "`+name+`"`)
+		}
+	}
+	rows.Close()
+	drops = append(drops, `PRAGMA user_version = 1`)
+	for _, stmt := range drops {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("downgrade fixture %s: %v", stmt, err)
+		}
 	}
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)

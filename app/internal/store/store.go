@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MTEKode/companeroWoW/app/internal/bridge"
@@ -70,8 +71,12 @@ type ChatMsg struct {
 
 // Store is the SQLite-backed persistence layer. It is safe for concurrent use.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db   *sql.DB
+	now  func() time.Time
+	path string
+
+	roMu sync.Mutex
+	ro   *sql.DB // read-only connection for consultar_db, opened on first use (sqlquery.go)
 }
 
 // querier is satisfied by both *sql.DB and *sql.Tx.
@@ -108,7 +113,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate database %s: %w", path, err)
 	}
-	return &Store{db: db, now: time.Now}, nil
+	return &Store{db: db, now: time.Now, path: path}, nil
 }
 
 // ShrinkMemory asks SQLite to release the memory its page cache holds beyond what the
@@ -129,6 +134,12 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.roMu.Lock()
+	if s.ro != nil {
+		_ = s.ro.Close()
+		s.ro = nil
+	}
+	s.roMu.Unlock()
 	return s.db.Close()
 }
 
