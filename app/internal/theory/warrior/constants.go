@@ -46,7 +46,7 @@ type Constants struct {
 	BleedsArmor    bool    // bleeds ignore armour (classic)
 	MobCritMult    float64 // mob critical damage multiplier: 2 (classic)
 	MobVariance    float64 // ±15 % spread of mob hits (aprox.)
-	CritBaseTalent float64 // no base crit for the warrior in the model (aprox., 0)
+	DefensiveShare float64 // damage share under Defensive Stance: 0.9 (tooltip: damage caused −10 %; fits the sheet's UnitDamage)
 
 	// Ability fallbacks used only when the client text is not available (the sheet and the class
 	// page both missing). Each one is the classic rule; the tooltip wins when present.
@@ -171,7 +171,7 @@ var Table = Constants{
 	BleedsArmor:    false,
 	MobCritMult:    2,
 	MobVariance:    0.15,
-	CritBaseTalent: 0,
+	DefensiveShare: 0.9,
 
 	SunderStack:     90,
 	SunderMaxStacks: 5,

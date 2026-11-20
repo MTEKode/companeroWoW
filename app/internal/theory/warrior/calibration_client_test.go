@@ -1,6 +1,7 @@
 package warrior
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -153,5 +154,96 @@ func TestDeathWishTalentGrantsTheAbilityKeyedByItsID(t *testing.T) {
 	// The id of the talent and the id of the ability it grants are the same pair.
 	if key, _ := abilityKeyOf(12328); key != "death_wish" {
 		t.Fatalf("12328 must be the Death Wish ability, got %q", key)
+	}
+}
+
+// sheetBattle is a level 22 warrior in battle stance with a two-second-ish weapon (testdata/
+// sheet-warrior-l22-battle-es.json): crit 9.63 % with 45 agility and Cruelty 4. It is the reading the
+// model takes as the truth of the current state.
+func sheetBattle(t *testing.T) theory.Sheet {
+	t.Helper()
+	sh, err := theory.ParseSheet(fixture(t, "sheet-warrior-l22-battle-es.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sh
+}
+
+func TestCritReadingIsTheGroundTruthAndTheOffsetIsObserved(t *testing.T) {
+	in := theory.Input{Sheet: sheetBattle(t), Data: siteData(t)}
+	_, m, err := New().prepare(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(m.crit, 9.63, 1e-9) {
+		t.Fatalf("crit on the sheet's own build = %.3f, want the reading 9.63", m.crit)
+	}
+	c := checkNamed(t, New().Calibrate(in), "Crítico")
+	if !c.Ok || !strings.Contains(c.Nota, "ajuste de crítico observado: +3.38 %") {
+		t.Fatalf("crit check = %+v, want the observed offset +3.38 %%", c)
+	}
+	if strings.Count(strings.Join(m.notes, " "), "ajuste de crítico") != 0 {
+		t.Error("the offset is printed by the calibration only, not again in the notes")
+	}
+}
+
+func TestCritWhatIfsAddOnlyTheDelta(t *testing.T) {
+	in := theory.Input{Sheet: sheetBattle(t), Data: siteData(t)}
+	in.Build.Delta = theory.Delta{Agi: 20}
+	_, m, err := New().prepare(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(m.crit, 9.63+1, 1e-9) {
+		t.Fatalf("crit with +20 agility = %.3f, want the reading plus 1 (agility/20)", m.crit)
+	}
+	in = theory.Input{Sheet: sheetBattle(t), Data: siteData(t)}
+	in.Build.Talents = map[string]int{"Cruelty": 5, "Improved Overpower": 2, "Improved Tactical Mastery": 2, "Improved Rend": 3, "Deflection": 2}
+	_, m2, err := New().prepare(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(m2.crit, 9.63+1, 1e-9) {
+		t.Fatalf("crit with Cruelty 5 (sheet 4) = %.3f, want the reading plus one point", m2.crit)
+	}
+}
+
+func TestAttackPowerIsCountedOnceInTheWhiteDamage(t *testing.T) {
+	sh := sheetBattle(t)
+	_, m, err := New().prepare(theory.Input{Sheet: sh, Data: siteData(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The swing the simulation makes at the sheet's state: the weapon range plus attack power / 14 × speed.
+	swing := (m.mhMin+m.mhMax)/2 + m.ap*m.mhSpeed/Table.WeaponAPDiv
+	want := (sh.Melee.MHMin + sh.Melee.MHMax) / 2 // UnitDamage: already holds the attack power
+	if !near(swing, want, 1e-6) {
+		t.Fatalf("swing = %.3f, want the sheet's UnitDamage average %.3f (attack power counted once)", swing, want)
+	}
+	// Twenty more attack power adds 20 / 14 × speed to the swing, and nothing else.
+	_, m2, err := New().prepare(theory.Input{Sheet: sh, Data: siteData(t), Build: theory.Build{Delta: theory.Delta{AP: 20}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	swing2 := (m2.mhMin+m2.mhMax)/2 + m2.ap*m2.mhSpeed/Table.WeaponAPDiv
+	if !near(swing2-swing, 20*m.mhSpeed/Table.WeaponAPDiv, 1e-6) {
+		t.Fatalf("+20 attack power moved the swing by %.3f, want %.3f", swing2-swing, 20*m.mhSpeed/Table.WeaponAPDiv)
+	}
+}
+
+func TestDefensiveShareFitsTwoSnapshotsOfOneWeapon(t *testing.T) {
+	// The sheet's two defensive snapshots (testdata sheet-warrior-l25-es.json, and the same weapon with a
+	// Battle Shout of 33 attack power): UnitDamage 26.7429 at 201 attack power, 30.9857 at 234. The weapon
+	// range that each implies, with the stance share, must be the same (within the speed's rounding).
+	sh := sheetES(t)
+	lo1, _ := weaponRange(sh, Table, sh.Melee.MHMin, sh.Melee.MHMax, sh.Melee.MHSpeed)
+	sh2 := sh
+	sh2.Melee.AP, sh2.Melee.MHMin, sh2.Melee.MHMax = 234, 30.985714, 30.985714
+	lo2, _ := weaponRange(sh2, Table, sh2.Melee.MHMin, sh2.Melee.MHMax, sh2.Melee.MHSpeed)
+	if math.Abs(lo1-lo2) > 0.1 {
+		t.Fatalf("the two snapshots imply weapon minima %.3f and %.3f: the stance share or the attack power term is off", lo1, lo2)
+	}
+	if stanceShare(sh, Table) != 0.9 {
+		t.Fatalf("defensive stance share = %v, want 0.9", stanceShare(sh, Table))
 	}
 }

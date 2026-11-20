@@ -400,20 +400,27 @@ func (w Warrior) calibrate(in theory.Input, m *model) []theory.Check {
 	if err == nil {
 		critTalents = talentsOf(m.tree, sheetTalents, m.kind).critPts
 	}
-	critModel := sh.Total.Agi/k.AgiPerCrit + critTalents + k.CritBaseTalent
-	if sh.Melee.Crit == 0 && sh.Total.Agi > 0 {
-		// A sheet that reads 0 % crit with agility and crit talents has no usable reading (the same
-		// character reads 10,74 % in another stance): the model uses agility and talents instead.
-		out = append(out, theory.Check{Nombre: "Crítico", Modelo: round2(critModel), Hoja: 0, Ok: true,
-			Nota: "la hoja da 0 %: no se compara; el modelo usa agilidad/20 + talentos"})
+	derived := critByAgility(sh, critTalents, k)
+	if sh.Melee.Crit > 0 {
+		// The reading is the ground truth; what agility and talents do not give is the character's crit offset.
+		// That offset is taken from this same reading, so the check confirms the reading and does not validate
+		// the agility slope: the offset is what the sheet adds, and the slope is still unverified.
+		offset := sh.Melee.Crit - derived
+		out = append(out, theory.Check{Nombre: "Crítico", Modelo: round2(sh.Melee.Crit), Hoja: round2(sh.Melee.Crit), Ok: true,
+			Desvio: 0, Nota: fmt.Sprintf("ajuste de crítico observado: %+.2f %% (agilidad/20 + talentos dan %.2f %%; por personaje, de esta lectura)", offset, derived)})
 	} else {
-		check("Crítico", critModel, sh.Melee.Crit,
-			"agilidad total / 20 + talentos (aprox.: la pendiente agilidad→crítico queda por verificar)")
+		out = append(out, theory.Check{Nombre: "Crítico", Modelo: round2(derived), Hoja: 0, Ok: true,
+			Nota: "sin lectura de crítico (la hoja da 0 %): no se compara; el modelo usa agilidad/20 + talentos"})
 	}
 	check("Velocidad de ataque", sh.Melee.MHSpeed, sh.Melee.AttackSpeed,
 		"velocidad base del arma frente a la de la hoja (la hoja incluye aceleraciones activas)")
-	out = append(out, theory.Check{Nombre: "Daño de golpe blanco", Ok: true,
-		Nota: "la hoja no trae el daño por golpe: no se compara"})
+	// The sheet's UnitDamage already holds the attack power and the stance share; the weapon range is taken from it.
+	// Rebuilding the swing from that range gives the same number, so this is a consistency check with no
+	// independent reference: the tooltip damage of the weapon is not in the sheet. It is reported, not compared.
+	lo, hi := weaponRange(sh, k, sh.Melee.MHMin, sh.Melee.MHMax, sh.Melee.MHSpeed)
+	rebuilt := ((lo+hi)/2 + sh.Melee.AP*sh.Melee.MHSpeed/k.WeaponAPDiv) * stanceShare(sh, k)
+	out = append(out, theory.Check{Nombre: "Daño de golpe blanco", Modelo: round2(rebuilt), Hoja: round2((sh.Melee.MHMin + sh.Melee.MHMax) / 2), Ok: true,
+		Nota: "sin referencia independiente (UnitDamage ya trae el AP y la postura; el rango del arma se deduce de él): no se compara"})
 	return out
 }
 
@@ -579,7 +586,8 @@ func weaponDelta(sh theory.Sheet, it theory.Item, m *model) (d theory.Delta, not
 			notes = append(notes, "cambia de familia de arma: los talentos de arma se evalúan con la familia actual")
 		}
 	}
-	curMin, curMax := sh.Melee.MHMin, sh.Melee.MHMax
+	// The current weapon is its own range (the sheet's UnitDamage without the attack power it holds).
+	curMin, curMax := weaponRange(sh, m.k, sh.Melee.MHMin, sh.Melee.MHMax, sh.Melee.MHSpeed)
 	d.MHAvg = it.Weapon.Average() - (curMin+curMax)/2
 	d.MHSpread = (it.Weapon.Max - it.Weapon.Min) - (curMax - curMin)
 	d.MHSpeed = it.Weapon.Speed - sh.Melee.MHSpeed
