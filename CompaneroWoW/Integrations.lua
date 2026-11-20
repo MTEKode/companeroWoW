@@ -230,6 +230,7 @@ function ns.ExportIntegrationsNow()
     -- Un bloque no disponible no sustituye a uno disponible anterior (ns.PreferAvailable).
     c.training = ns.PreferAvailable(c.training, fit(safeBlock(trainingBlock)))
     c.profPlan = ns.PreferAvailable(c.profPlan, fit(safeBlock(profPlanBlock)))
+    if ns.Storage then ns.Storage.SaveState(c) end
     -- Va al final: los bloques anteriores pueden haber contado errores silenciados.
     c.health = { luaErrors = ns.errorCount or 0, lastError = ns.lastError }
     lastExportAt = nowSec()

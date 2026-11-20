@@ -67,7 +67,7 @@ func (s *Store) IngestMessage(msgType uint8, body []byte, charKey string, at tim
 
 // IngestSavedVars stores what the SavedVariables file holds that the app does not have yet: the
 // outbox (schema 2), the knowledge and maps blocks, the world block and each character's blocks
-// (schema 1 and the current-state blocks of schema 2). Everything is an upsert, so reading the
+// (schema 1, the current-state blocks of schema 2 and the state of schema 2.1: characters[k].state). Everything is an upsert, so reading the
 // same file again changes nothing.
 func (s *Store) IngestSavedVars(sv *bridge.SavedVars, at time.Time) (IngestStats, error) {
 	var stats IngestStats
@@ -189,6 +189,36 @@ func (in *ingester) characterBlocks(key string, ch map[string]any) error {
 	// The dungeons live in the heavy block of the addon and in the character table of schema 1.
 	if d := asObj(ch["dungeons"]); d != nil {
 		if err := in.dungeons(d); err != nil {
+			return err
+		}
+	}
+	// Schema 2.1: the current state of the character (characters[k].state, Storage.lua SaveState).
+	if st := asObj(ch["state"]); st != nil {
+		if err := in.characterState(key, st); err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
+	}
+	return nil
+}
+
+// characterState stores the current state of a character (schema 2.1, characters[k].state): each section
+// is the newest copy of its block, stamped with the time the addon saved it (state.at, or the time of the
+// import when there is none). Each section replaces the stored one only when it is newer (putSection), so
+// a message the channel delivered after the save still wins. The names are the readers' names (sheet,
+// equipment, gear, quests, location, training, profPlan, ...), as the channel's state writes them.
+func (in *ingester) characterState(charKey string, st map[string]any) error {
+	if charKey == "" {
+		return nil
+	}
+	at := in.at
+	if saved := int64(rawNum(st, "at")); saved > 0 {
+		at = time.Unix(saved, 0)
+	}
+	for name, v := range st {
+		if name == "at" || v == nil {
+			continue
+		}
+		if err := in.putSection(charKey, name, v, at, 0); err != nil {
 			return err
 		}
 	}

@@ -423,11 +423,12 @@ C.Pump(7100, 1e9)
 check("bandeja: la 101 se reenvia en la siguiente ventana", findMsg(messagesOf(1), 9, '"p":["quests",101]') ~= nil)
 eq("bandeja: tras dos ventanas cuenta 2", St.Items()[1].shares, 2)
 C.Stop()
--- Tercera ventana: al cumplir 3 envios el item se quita de la bandeja.
+-- Tercera ventana: el item sigue en la bandeja (ya no se quita por envios: solo caduca o cae por topes).
 C.Begin(7200)
 C.Pump(7200, 1e9)
 messagesOf(1)
-eq("bandeja: tras tres ventanas se quita (la bandeja queda vacia)", #St.Items(), 0)
+eq("bandeja: tras tres ventanas el item sigue (la bandeja no se vacia por envios)", #St.Items(), 2)
+eq("bandeja: tras tres ventanas cuenta 3", St.Items()[1].shares, 3)
 C.Stop()
 -- Un registro nuevo entra en la siguiente ventana (y solo el).
 St.Learn(9, { "npcs", 7 }, { npcID = 7, name = "Guardia" })
@@ -435,7 +436,7 @@ C.Begin(7300)
 C.Pump(7300, 1e9)
 local msgs4 = messagesOf(1)
 check("bandeja: el PNJ nuevo sale", findMsg(msgs4, 9, '"p":["npcs",7]') ~= nil)
-check("bandeja: la 101 ya no sale (se quito)", findMsg(msgs4, 9, '"p":["quests",101]') == nil)
+check("bandeja: la 101 sigue en la bandeja y vuelve a salir (sin tope de envios)", findMsg(msgs4, 9, '"p":["quests",101]') ~= nil)
 C.Stop()
 
 -- Combate: la activacion sigue sirviendo (solo se lee, no se recalcula nada del juego).

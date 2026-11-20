@@ -452,6 +452,27 @@ check("la hoja cabe en el limite del mensaje del canal",
     #J.Encode(sheetOf()) <= C.MAX_MESSAGE_BYTES)
 
 -- ---------------------------------------------------------------------------
+print("(m) Estado actual: la hoja se guarda en characters[k].state (sin tooltips, sin bandeja)")
+fresh()
+ns.ExportSheetNow()
+local c = CompaneroWoWDB.characters[KEY]
+check("estado: la hoja queda en characters[k].state.sheet", c and c.state and c.state.sheet ~= nil)
+check("estado: la hoja del estado no lleva exportedAt", c and c.state and c.state.sheet and c.state.sheet.exportedAt == nil)
+local withTip, withNumbers = 0, 0
+for _, sp in ipairs(c.state.sheet.spells or {}) do
+    if sp.tooltip ~= nil then withTip = withTip + 1 end
+    if sp.cost ~= nil or sp.cooldown ~= nil or sp.castTime ~= nil or sp.range ~= nil then withNumbers = withNumbers + 1 end
+end
+eq("estado: ningun hechizo lleva tooltip", withTip, 0)
+check("estado: los hechizos conservan sus numeros", withNumbers > 0, tostring(withNumbers))
+local sheetItems = 0
+for _, it in ipairs(ns.Storage.Items()) do
+    if it.msgType == 12 then sheetItems = sheetItems + 1 end
+end
+eq("bandeja: la hoja ya no va a la bandeja", sheetItems, 0)
+check("estado: cabe en el presupuesto del personaje", #ns.Storage.Serialize(c.state) <= ns.Storage.STATE_MAX_BYTES)
+
+-- ---------------------------------------------------------------------------
 print("(l) Reposo: no se serializa nada; la hoja solo sale en una activacion")
 fresh()
 ns.CollectSpells = function() return defaultSpells() end

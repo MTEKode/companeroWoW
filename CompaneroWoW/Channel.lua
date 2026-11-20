@@ -546,14 +546,23 @@ local function restoreSent()
 end
 
 -- Ventana nueva: se abre el numero de ventana, se descartan los items que no salieron en la ventana
--- anterior y se encolan todos los de la bandeja (el mas antiguo primero). Un item cuenta una ventana
--- solo cuando sale entero: lo que no cabe en la ventana no se cuenta.
+-- anterior y se encolan todos los de la bandeja. Primero los que nunca han salido (shares = 0), y
+-- despues los que menos veces han salido; a igualdad, el mas antiguo primero. La bandeja no se vacia,
+-- asi que sin este orden lo viejo ocuparia siempre la ventana y lo nuevo no llegaria nunca.
+-- Un item cuenta una ventana solo cuando sale entero: lo que no cabe en la ventana no se cuenta.
 local function startWindow()
     if not ns.Storage then return end
     S.win = ns.Storage.NewWindow()
     if S.sched then S.sched:dropItems() end
     S.queued = {}
-    for _, item in ipairs(ns.Storage.Items()) do enqueueItem(item) end
+    local items = {}
+    for i, item in ipairs(ns.Storage.Items()) do items[i] = item end
+    table.sort(items, function(a, b)
+        local sa, sb = a.shares or 0, b.shares or 0
+        if sa ~= sb then return sa < sb end
+        return a.seq < b.seq
+    end)
+    for _, item in ipairs(items) do enqueueItem(item) end
 end
 
 -- ---------------------------------------------------------------------------

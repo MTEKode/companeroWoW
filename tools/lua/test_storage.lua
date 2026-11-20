@@ -19,6 +19,10 @@ load("CompaneroWoW/Json.lua")
 load("CompaneroWoW/Storage.lua")
 
 local St = ns.Storage
+-- Reloj de prueba: CLOCK (0 por defecto: los items con hora 0 o anterior no caducan). Las pruebas de
+-- caducidad lo mueven.
+local CLOCK = 0
+ns.Now = function() return CLOCK end
 local failures = 0
 local function outln(s) io.write(s, "\n") end
 local function check(name, cond, detail)
@@ -191,22 +195,37 @@ eq("segunda carga: no migra otra vez (misma bandeja)", #St.Items(), n1)
 check("migracion: los bloques de estado salen de SavedVariables (characters pesa menos)", #St.Serialize(CompaneroWoWDB.characters) < charsBefore, string.format("%d -> %d", charsBefore, #St.Serialize(CompaneroWoWDB.characters)))
 
 -- ---------------------------------------------------------------------------
-outln("(d) Baja: un item sale de la bandeja tras 3 ventanas")
+outln("(d) Retencion: los items no salen de la bandeja por ventanas; caducan a los 7 dias")
 CompaneroWoWDB = { schema = 2, settings = {}, characters = {} }
 St.Sync()
 local seq = St.Learn(9, { "npcs", 77 }, { npcID = 77, name = "Dos veces" })
-local counted, dropped = St.MarkShared(seq, 1)
-check("ventana 1: cuenta", counted == true and dropped == false)
-counted, dropped = St.MarkShared(seq, 1)
-check("misma ventana otra vez: no cuenta", counted == false and dropped == false)
-counted, dropped = St.MarkShared(seq, 2)
-check("ventana 2: cuenta", counted == true and dropped == false)
+check("ventana 1: cuenta", St.MarkShared(seq, 1) == true)
+check("misma ventana otra vez: no cuenta", St.MarkShared(seq, 1) == false)
+check("ventana 2: cuenta", St.MarkShared(seq, 2) == true)
 eq("ventana 2: sigue en la bandeja", #St.Items(), 1)
-counted, dropped = St.MarkShared(seq, 3)
-check("ventana 3: cuenta y se quita", counted == true and dropped == true)
-eq("tras la tercera ventana: bandeja vacia", #St.Items(), 0)
+check("ventana 3: cuenta", St.MarkShared(seq, 3) == true)
+eq("tras la tercera ventana: sigue en la bandeja (sin tope de envios)", #St.Items(), 1)
+eq("tras la tercera ventana: cuenta 3", St.Items()[1].shares, 3)
 eq("seq desconocido: sin efecto", (St.MarkShared(999999, 1)), false)
-eq("tope de ventanas = 3", St.MAX_SHARES, 3)
+eq("sin tope de envios: MAX_SHARES ya no existe", St.MAX_SHARES, nil)
+-- Caducidad: un item de hace mas de 7 dias sale al siguiente alta; uno con hora 0 no caduca.
+CLOCK = 1000
+St.Learn(9, { "npcs", 78 }, { npcID = 78, name = "Viejo" }, 1000)
+St.Learn(9, { "npcs", 79 }, { npcID = 79, name = "Sin hora" }, 0)
+CLOCK = 1000 + St.OUTBOX_MAX_AGE + 1
+St.Learn(9, { "npcs", 80 }, { npcID = 80, name = "Nuevo" }, CLOCK)
+local ids = {}
+for _, it in ipairs(St.Items()) do ids[#ids + 1] = it.payload.p[2] end
+check("caducidad: el item de hace 7 dias y 1 s sale", (function()
+    for _, id in ipairs(ids) do if id == 78 then return false end end
+    return true
+end)(), table.concat(ids, ","))
+check("caducidad: el item sin hora no caduca", (function()
+    for _, id in ipairs(ids) do if id == 79 then return true end end
+    return false
+end)(), table.concat(ids, ","))
+check("caducidad: el item nuevo entra", ids[#ids] == 80)
+CLOCK = 0
 
 -- ---------------------------------------------------------------------------
 outln("(e) Topes: items y bytes (se descarta lo mas antiguo)")
@@ -403,6 +422,93 @@ local nMax, bMax = St.Stats()
 check("tope: como mucho 2000 items", nMax <= St.MAX_ITEMS, tostring(nMax))
 check("tope: como mucho 60 KB serializados de bandeja", bMax <= St.MAX_SV_BYTES, tostring(bMax))
 check("tope: lo mas nuevo se conserva", St.Items()[nMax].payload.p[2] == 7500)
+
+-- ---------------------------------------------------------------------------
+outln("(j) Estado actual (characters[k].state, esquema 2.1)")
+CompaneroWoWDB = { schema = 2, settings = {}, characters = {} }
+St.Sync()
+local function attachedChar(key, fields)
+    local c = {}
+    for k, v in pairs(fields) do c[k] = v end
+    CompaneroWoWDB.characters[key] = c
+    return St.AttachChar(c)
+end
+local sheetWithTooltips = {
+    level = 25, class = "WARRIOR", race = "HUMAN", exportedAt = 99, total = { str = 150, crit = 12.5 },
+    talents = { tabs = { { name = "Armas", points = 31 } } },
+    spells = {
+        { spellID = 100, name = "Golpe heroico", castTime = 0, cost = 15, powerType = "RAGE",
+          tooltip = string.rep("Texto largo del hechizo. ", 40) },
+        { spellID = 101, name = "Carga", cooldown = 15, range = 25, tooltip = "Carga al enemigo: 12 de dano." },
+    },
+}
+local ch = attachedChar("Tester-Realm", { character = { name = "Tester", level = 25 }, updatedAt = 1 })
+ch.sheet = sheetWithTooltips
+ch.equipment = { [1] = { slotID = 1, itemID = 2, link = "|Hitem:2|h|r", itemLevel = 40 } }
+ch.location = { mapID = 1429, zone = "Elwynn" }
+ch.training = { available = true, source = "WhatsTraining", spells = { 3 } }
+local wrote = St.SaveState(ch)
+check("estado: se escribe al cambiar", wrote == true)
+check("estado: va a SavedVariables (raw)", rawOf(ch, "state") ~= nil)
+check("estado: la hoja esta", ch.state.sheet ~= nil and ch.state.sheet.level == 25)
+check("estado: la hoja no lleva exportedAt", ch.state.sheet.exportedAt == nil)
+check("estado: los hechizos no llevan tooltip", ch.state.sheet.spells[1].tooltip == nil and ch.state.sheet.spells[2].tooltip == nil)
+eq("estado: los numeros del hechizo se quedan (coste)", ch.state.sheet.spells[1].cost, 15)
+eq("estado: los numeros del hechizo se quedan (enfriamiento)", ch.state.sheet.spells[2].cooldown, 15)
+eq("estado: el nombre del hechizo (espanol) se queda", ch.state.sheet.spells[2].name, "Carga")
+eq("estado: el equipo", ch.state.equipment[1].itemID, 2)
+eq("estado: la ubicacion", ch.state.location.zone, "Elwynn")
+eq("estado: entrenamiento", ch.state.training.spells[1], 3)
+check("estado: la hoja de memoria no cambia (copia)", sheetWithTooltips.spells[1].tooltip ~= nil)
+check("estado: sello de hora", type(ch.state.at) == "number")
+check("estado: sin cambios no escribe", St.SaveState(ch) == false)
+-- Una lectura vacia o ausente no borra lo guardado.
+ch.equipment = {}
+ch.location = nil
+St.SaveState(ch)
+eq("estado: equipo vacio no sustituye al anterior", ch.state.equipment[1].itemID, 2)
+eq("estado: ubicacion ausente conserva la anterior", ch.state.location.zone, "Elwynn")
+-- Presupuesto: un bloque enorme no se guarda entero (se quitan secciones y, al final, hechizos).
+ch.profPlan = { steps = {} }
+for i = 1, 400 do ch.profPlan.steps[i] = { text = string.rep("paso " .. i .. " ", 20) } end
+St.SaveState(ch)
+check("presupuesto: el estado cabe en STATE_MAX_BYTES", #St.Serialize(ch.state) <= St.STATE_MAX_BYTES, tostring(#St.Serialize(ch.state)))
+check("presupuesto: se quita antes el plan de profesion que la hoja", ch.state.profPlan == nil and ch.state.sheet ~= nil)
+-- Otros personajes: con el fichero por encima de FILE_TARGET_BYTES, su estado queda en el nucleo.
+local other = attachedChar("Otro-Realm", { character = { name = "Otro" }, updatedAt = 0 })
+other.sheet = sheetWithTooltips
+St.SaveState(other)
+check("otros: antes de recortar, el estado tiene la hoja completa", other.state.sheet.spells ~= nil)
+local savedTarget = St.FILE_TARGET_BYTES
+St.FILE_TARGET_BYTES = 1000
+ch.location = { mapID = 1429, zone = "Elwynn", x = 0.5 }
+St.SaveState(ch)
+St.FILE_TARGET_BYTES = savedTarget
+check("otros: el personaje recortado queda en el nucleo", other.state.sheet ~= nil and other.state.sheet.spells == nil and other.state.sheet.level == 25)
+check("otros: el personaje activo no se recorta", ch.state.sheet.spells ~= nil)
+-- Migracion desde schema 2 (sin schemaMinor): la hoja de la bandeja pasa al personaje activo.
+CompaneroWoWDB = { schema = 2, settings = {}, outbox = { seq = 3, win = 4, items = {
+    { seq = 1, msgType = 12, at = 500, shares = 1, payload = { oseq = 1, p = { "sheet", 1 }, v = { lv = 20, class = "WARRIOR", spells = { { spellID = 5, n = "Vieja", tooltip = "x" } } } } },
+    { seq = 2, msgType = 12, at = 900, shares = 1, payload = { oseq = 2, p = { "sheet", 2 }, v = { lv = 21, class = "WARRIOR", spells = { { spellID = 6, n = "Nueva" } } } } },
+    { seq = 3, msgType = 9, at = 901, shares = 0, payload = { oseq = 3, p = { "npcs", 7 }, v = { pn = 7, n = "Guardia" } } },
+} }, characters = {
+    Viejo = { character = { name = "Viejo" }, updatedAt = 100 },
+    Activo = { character = { name = "Activo" }, updatedAt = 800, loggedOutAt = 850 },
+} }
+St.Sync()
+local dbm = CompaneroWoWDB
+check("migracion 2.1: schemaMinor = 1", dbm.schemaMinor == 1)
+check("migracion 2.1: sin hojas en la bandeja", (function()
+    for _, it in ipairs(St.Items()) do if it.msgType == 12 then return false end end
+    return true
+end)())
+check("migracion 2.1: el conocimiento se queda en la bandeja", #St.Items() == 1 and St.Items()[1].msgType == 9)
+local act = dbm.characters.Activo
+check("migracion 2.1: la hoja mas reciente pasa al personaje activo", act.state ~= nil and act.state.sheet ~= nil and act.state.sheet.level == 21)
+check("migracion 2.1: la hoja pasa con claves largas", act.state.sheet.spells ~= nil and act.state.sheet.spells[1].name == "Nueva")
+check("migracion 2.1: el personaje antiguo no recibe hoja", dbm.characters.Viejo.state == nil)
+St.Sync()
+check("migracion 2.1: no se repite al volver a cargar", dbm.schemaMinor == 1 and act.state.sheet.level == 21)
 
 -- ---------------------------------------------------------------------------
 outln("(i) Estado y serializacion")

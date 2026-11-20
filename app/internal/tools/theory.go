@@ -276,7 +276,7 @@ func calcularDPS(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, err
 			}
-			out := map[string]any{"disponible": true, "resultado": rep}
+			out := map[string]any{"disponible": true, "resultado": localReport(rep, namesOf(in.Sheet))}
 			if msg := theory.Mismatch(rep.Calibracion); msg != "" {
 				out["calibracion"] = msg
 			}
@@ -402,7 +402,7 @@ func optimizarTalentos(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, err
 			}
-			out := map[string]any{"disponible": true, "resultado": talentPlanView(plan)}
+			out := map[string]any{"disponible": true, "resultado": talentPlanView(plan, namesOf(in.Sheet))}
 			if msg := theory.Mismatch(plan.Actual.Calibracion); msg != "" {
 				out["calibracion"] = msg
 			}
@@ -436,12 +436,14 @@ type talentPlanAnswer struct {
 	Supuestos      []string           `json:"supuestos"`
 }
 
-// talentPlanView keeps what the answer needs from a plan (see talentPlanTop).
-func talentPlanView(plan theory.TalentPlan) talentPlanAnswer {
+// talentPlanView keeps what the answer needs from a plan (see talentPlanTop). The talent names are the
+// player's (tr, see namesOf).
+func talentPlanView(plan theory.TalentPlan, tr func(string) string) talentPlanAnswer {
+	actual := localReport(plan.Actual, tr)
 	v := talentPlanAnswer{
 		Nivel:          plan.Nivel,
 		PuntosAñadidos: plan.Puntos,
-		TalentosActual: plan.Actual.Talentos,
+		TalentosActual: actual.Talentos,
 		DPSActual:      plan.Actual.DPS,
 		Evaluaciones:   plan.Evaluadas,
 		Supuestos:      plan.Supuestos,
@@ -450,8 +452,12 @@ func talentPlanView(plan theory.TalentPlan) talentPlanAnswer {
 		if i == talentPlanTop {
 			break
 		}
+		order := make([]string, len(opt.Orden))
+		for j, label := range opt.Orden {
+			order[j] = localLabel(label, tr)
+		}
 		v.Opciones = append(v.Opciones, talentOptionView{
-			Orden: opt.Orden, Arboles: opt.Arboles,
+			Orden: order, Arboles: opt.Arboles,
 			DPS: opt.Resultado.DPS, MuertesHora: opt.Resultado.KillsPerHour,
 		})
 	}
@@ -480,7 +486,7 @@ func optimizarRotacion(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, err
 			}
-			return jsonResult(map[string]any{"disponible": true, "resultado": plan})
+			return jsonResult(map[string]any{"disponible": true, "resultado": localRotation(plan, namesOf(in.Sheet))})
 		},
 	}
 }
@@ -526,9 +532,11 @@ func theoryRotationSummary(ctx context.Context, g *gamedata.Service, ws *websear
 	if len(plan.Opciones) == 0 {
 		return map[string]any{"disponible": false, "motivo": "ninguna prioridad de hechizos se pudo simular con tus hechizos"}
 	}
-	best := plan.Opciones[0]
+	tr := namesOf(in.Sheet)
+	local := localRotation(plan, tr)
+	best := local.Opciones[0]
 	var top []map[string]any
-	for _, o := range plan.Opciones {
+	for _, o := range local.Opciones {
 		top = append(top, map[string]any{
 			"prioridad": o.Prioridad, "parametros": o.Parametros,
 			"muertesPorHora": o.Resultado.KillsPerHour.Mean, "dps": o.Resultado.DPS.Mean,
