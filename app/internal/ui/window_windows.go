@@ -128,7 +128,7 @@ type window struct {
 	quitting    bool // UI thread only
 	busy        bool // UI thread only
 	notice      string
-	entries     []entry
+	doc         *convDoc // the conversation: its entries and where they sit in the rich edit
 	statusText  string
 	statusColor uint32
 
@@ -143,13 +143,9 @@ type window struct {
 	avoidOK bool
 
 	answers chan answer // answers from the ask goroutine
-	// The streamed answer in progress: its throttle (nil when none), and its entry in the
-	// conversation (streamIdx, -1 when none), where it starts (streamAt) and how many units it takes.
-	streamTh  *deltaThrottle
-	streamIdx int
-	streamAt  int
-	streamLen int
-	tips      chan assistant.Tip // tips from the tip goroutine
+	// The streamed answer in progress: its throttle (nil when none). Its entry is doc.stream.
+	streamTh *deltaThrottle
+	tips     chan assistant.Tip // tips from the tip goroutine
 
 	// byUser is true while the panel is open because the user opened it (hotkey, tray,
 	// balloon, menu); false when a tip opened it. The hide-in-combat rule reads it.
@@ -196,7 +192,7 @@ func Run(opts Options) error {
 		ctx:       ctx,
 		cancel:    cancel,
 		answers:   make(chan answer, 1),
-		streamIdx: -1,
+		doc:       newConvDoc(),
 		tips:      make(chan assistant.Tip, tipQueueSize),
 		cfg:       opts.Config,
 		cfgPath:   opts.ConfigPath,
@@ -1013,7 +1009,7 @@ func (w *window) markRead() {
 	}
 	w.badge.clear()
 	w.syncBadge()
-	off := unreadOffset(w.entries, first)
+	off := unreadOffset(w.doc.entries, first)
 	call(procSendMessageW, w.conv, emSetSel, uintptr(off), uintptr(off))
 	call(procSendMessageW, w.conv, emScrollCaret, 0, 0)
 }
@@ -1046,7 +1042,7 @@ func (w *window) deliverTip(tip assistant.Tip) {
 		w.show(false)
 	}
 	if route.Badge {
-		w.badge.add(len(w.entries) - 1)
+		w.badge.add(len(w.doc.entries) - 1)
 		w.syncBadge()
 	}
 	if route.Balloon {
@@ -1183,17 +1179,19 @@ func (w *window) loadHistory() {
 	msgs, err := w.opts.Backend.History(60)
 	if err != nil {
 		log.Printf("ui: historial: %v", err)
-		w.entries = append(w.entries, entry{Kind: entryInfo, Text: "No pude leer el historial: " + err.Error()})
+		w.doc.setEntries([]entry{{Kind: entryInfo, Text: "No pude leer el historial: " + err.Error()}})
 		return
 	}
+	var list []entry
 	for _, m := range toAnswerMsgs(msgs) {
-		w.entries = append(w.entries, entryFromMsg(m))
+		list = append(list, entryFromMsg(m))
 	}
-	for i := range w.entries {
-		if w.entries[i].Kind == entryAssistant {
-			w.entries[i].Question = questionFor(w.entries, i)
+	for i := range list {
+		if list[i].Kind == entryAssistant {
+			list[i].Question = questionFor(list, i)
 		}
 	}
+	w.doc.setEntries(list)
 	log.Printf("ui: historial cargado (%d mensajes)", len(msgs))
 }
 
@@ -1206,7 +1204,7 @@ func (w *window) clearHistory() {
 			return
 		}
 	}
-	w.entries = nil
+	w.doc.clear()
 	w.badge.clear()
 	w.syncBadge()
 	w.renderAll()
@@ -1215,8 +1213,8 @@ func (w *window) clearHistory() {
 
 // add appends an entry to the conversation.
 func (w *window) add(e entry) {
-	w.entries = append(w.entries, e)
-	w.appendRuns(entryRuns(e))
+	// The user's own question always comes into view; other entries follow only a caret at the end.
+	w.applyEdit(w.doc.add(e), e.Kind == entryUser)
 }
 
 // submit sends the question in the input. The answer comes back through msgAnswer.
@@ -1346,52 +1344,34 @@ func (w *window) streamPost(th *deltaThrottle, post bool, after time.Duration) {
 // beginStream adds the answer's entry, still empty; the streamed text fills it in.
 func (w *window) beginStream(th *deltaThrottle) {
 	w.streamTh = th
-	w.streamAt = w.textLength()
-	w.entries = append(w.entries, entry{Kind: entryAssistant, At: time.Now().Format("15:04")})
-	w.streamIdx = len(w.entries) - 1
-	w.streamLen = w.replaceRange(w.streamAt, 0, entryRuns(w.entries[w.streamIdx]))
+	w.applyEdit(w.doc.beginStream(time.Now().Format("15:04")), true)
 }
 
 // drainStream shows the text that the streamed answer has gained since the last repaint.
 func (w *window) drainStream() {
 	th := w.streamTh
-	if th == nil || w.streamIdx < 0 || w.streamIdx >= len(w.entries) {
+	if th == nil {
 		return
 	}
 	text, reset := th.take()
-	if text == "" && !reset {
-		return
+	if ed, ok := w.doc.streamText(text, reset); ok {
+		w.applyEdit(ed, false)
 	}
-	e := &w.entries[w.streamIdx]
-	if reset {
-		e.Text = ""
-	}
-	e.Text += text
-	w.streamLen = w.replaceRange(w.streamAt, w.streamLen, entryRuns(*e))
 }
 
 // finishStream replaces the streamed answer's entry with the final one. Without a stream in
 // progress, the answer is added as an entry.
 func (w *window) finishStream(e entry) {
-	idx := w.streamIdx
 	w.streamTh = nil
-	w.streamIdx = -1
-	if idx < 0 || idx >= len(w.entries) {
-		w.add(e)
-		return
-	}
-	w.entries[idx] = e
-	w.streamLen = w.replaceRange(w.streamAt, w.streamLen, entryRuns(e))
+	w.applyEdit(w.doc.finishStream(e), false)
 }
 
 // cancelStream turns the streamed answer's entry into a note that the question was cancelled.
 func (w *window) cancelStream() {
-	if w.streamIdx < 0 || w.streamIdx >= len(w.entries) {
-		w.streamTh = nil
-		w.streamIdx = -1
-		return
+	w.streamTh = nil
+	if ed, ok := w.doc.cancelStream(); ok {
+		w.applyEdit(ed, false)
 	}
-	w.finishStream(entry{Kind: entryInfo, Text: "(respuesta cancelada)"})
 }
 
 // drainAnswers shows the answer that the ask goroutine delivered.

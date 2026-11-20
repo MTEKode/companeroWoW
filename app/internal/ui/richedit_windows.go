@@ -4,6 +4,7 @@ package ui
 
 import (
 	"errors"
+	"log"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -13,6 +14,12 @@ import (
 
 // richEditClass is the window class of the RichEdit 5.0 control in Msftedit.dll.
 const richEditClass = "RICHEDIT50W"
+
+const (
+	emGetSel       = 0x00B0
+	emGetScrollPos = wmUser + 221 // POINT in pixels: where the view is
+	emSetScrollPos = wmUser + 222
+)
 
 // createConversation creates the read-only RichEdit that shows the conversation. It
 // reports link clicks (EN_LINK) to its parent.
@@ -30,8 +37,8 @@ func createConversation(parent, inst uintptr) (uintptr, error) {
 	return h, nil
 }
 
-// charFormat returns the character format for a run style.
-func (w *window) charFormat(s SpanStyle) charFormat2 {
+// charFormatFor returns the character format for a run style at the given DPI.
+func charFormatFor(s SpanStyle, dpi uint32) charFormat2 {
 	pt := 10.0
 	face := "Segoe UI"
 	color := colText
@@ -68,7 +75,7 @@ func (w *window) charFormat(s SpanStyle) charFormat2 {
 		CbSize:      uint32(unsafe.Sizeof(charFormat2{})),
 		DwMask:      cfmSize | cfmColor | cfmFace | cfmBackColor | cfmBold | cfmUnderline | cfmLink,
 		DwEffects:   effects,
-		YHeight:     int32(pt * 20 * float64(w.dpi) / 96),
+		YHeight:     int32(pt * 20 * float64(dpi) / 96),
 		CrTextColor: color,
 		CrBackColor: back,
 	}
@@ -76,76 +83,88 @@ func (w *window) charFormat(s SpanStyle) charFormat2 {
 	return cf
 }
 
-// appendRuns writes styled text at the end of the conversation and scrolls to it.
-func (w *window) appendRuns(runs []Span) {
+// applyEdit applies one edit of the conversation (see convDoc) to the rich edit. See applyEditTo
+// for follow.
+func (w *window) applyEdit(ed textEdit, follow bool) {
+	applyEditTo(w.conv, w.dpi, ed, follow)
+}
+
+// applyEditTo applies ed to the rich edit conv. The user keeps their place: a selection moves with
+// the text, and the view stays where it is. The view follows the text when follow is set (the
+// user's own question and its answer's start) or when the caret is at the end of the conversation.
+func applyEditTo(conv uintptr, dpi uint32, ed textEdit, follow bool) {
+	if conv == 0 {
+		return
+	}
+	sa, sb := selectionOf(conv)
+	follow = follow || (sa == sb && sa == ed.Total)
+	var scroll [2]int32
+	if !follow {
+		call(procSendMessageW, conv, emGetScrollPos, 0, ptrOf(&scroll[0]))
+	}
+	replaceUnits(conv, dpi, ed.Start, ed.End, ed.Runs)
+	if follow {
+		end := ed.Total - (ed.End - ed.Start) + ed.units()
+		setSel(conv, end, end)
+		call(procSendMessageW, conv, emScrollCaret, 0, 0)
+		return
+	}
+	setSel(conv, ed.adjust(sa), ed.adjust(sb))
+	call(procSendMessageW, conv, emSetScrollPos, 0, ptrOf(&scroll[0]))
+}
+
+// replaceUnits replaces the units [start, end) of the rich edit with runs, styled one by one. The
+// positions are the ones the rich edit counts for EM_SETSEL; the text it returns for its length
+// is not (it counts each line break twice), so the caller's positions are never read back from it.
+func replaceUnits(conv uintptr, dpi uint32, start, end int, runs []Span) {
+	if end > start {
+		setSel(conv, start, end)
+		empty := utf16Of("")
+		call(procSendMessageW, conv, emReplaceSel, 0, ptrOf(&empty[0]))
+		runtime.KeepAlive(empty)
+	}
+	cur := start
 	for _, r := range runs {
 		if r.Text == "" {
 			continue
 		}
-		end := call(procSendMessageW, w.conv, wmGetTextLength, 0, 0)
-		call(procSendMessageW, w.conv, emSetSel, end, end)
-		cf := w.charFormat(r.Style)
-		call(procSendMessageW, w.conv, emSetCharFormat, scfSelection, ptrOf(&cf))
+		setSel(conv, cur, cur)
+		cf := charFormatFor(r.Style, dpi)
+		call(procSendMessageW, conv, emSetCharFormat, scfSelection, ptrOf(&cf))
 		text := utf16Of(strings.ReplaceAll(r.Text, "\n", "\r"))
-		call(procSendMessageW, w.conv, emReplaceSel, 0, ptrOf(&text[0]))
+		call(procSendMessageW, conv, emReplaceSel, 0, ptrOf(&text[0]))
 		runtime.KeepAlive(text)
+		cur += runsUnits([]Span{r})
 	}
-	end := call(procSendMessageW, w.conv, wmGetTextLength, 0, 0)
-	call(procSendMessageW, w.conv, emSetSel, end, end)
-	call(procSendMessageW, w.conv, emScrollCaret, 0, 0)
+	if cur != start {
+		if got, _ := selectionOf(conv); got != cur {
+			log.Printf("ui: el texto del chat no cuadra con sus posiciones: %d, se esperaba %d", got, cur)
+		}
+	}
 }
 
 // renderAll rewrites the whole conversation from the entries, for example after the
-// history is cleared or the DPI changes. The streamed answer keeps its place in it.
+// history is cleared or the DPI changes. The streamed answer stays in progress.
 func (w *window) renderAll() {
 	if w.conv == 0 {
 		return
 	}
 	setWindowText(w.conv, "")
-	for i, e := range w.entries {
-		start := w.textLength()
-		w.appendRuns(entryRuns(e))
-		if i == w.streamIdx {
-			w.streamAt = start
-			w.streamLen = w.textLength() - start
-		}
-	}
+	replaceUnits(w.conv, w.dpi, 0, 0, w.doc.render())
+	setSel(w.conv, w.doc.total(), w.doc.total())
+	call(procSendMessageW, w.conv, emScrollCaret, 0, 0)
 }
 
-// textLength is the number of UTF-16 units in the conversation.
-func (w *window) textLength() int {
-	return int(call(procSendMessageW, w.conv, wmGetTextLength, 0, 0))
+// setSel selects the units [a, b) of the conversation; a == b is the caret.
+func setSel(conv uintptr, a, b int) {
+	call(procSendMessageW, conv, emSetSel, uintptr(a), uintptr(b))
 }
 
-// replaceRange replaces the n units at pos of the conversation with runs, and returns how many
-// units the runs take. The text after the range stays where it is, so an entry written after a
-// streamed answer (a tip) keeps its place. When the range ends the conversation, the view follows it.
-func (w *window) replaceRange(pos, n int, runs []Span) int {
-	atEnd := pos+n >= w.textLength()
-	call(procSendMessageW, w.conv, emSetSel, uintptr(pos), uintptr(pos+n))
-	empty := utf16Of("")
-	call(procSendMessageW, w.conv, emReplaceSel, 0, ptrOf(&empty[0]))
-	runtime.KeepAlive(empty)
-	cur := pos
-	for _, r := range runs {
-		if r.Text == "" {
-			continue
-		}
-		call(procSendMessageW, w.conv, emSetSel, uintptr(cur), uintptr(cur))
-		cf := w.charFormat(r.Style)
-		call(procSendMessageW, w.conv, emSetCharFormat, scfSelection, ptrOf(&cf))
-		text := utf16Of(strings.ReplaceAll(r.Text, "\n", "\r"))
-		before := w.textLength()
-		call(procSendMessageW, w.conv, emReplaceSel, 0, ptrOf(&text[0]))
-		runtime.KeepAlive(text)
-		cur += w.textLength() - before
-	}
-	if atEnd {
-		end := w.textLength()
-		call(procSendMessageW, w.conv, emSetSel, uintptr(end), uintptr(end))
-		call(procSendMessageW, w.conv, emScrollCaret, 0, 0)
-	}
-	return cur - pos
+// selectionOf returns the selection of the conversation, in the units setSel uses.
+func selectionOf(conv uintptr) (int, int) {
+	var sel [2]uint32
+	call(procSendMessageW, conv, emGetSel, ptrOf(&sel[0]), ptrOf(&sel[1]))
+	return int(sel[0]), int(sel[1])
 }
 
 // linkText returns the text of a link range, which is the URL itself.
