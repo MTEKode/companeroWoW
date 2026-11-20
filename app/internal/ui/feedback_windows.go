@@ -16,12 +16,12 @@ func (w *window) paintFeedback(hdc uintptr, l Layout) {
 	if w.feedback == nil || w.reasonFor >= 0 {
 		return
 	}
-	idx := lastRateable(w.entries)
+	idx := lastRateable(w.doc.entries)
 	if idx < 0 {
 		return
 	}
 	lab := feedbackLabelRect(l, w.scale)
-	if e := w.entries[idx]; e.Rating != 0 {
+	if e := w.doc.entries[idx]; e.Rating != 0 {
 		if lab.W > 0 {
 			drawText(hdc, "¡Gracias!", lab, dtRight|dtVCenter|dtSingleLine|dtNoPrefix, w.fonts.small, colMeta)
 		}
@@ -51,7 +51,7 @@ func (w *window) feedbackClick(x, y, cw, ch int) bool {
 	if !l.Feedback.Contains(x, y) {
 		return false
 	}
-	idx := lastRateable(w.entries)
+	idx := lastRateable(w.doc.entries)
 	if idx < 0 {
 		return false
 	}
@@ -68,7 +68,7 @@ func (w *window) feedbackClick(x, y, cw, ch int) bool {
 // rate stores a 👍 or 👎 on the answer at idx. Each answer is rated once. A 👎 opens the
 // one-line reason box.
 func (w *window) rate(idx, rating int) {
-	e := &w.entries[idx]
+	e := &w.doc.entries[idx]
 	if e.Rating != 0 || w.feedback == nil {
 		return
 	}
@@ -107,12 +107,12 @@ func (w *window) openReason(idx int) {
 
 // saveReason stores the typed reason (if any) for the 👎 being explained and closes the box.
 func (w *window) saveReason() {
-	if w.reasonFor < 0 || w.reasonFor >= len(w.entries) {
+	if w.reasonFor < 0 || w.reasonFor >= len(w.doc.entries) {
 		w.closeReason()
 		return
 	}
 	text := getWindowText(w.reasonEdit)
-	e := w.entries[w.reasonFor]
+	e := w.doc.entries[w.reasonFor]
 	if text != "" && e.FeedbackID != 0 && w.feedback != nil {
 		if err := w.feedback.SetFeedbackReason(e.FeedbackID, text); err != nil {
 			log.Printf("ui: guardar el motivo: %v", err)
