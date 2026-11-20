@@ -297,11 +297,13 @@ func TestWeaponDeltaMovesTheAverageAndTheSpread(t *testing.T) {
 	if why != "" {
 		t.Fatalf("no debería ser no comparable: %s", why)
 	}
-	curAvg := (sh.Melee.MHMin + sh.Melee.MHMax) / 2
+	// The current weapon is its own range: UnitDamage without the attack power it holds (184 × 3.5 / 14 = 46 of attack power, so 90 − 46 = 44 and 108 − 46 = 62).
+	curLo, curHi := weaponRange(sh, m.k, sh.Melee.MHMin, sh.Melee.MHMax, sh.Melee.MHSpeed)
+	curAvg := (curLo + curHi) / 2
 	if math.Abs(d.MHAvg-(60-curAvg)) > 1e-9 {
 		t.Errorf("el cambio de daño medio es %.2f, debe ser %.2f", d.MHAvg, 60-curAvg)
 	}
-	if math.Abs(d.MHSpread-(20-(sh.Melee.MHMax-sh.Melee.MHMin))) > 1e-9 {
+	if math.Abs(d.MHSpread-(20-(curHi-curLo))) > 1e-9 {
 		t.Errorf("el cambio de amplitud es %.2f", d.MHSpread)
 	}
 	// The model swings the candidate's own range: 50 to 70, average 60.

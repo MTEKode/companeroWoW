@@ -1,0 +1,873 @@
+{
+ "armor": 32,
+ "armorEffective": 835,
+ "base": {
+  "agi": 45,
+  "int": 27,
+  "spi": 36,
+  "sta": 68,
+  "str": 61
+ },
+ "buffs": [
+  6192,
+  402975,
+  460939
+ ],
+ "class": "WARRIOR",
+ "defense": {
+  "block": 4.96,
+  "blockValue": 2,
+  "dodge": 5.59,
+  "parry": 6.96
+ },
+ "exportedAt": 1795045884,
+ "healthMax": 1024,
+ "level": 22,
+ "melee": {
+  "ap": 201,
+  "apBase": 168,
+  "apNeg": 0,
+  "apPos": 33,
+  "attackSpeed": 2.9,
+  "crit": 9.63,
+  "expertise": 0,
+  "hit": 0,
+  "mhMax": 108.8142852783203,
+  "mhMin": 83.81428527832031,
+  "mhSpeed": 2.9
+ },
+ "powerMax": 100,
+ "powerType": "RAGE",
+ "race": "Skyborne",
+ "ranged": {
+  "ap": 92,
+  "crit": 1.26,
+  "max": 24.42857360839844,
+  "min": 14.42857360839844,
+  "speed": 2.13
+ },
+ "regen": {
+  "manaBase": 0,
+  "manaCasting": 0
+ },
+ "resist": {
+  "arcane": 0,
+  "fire": 0,
+  "frost": 0,
+  "holy": 0,
+  "nature": 0,
+  "shadow": 0
+ },
+ "spell": {
+  "crit": 0,
+  "haste": 0,
+  "hit": 0,
+  "power": 7
+ },
+ "spells": [
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Atacar",
+   "range": 0,
+   "rank": "",
+   "spellID": 6603
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Caminar sobre el aire",
+   "range": 0,
+   "rank": "Racial",
+   "spellID": 1259416,
+   "tooltip": "Planeas hacia abajo en el aire durante 10 s. Mantienes el control de la dirección mientras te desplazas."
+  },
+  {
+   "castTime": 0.85,
+   "known": true,
+   "name": "Disparar arco",
+   "range": 30,
+   "rank": "",
+   "spellID": 2480,
+   "tooltip": "Alcance de 8-30 m 0,85 s para lanzar"
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Lanzar",
+   "range": 30,
+   "rank": "",
+   "spellID": 2764,
+   "tooltip": "Lanza un arma arrojadiza al objetivo."
+  },
+  {
+   "castTime": 0.43,
+   "known": true,
+   "name": "Read Leyline",
+   "range": 0,
+   "rank": "Racial",
+   "spellID": 1259705,
+   "tooltip": "Intentas obtener poder de una línea Ley cercana, lo que aumenta un 50% la regeneración de salud y de maná durante 15 s. Si hay una línea Ley cerca, obtienes En armonía durante 1 |4h:h; y el efecto de esta facultad aumenta un 100%."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Bendición del viento",
+   "range": 0,
+   "rank": "Pasiva racial",
+   "spellID": 1259710,
+   "tooltip": "Aumenta un 2% la celeridad con hechizos, cuerpo a cuerpo y a distancia."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Bloqueo",
+   "range": 0,
+   "rank": "Pasivo",
+   "spellID": 107,
+   "tooltip": "Da una probabilidad de bloquear al enemigo en ataque cuerpo a cuerpo o a distancia."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Competencia con armaduras",
+   "range": 0,
+   "rank": "",
+   "spellID": 1293712,
+   "tooltip": "Se te da bien usar los siguientes tipos de armaduras: Tela Cuero Mallas"
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Doble empuñadura",
+   "range": 0,
+   "rank": "Pasivo",
+   "spellID": 674,
+   "tooltip": "Permite que las armas de una mano y las armas de mano izquierda se equipen como armas de mano izquierda."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Esquivar",
+   "range": 0,
+   "rank": "Pasivo",
+   "spellID": 81,
+   "tooltip": "Da una probabilidad de esquivar al enemigo en ataque cuerpo a cuerpo."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Idiomas",
+   "range": 0,
+   "rank": "",
+   "spellID": 1293657,
+   "tooltip": "Dominas los siguientes idiomas: Lengua común Darnassiano"
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Parar",
+   "range": 0,
+   "rank": "Pasivo",
+   "spellID": 3127,
+   "tooltip": "Da una probabilidad de parar al enemigo en ataque cuerpo a cuerpo."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Perspicacia elemental",
+   "range": 0,
+   "rank": "Pasiva racial",
+   "spellID": 1259707,
+   "tooltip": "Daño infligido contra elementales aumentado un 5%."
+  },
+  {
+   "castTime": 0,
+   "cost": 5,
+   "known": true,
+   "name": "Abrumar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 7384,
+   "tooltip": "Arrolla al enemigo instantáneamente infligiéndole daño de arma más 7 p. Solo se puede utilizar después de que el objetivo esquive. Abrumar no se puede bloquear, ni esquivar ni parar."
+  },
+  {
+   "castTime": 0,
+   "cost": 0,
+   "known": true,
+   "name": "Actitud de batalla",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 2457,
+   "tooltip": "Actitud de combate equilibrada."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Ataque de la victoria",
+   "range": 0,
+   "rank": "",
+   "spellID": 402927,
+   "tooltip": "Ataca al instante al objetivo para infligirle 31 p. de daño y sanarte un 10% de tu salud máxima. Solo se puede usar durante 20 s tras matar a un enemigo no trivial."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Desgarrar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 3",
+   "spellID": 6547,
+   "tooltip": "Hiere al objetivo y lo hace sangrar con 60 p. de daño durante 15 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 0,
+   "known": true,
+   "name": "Embestir",
+   "powerType": "RAGE",
+   "range": 25,
+   "rank": "Rango 1",
+   "spellID": 100,
+   "tooltip": "Carga contra un enemigo, genera 9 p. de ira y lo aturde durante 1 s. No se puede usar en combate."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Falsa arremetida",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 694,
+   "tooltip": "Un ataque burlón que causa 10 p. de daño, una cantidad moderada de amenaza y obliga al objetivo a centrar sus ataques en ti durante 6 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 15,
+   "known": true,
+   "name": "Golpe heroico",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 3",
+   "spellID": 285,
+   "tooltip": "Un ataque contundente que aumenta el daño cuerpo a cuerpo en 20 p. y causa gran cantidad de amenaza."
+  },
+  {
+   "castTime": 0,
+   "cost": 0,
+   "known": true,
+   "name": "Represalias",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 20230,
+   "tooltip": "Contraataca instantáneamente a cualquier enemigo que te ataque cuerpo a cuerpo durante 15 s. No se puede contraatacar si el ataque cuerpo a cuerpo llega por la espalda. Un máximo de 30 ataques provocarán represalias."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Seccionar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 1715,
+   "tooltip": "Mutila al enemigo y le inflige 7 p. de daño y reduce su movimiento en un 40% durante 15 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 20,
+   "known": true,
+   "name": "Trueno",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 2",
+   "spellID": 8198,
+   "tooltip": "Golpea a los enemigos cercanos con truenos, lo que aumenta el tiempo entre sus ataques un 20% durante 14 s y les inflige 23 p. de daño. Afectará a un máximo de 4 objetivos."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Maestría táctica",
+   "range": 0,
+   "rank": "",
+   "spellID": 1310185,
+   "tooltip": "Retienes hasta 25 p. de ira cuando cambias de actitud."
+  },
+  {
+   "castTime": 1.5,
+   "cost": 15,
+   "known": true,
+   "name": "Embate",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 1240193,
+   "tooltip": "Embiste al adversario y le inflige el daño de arma más 4 p."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Grito de guerra",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 3",
+   "spellID": 6192,
+   "tooltip": "El guerrero grita y aumenta en 33 p. el poder de ataque de los miembros del grupo o de la banda en un radio de 20 m. Dura 3 min."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Grito desmoralizador",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 1160,
+   "tooltip": "Reduce el poder de ataque cuerpo a cuerpo de todos los enemigos que estén a 10 metros en 60 p. durante 45 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 20,
+   "known": true,
+   "name": "Mellar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 845,
+   "tooltip": "Un barrido radical que inflige tu daño con arma más 7 p. de daño al objetivo y a un segundo enemigo cercano."
+  },
+  {
+   "castTime": 0,
+   "cost": 0,
+   "known": true,
+   "name": "Actitud defensiva",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 71,
+   "tooltip": "Una actitud de combate defensiva. Reduce el daño recibido un 10% y el daño infligido un 10%. Aumenta toda la amenaza generada un 80%."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Azote de escudo",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 72,
+   "tooltip": "Azota al objetivo con tu escudo, infligiendo 6 p. de daño. También interrumpe el lanzamiento de hechizos y evita que se puedan lanzar hechizos de la misma escuela durante 6 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 10,
+   "known": true,
+   "name": "Bloquear con escudo",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 2565,
+   "tooltip": "Aumenta la probabilidad de bloquear en un 75% durante 7 s pero solo bloqueará 2 ataques."
+  },
+  {
+   "castTime": 0,
+   "cost": 20,
+   "known": true,
+   "name": "Desactivar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 676,
+   "tooltip": "Desactiva el arma del enemigo durante 10 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 15,
+   "known": true,
+   "name": "Hender armadura",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 7386,
+   "tooltip": "Hiende el armadura del objetivo reduciendo 90 p. por Hender armadura y causando una gran cantidad de amenaza. Se puede usar un máximo de 5 veces. Dura 30 s."
+  },
+  {
+   "castTime": 0,
+   "cost": 0,
+   "known": true,
+   "name": "Irritar",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "",
+   "spellID": 355,
+   "tooltip": "Irrita al objetivo para que te ataque, pero no tiene efecto si ya te está atacando."
+  },
+  {
+   "castTime": 0,
+   "cost": 5,
+   "known": true,
+   "name": "Revancha",
+   "powerType": "RAGE",
+   "range": 0,
+   "rank": "Rango 1",
+   "spellID": 6572,
+   "tooltip": "Contraatacas al instante para infligir entre 58 y 62 p. de daño a un enemigo y generar una gran cantidad de amenaza. Revancha tiene que aplicarse tras bloquear, esquivar o parar."
+  },
+  {
+   "castTime": 0,
+   "known": true,
+   "name": "Sanguinario",
+   "range": 0,
+   "rank": "",
+   "spellID": 2687,
+   "tooltip": "Genera 10 p. de ira a costa de salud y después genera 10 p. de ira extra durante 10 s."
+  }
+ ],
+ "stance": "Actitud de batalla",
+ "talents": {
+  "tabs": [
+   {
+    "points": 13,
+    "talents": [
+     {
+      "col": 8,
+      "maxRank": 2,
+      "name": "Intercepción mejorada",
+      "rank": 0,
+      "row": 5,
+      "spellID": 20504
+     },
+     {
+      "col": 6,
+      "maxRank": 1,
+      "name": "Deseo de la Muerte",
+      "rank": 0,
+      "row": 5,
+      "spellID": 12328
+     },
+     {
+      "col": 7,
+      "maxRank": 3,
+      "name": "Aluvión",
+      "rank": 0,
+      "row": 6,
+      "spellID": 12319
+     },
+     {
+      "col": 6,
+      "maxRank": 1,
+      "name": "Sed de sangre",
+      "rank": 0,
+      "row": 7,
+      "spellID": 23881
+     },
+     {
+      "col": 8,
+      "maxRank": 5,
+      "name": "Enfurecer",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12317
+     },
+     {
+      "col": 8,
+      "maxRank": 2,
+      "name": "Ejecutar mejorado",
+      "rank": 0,
+      "row": 4,
+      "spellID": 20502
+     },
+     {
+      "col": 5,
+      "maxRank": 5,
+      "name": "Especialización en doble empuñadura",
+      "rank": 0,
+      "row": 4,
+      "spellID": 23584
+     },
+     {
+      "col": 7,
+      "maxRank": 3,
+      "name": "Manía sangrienta",
+      "rank": 0,
+      "row": 3,
+      "spellID": 16487
+     },
+     {
+      "col": 6,
+      "maxRank": 1,
+      "name": "Aullido penetrante",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12323
+     },
+     {
+      "col": 7,
+      "maxRank": 5,
+      "name": "Cólera desbocada",
+      "rank": 0,
+      "row": 2,
+      "spellID": 12322
+     },
+     {
+      "col": 6,
+      "maxRank": 5,
+      "name": "Voz retumbante",
+      "rank": 0,
+      "row": 1,
+      "spellID": 12321
+     },
+     {
+      "col": 7,
+      "maxRank": 5,
+      "name": "Crueldad",
+      "rank": 4,
+      "row": 1,
+      "spellID": 12320
+     },
+     {
+      "col": 2,
+      "maxRank": 1,
+      "name": "Golpe mortal",
+      "rank": 0,
+      "row": 7,
+      "spellID": 12294
+     },
+     {
+      "col": 3,
+      "maxRank": 3,
+      "name": "Seccionar mejorado",
+      "rank": 0,
+      "row": 6,
+      "spellID": 12289
+     },
+     {
+      "col": 3,
+      "maxRank": 5,
+      "name": "Maestro de armas",
+      "rank": 0,
+      "row": 5,
+      "spellID": 1290261
+     },
+     {
+      "col": 2,
+      "maxRank": 1,
+      "name": "Golpes de barrido",
+      "rank": 0,
+      "row": 5,
+      "spellID": 12292
+     },
+     {
+      "col": 3,
+      "maxRank": 2,
+      "name": "Clavar",
+      "rank": 0,
+      "row": 4,
+      "spellID": 16493
+     },
+     {
+      "col": 2,
+      "maxRank": 3,
+      "name": "Especialización en armas de dos manos",
+      "rank": 0,
+      "row": 4,
+      "spellID": 12163
+     },
+     {
+      "col": 1,
+      "maxRank": 1,
+      "name": "Lanzazo",
+      "rank": 0,
+      "row": 4,
+      "spellID": 1310222
+     },
+     {
+      "col": 3,
+      "maxRank": 3,
+      "name": "Heridas profundas",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12834
+     },
+     {
+      "col": 2,
+      "maxRank": 1,
+      "name": "Control de furia",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12296
+     },
+     {
+      "col": 4,
+      "maxRank": 2,
+      "name": "Abrumar mejorado",
+      "rank": 2,
+      "row": 2,
+      "spellID": 12290
+     },
+     {
+      "col": 5,
+      "maxRank": 3,
+      "name": "Precisión furiosa",
+      "rank": 0,
+      "row": 3,
+      "spellID": 1323963
+     },
+     {
+      "col": 2,
+      "maxRank": 3,
+      "name": "Maestría táctica mejorada",
+      "rank": 2,
+      "row": 2,
+      "spellID": 12295
+     },
+     {
+      "col": 1,
+      "maxRank": 2,
+      "name": "Embestir mejorado",
+      "rank": 0,
+      "row": 2,
+      "spellID": 12285
+     },
+     {
+      "col": 3,
+      "maxRank": 3,
+      "name": "Desgarrar mejorado",
+      "rank": 3,
+      "row": 1,
+      "spellID": 12286
+     },
+     {
+      "col": 2,
+      "maxRank": 5,
+      "name": "Desvío",
+      "rank": 2,
+      "row": 1,
+      "spellID": 16462
+     },
+     {
+      "col": 1,
+      "maxRank": 3,
+      "name": "Golpe heroico mejorado",
+      "rank": 0,
+      "row": 1,
+      "spellID": 12282
+     },
+     {
+      "col": 10,
+      "maxRank": 1,
+      "name": "Embate con escudo",
+      "rank": 0,
+      "row": 7,
+      "spellID": 23922
+     },
+     {
+      "col": 11,
+      "maxRank": 3,
+      "name": "Ira enfocada",
+      "rank": 0,
+      "row": 5,
+      "spellID": 29787
+     },
+     {
+      "col": 11,
+      "maxRank": 5,
+      "name": "Bastión",
+      "rank": 0,
+      "row": 6,
+      "spellID": 16538
+     },
+     {
+      "col": 11,
+      "maxRank": 2,
+      "name": "Azote de escudo mejorado",
+      "rank": 0,
+      "row": 4,
+      "spellID": 12311
+     },
+     {
+      "col": 9,
+      "maxRank": 2,
+      "name": "Muro de escudo mejorado",
+      "rank": 0,
+      "row": 5,
+      "spellID": 12312
+     },
+     {
+      "col": 10,
+      "maxRank": 1,
+      "name": "Golpe de concusión",
+      "rank": 0,
+      "row": 5,
+      "spellID": 12809
+     },
+     {
+      "col": 10,
+      "maxRank": 1,
+      "name": "Vanguardia",
+      "rank": 0,
+      "row": 4,
+      "spellID": 1310317
+     },
+     {
+      "col": 11,
+      "maxRank": 3,
+      "name": "Desarmar mejorado",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12313
+     },
+     {
+      "col": 9,
+      "maxRank": 3,
+      "name": "Hender armadura mejorado",
+      "rank": 0,
+      "row": 4,
+      "spellID": 12308
+     },
+     {
+      "col": 11,
+      "maxRank": 3,
+      "name": "Revancha mejorada",
+      "rank": 0,
+      "row": 2,
+      "spellID": 12797
+     },
+     {
+      "col": 9,
+      "maxRank": 1,
+      "name": "Última posición",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12975
+     },
+     {
+      "col": 10,
+      "maxRank": 2,
+      "name": "Maestro de defensa",
+      "rank": 0,
+      "row": 3,
+      "spellID": 1310316
+     },
+     {
+      "col": 12,
+      "maxRank": 3,
+      "name": "Trueno mejorado",
+      "rank": 0,
+      "row": 2,
+      "spellID": 12287
+     },
+     {
+      "col": 9,
+      "maxRank": 2,
+      "name": "Sanguinario mejorado",
+      "rank": 0,
+      "row": 1,
+      "spellID": 12301
+     },
+     {
+      "col": 9,
+      "maxRank": 5,
+      "name": "Anticipación",
+      "rank": 0,
+      "row": 2,
+      "spellID": 12297
+     },
+     {
+      "col": 10,
+      "maxRank": 5,
+      "name": "Especialización en escudos",
+      "rank": 0,
+      "row": 1,
+      "spellID": 12298
+     },
+     {
+      "col": 5,
+      "maxRank": 2,
+      "name": "Torbellino mejorado",
+      "rank": 0,
+      "row": 6,
+      "spellID": 1310315
+     },
+     {
+      "col": 5,
+      "maxRank": 2,
+      "name": "Ira rabiosa mejorada",
+      "rank": 0,
+      "row": 5,
+      "spellID": 20500
+     },
+     {
+      "col": 1,
+      "maxRank": 2,
+      "name": "Fragor de la sangre",
+      "rank": 0,
+      "row": 5,
+      "spellID": 1289682
+     },
+     {
+      "col": 12,
+      "maxRank": 3,
+      "name": "Desafío",
+      "rank": 0,
+      "row": 3,
+      "spellID": 12792
+     },
+     {
+      "col": 6,
+      "maxRank": 5,
+      "name": "Ira persistente",
+      "rank": 0,
+      "row": 2,
+      "spellID": 1323964
+     },
+     {
+      "col": 1,
+      "maxRank": 2,
+      "name": "Embate mejorado",
+      "rank": 0,
+      "row": 6,
+      "spellID": 12862
+     },
+     {
+      "col": 7,
+      "maxRank": 2,
+      "name": "Bebedor de entrañas",
+      "rank": 0,
+      "row": 5,
+      "spellID": 1323967
+     },
+     {
+      "col": 11,
+      "maxRank": 5,
+      "name": "Voluntad férrea",
+      "rank": 0,
+      "row": 1,
+      "spellID": 12962
+     },
+     {
+      "col": 6,
+      "maxRank": 1,
+      "name": "Golpes temerarios",
+      "rank": 0,
+      "row": 4,
+      "spellID": 1329555
+     }
+    ]
+   }
+  ]
+ },
+ "total": {
+  "agi": 45,
+  "int": 27,
+  "spi": 36,
+  "sta": 68,
+  "str": 61
+ }
+}

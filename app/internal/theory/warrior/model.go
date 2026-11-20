@@ -267,7 +267,16 @@ func compileRanks(in theory.Input, tree *Tree, k Constants, buildRanks []int) (*
 
 	agi := sh.Total.Agi + d.Agi
 	m.ap = sh.Melee.AP + d.AP + k.APPerStrength*d.Str
-	m.crit = sh.Melee.Crit + d.Crit + dCrit + (agi-sh.Total.Agi)/k.AgiPerCrit + k.CritBaseTalent
+	// Crit: the sheet's own reading is the ground truth of the current state. Agility and the crit talents
+	// are modelled as deltas on it; what the reading holds beyond them is the character's crit offset (see
+	// critOffset, printed by calibrate). A reading of 0 with agility is not a reading: the agility and talents
+	// give the crit then, with no offset.
+	crit := sh.Melee.Crit
+	if crit <= 0 && sh.Total.Agi > 0 {
+		crit = critByAgility(sh, sheetFX.critPts, k)
+		m.notes = append(m.notes, "La hoja marca 0 % de crítico con agilidad: el modelo usa agilidad/20 + talentos de crítico (no se usa el 0 de la hoja).")
+	}
+	m.crit = crit + d.Crit + dCrit + (agi-sh.Total.Agi)/k.AgiPerCrit
 	m.hit = sh.Melee.Hit + d.Hit
 	m.skill = sh.Melee.MHSkill + d.Skill
 	if m.skill <= 0 {
@@ -275,12 +284,14 @@ func compileRanks(in theory.Input, tree *Tree, k Constants, buildRanks []int) (*
 	}
 	m.expertise = sh.Melee.Expertise + d.Expertise
 	// The average moves by MHAvg (both ends move by it) and the range by MHSpread (split between the ends).
-	m.mhMin = sh.Melee.MHMin + d.MHAvg - d.MHSpread/2
-	m.mhMax = sh.Melee.MHMax + d.MHAvg + d.MHSpread/2
+	mhLo, mhHi := weaponRange(sh, k, sh.Melee.MHMin, sh.Melee.MHMax, sh.Melee.MHSpeed)
+	m.mhMin = mhLo + d.MHAvg - d.MHSpread/2
+	m.mhMax = mhHi + d.MHAvg + d.MHSpread/2
 	m.mhSpeed = sh.Melee.MHSpeed + d.MHSpeed
 	if sh.Melee.OHMin != nil && sh.Melee.OHMax != nil && sh.Melee.OHSpeed != nil && *sh.Melee.OHSpeed > 0 {
 		m.ohOn = true
-		m.ohMin, m.ohMax, m.ohSpeed = *sh.Melee.OHMin, *sh.Melee.OHMax, *sh.Melee.OHSpeed
+		m.ohMin, m.ohMax = weaponRange(sh, k, *sh.Melee.OHMin, *sh.Melee.OHMax, *sh.Melee.OHSpeed)
+		m.ohSpeed = *sh.Melee.OHSpeed
 	}
 	m.dodge = sh.Defense.Dodge + d.Dodge
 	m.parry = sh.Defense.Parry + d.Parry + dParry
@@ -321,6 +332,29 @@ func compileRanks(in theory.Input, tree *Tree, k Constants, buildRanks []int) (*
 		m.fixedMob = true
 	}
 	return m, nil
+}
+
+// stanceShare is the damage share the sheet's stance takes off: Defensive Stance takes 10 % (DefensiveShare).
+func stanceShare(sh theory.Sheet, k Constants) float64 {
+	if strings.Contains(strings.ToLower(sh.Stance), "defens") {
+		return k.DefensiveShare
+	}
+	return 1
+}
+
+// weaponRange is the weapon's own damage range from the sheet's UnitDamage values. UnitDamage is the weapon
+// plus AP/14 × speed, times the stance share (the sheet's two defensive snapshots fit this: they differ by
+// 33 AP and move by 33 × 0.9 × speed/14). The attack power is taken out here, and the simulation adds the
+// model's own attack power back, so attack power is counted once.
+func weaponRange(sh theory.Sheet, k Constants, udMin, udMax, speed float64) (lo, hi float64) {
+	share := stanceShare(sh, k)
+	ap := sh.Melee.AP * speed / k.WeaponAPDiv
+	return udMin/share - ap, udMax/share - ap
+}
+
+// critByAgility is the crit that agility and the crit talents give: agility / AgiPerCrit plus the talent points.
+func critByAgility(sh theory.Sheet, critTalents float64, k Constants) float64 {
+	return sh.Total.Agi/k.AgiPerCrit + critTalents
 }
 
 // sameRanks reports whether two rank sets are the same build.

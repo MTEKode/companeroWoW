@@ -23,9 +23,10 @@ type Constants struct {
 	Mob theory.MobTables
 
 	// Stats (warrior rules).
+	APPerLevel    float64 // base attack power per character level: 3 (fit to the client's level 25 sheet: 3×25 + 2×73 − 20 = 201)
 	APPerStrength float64 // attack power per point of strength: 2 (classic)
 	APOffset      float64 // attack power offset: -20 (classic, warrior)
-	AgiPerCrit    float64 // agility per 1 % crit: 20 (aprox., pending check against the sheet)
+	AgiPerCrit    float64 // agility per 1 % crit: 20 (aprox., not verified: the level 25 sheet in battle stance reads 10.74 % with 52 agility and Cruelty 5, where this gives 7.6)
 	HPPerStamina  float64 // health per point of stamina: 10 (aprox.)
 	OffhandMult   float64 // offhand damage multiplier: 0.5 (classic dual wield)
 	WeaponAPDiv   float64 // weapon speed normalisation: 14 (classic, AP/14 × speed)
@@ -45,7 +46,7 @@ type Constants struct {
 	BleedsArmor    bool    // bleeds ignore armour (classic)
 	MobCritMult    float64 // mob critical damage multiplier: 2 (classic)
 	MobVariance    float64 // ±15 % spread of mob hits (aprox.)
-	CritBaseTalent float64 // no base crit for the warrior in the model (aprox., 0)
+	DefensiveShare float64 // damage share under Defensive Stance: 0.9 (tooltip: damage caused −10 %; fits the sheet's UnitDamage)
 
 	// Ability fallbacks used only when the client text is not available (the sheet and the class
 	// page both missing). Each one is the classic rule; the tooltip wins when present.
@@ -104,7 +105,7 @@ func Sources() []string {
 		"Ira por daño causado: 7,5 × daño / conversión(nivel); por daño recibido: 2,5 × daño / conversión(nivel) (classic; el 15 en lugar de 7,5 aparece en algunas fuentes).",
 		"Conversión de ira por nivel: 10→37,4; 20→72,4; 30→109,3; 40→147,9; 50→188,3; 60→230,6; 70→274,7 (wiki y foro Blizzard).",
 		"Golpe blanco: arma (mín–máx) + AP/14 × velocidad; mano izquierda ×0,5 (classic).",
-		"AP del guerrero: 2 × fuerza − 20 (classic).",
+		"AP base del guerrero: 3 × nivel + 2 × fuerza base − 20 (la hoja de nivel 25 da 201 = 75 + 146 − 20; la fórmula sin el término de nivel daría 126). El AP que muestra la hoja incluye buffs y objetos: el modelo parte de ese AP.",
 		"Enemigos (aprox.): defensa 5 × nivel; vida 50 + 25 × nivel; armadura 25 × nivel; golpe medio 5 + nivel; golpe cada 2 s; crítico 5 %.",
 		"Descanso tras un combate: comida que restaura 40 % de la vida en 27 s (aprox.) + 10 s de reinicio (aprox.); tras la muerte 60 s (aprox.).",
 		"Grito de batalla: se lanza fuera de combate y dura 3 min (sitio); cuenta toda la pelea y no suma si la hoja ya lo muestra.",
@@ -148,6 +149,7 @@ var Table = Constants{
 		EliteHP:         2.5,
 		EliteDamage:     1.5,
 	},
+	APPerLevel:    3,
 	APPerStrength: 2,
 	APOffset:      -20,
 	AgiPerCrit:    20,
@@ -169,7 +171,7 @@ var Table = Constants{
 	BleedsArmor:    false,
 	MobCritMult:    2,
 	MobVariance:    0.15,
-	CritBaseTalent: 0,
+	DefensiveShare: 0.9,
 
 	SunderStack:     90,
 	SunderMaxStacks: 5,
