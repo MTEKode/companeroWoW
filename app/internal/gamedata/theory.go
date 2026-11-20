@@ -27,6 +27,7 @@ func (g *Service) SheetJSON() ([]byte, time.Time, bool) {
 	if m == nil {
 		return nil, time.Time{}, false
 	}
+	m = sheetWithCharacter(m, ch.data)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, time.Time{}, false
@@ -36,6 +37,31 @@ func (g *Service) SheetJSON() ([]byte, time.Time, bool) {
 		at = ch.updatedAt
 	}
 	return raw, at, true
+}
+
+// sheetWithCharacter returns the sheet with the class and the level of the character when the sheet
+// lacks them (a sheet of the outbox carries its level as "lv"; the character table has both). The
+// engine reads the class to pick its model and the level for the talent points.
+func sheetWithCharacter(sheet map[string]any, data map[string]any) map[string]any {
+	char := asMap(data["character"])
+	if char == nil {
+		return sheet
+	}
+	out := make(map[string]any, len(sheet)+2)
+	for k, v := range sheet {
+		out[k] = v
+	}
+	if str(out["class"]) == "" {
+		if cf := str(char["classFile"]); cf != "" {
+			out["class"] = cf
+		}
+	}
+	if numberOf(out["level"]) <= 0 {
+		if lv := numberOf(char["level"]); lv > 0 {
+			out["level"] = lv
+		}
+	}
+	return out
 }
 
 // TheoryCandidates returns the gear the engine can score: the candidates the character can use (its class,

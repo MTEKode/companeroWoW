@@ -39,6 +39,14 @@ func (in *ingester) applyItem(msgType uint8, m map[string]any, v any, charKey st
 		if err := in.markPath(msgType, m); err != nil {
 			return false, err
 		}
+		// The state of the character is the body the message carries (the record of an outbox item).
+		state := m
+		if body, _, ok := outboxBody(msgType, m); ok {
+			state = body
+		}
+		if err := in.saveState(msgType, state, v, charKey, in.at, oseq); err != nil {
+			return false, err
+		}
 	}
 	if oseq > 0 {
 		if _, err := in.tx.Exec(`INSERT OR IGNORE INTO ingest_log (msg_type, oseq, digest, at) VALUES (?, ?, ?, ?)`,

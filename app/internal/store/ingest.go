@@ -135,7 +135,13 @@ func (s *Store) IngestSavedVars(sv *bridge.SavedVars, at time.Time) (IngestStats
 			if charKey == "" {
 				charKey = active
 			}
-			skipped, err := in.applyItem(msgType, payload, payload, charKey)
+			// The item is stamped with the time the addon learned it, so the character's state keeps the newest.
+			item := &ingester{tx: in.tx, at: in.at, now: in.now, n: in.n}
+			if learned := int64(rawNum(it, "at")); learned > 0 {
+				item.at = time.Unix(learned, 0)
+				item.now = learned
+			}
+			skipped, err := item.applyItem(msgType, payload, payload, charKey)
 			if err != nil {
 				stats.Failed++ // not recorded as applied: the next read tries it again
 				continue
@@ -1465,8 +1471,8 @@ func completedBlock(ch map[string]any) map[string]any {
 	return nil
 }
 
-// activeCharKey is the character the SavedVariables data is about: the one with the newest updatedAt,
-// as gamedata picks it. It names the owner of outbox items that carry no charKey.
+// activeCharKey is the character the SavedVariables data is about: the one the player was on last, as
+// gamedata picks it (ActiveRank). It names the owner of outbox items that carry no charKey.
 func activeCharKey(chars any) string {
 	best, bestTS := "", -1.0
 	for _, e := range rawEntries(chars) {
@@ -1474,7 +1480,7 @@ func activeCharKey(chars any) string {
 		if ch == nil {
 			continue
 		}
-		ts := rawNum(ch, "updatedAt")
+		ts := ActiveRank(ch)
 		if ts > bestTS || (ts == bestTS && e.key < best) {
 			best, bestTS = e.key, ts
 		}

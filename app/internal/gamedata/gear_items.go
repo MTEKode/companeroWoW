@@ -1,6 +1,7 @@
 package gamedata
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -297,33 +298,50 @@ func (g *Service) bagItems() map[int64]itemHit {
 	return out
 }
 
-// knowledgeItems reads the item rewards of the quests the addon has seen (knowledge.quests).
+// knowledgeItems reads the item rewards of the quests the addon has seen: the store's quests first, the
+// SavedVariables knowledge block when the store has none.
 func (g *Service) knowledgeItems() map[int64]itemHit {
 	out := map[int64]itemHit{}
+	if g.store != nil {
+		if quests, err := g.store.SearchQuests("", 5000); err == nil && len(quests) > 0 {
+			for _, q := range quests {
+				var rewards map[string]any
+				if err := json.Unmarshal([]byte(q.RewardsJSON), &rewards); err != nil {
+					continue
+				}
+				addRewardItems(out, q.QuestID, rewards)
+			}
+			return out
+		}
+	}
 	sv := g.savedVars()
 	if sv == nil {
 		return out
 	}
 	for _, e := range entriesOf(asMap(sv.Raw["knowledge"])["quests"]) {
 		qm := asMap(e.value)
-		qid := questIDOf(qm, e.key)
-		for _, item := range listOf(asMap(qm["rewards"])["items"]) {
-			m := asMap(item)
-			id := int64(numberOf(m["itemID"]))
-			if m == nil || id == 0 {
-				continue
-			}
-			hit := out[id]
-			if hit.name == "" {
-				hit.name = linkName(str(m["link"]))
-			}
-			if qid != 0 && !containsID(hit.quests, qid) {
-				hit.quests = append(hit.quests, qid)
-			}
-			out[id] = hit
-		}
+		addRewardItems(out, questIDOf(qm, e.key), asMap(qm["rewards"]))
 	}
 	return out
+}
+
+// addRewardItems adds the items of a quest's rewards to out, naming the quest qid as a source.
+func addRewardItems(out map[int64]itemHit, qid int64, rewards map[string]any) {
+	for _, item := range listOf(rewards["items"]) {
+		m := asMap(item)
+		id := int64(numberOf(m["itemID"]))
+		if m == nil || id == 0 {
+			continue
+		}
+		hit := out[id]
+		if hit.name == "" {
+			hit.name = linkName(str(m["link"]))
+		}
+		if qid != 0 && !containsID(hit.quests, qid) {
+			hit.quests = append(hit.quests, qid)
+		}
+		out[id] = hit
+	}
 }
 
 // linkName is the name inside an item link, or "" when there is none.

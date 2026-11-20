@@ -402,13 +402,60 @@ func optimizarTalentos(g *gamedata.Service, ws *websearch.Client) Def {
 			if err != nil {
 				return Result{}, err
 			}
-			out := map[string]any{"disponible": true, "resultado": plan}
+			out := map[string]any{"disponible": true, "resultado": talentPlanView(plan)}
 			if msg := theory.Mismatch(plan.Actual.Calibracion); msg != "" {
 				out["calibracion"] = msg
 			}
 			return jsonResult(out)
 		},
 	}
+}
+
+// talentPlanTop is how many options the talent tool returns: the full report of each (abilities, rage,
+// fights) is too big for a tool answer, and the order of the points and the numbers are what the player
+// needs.
+const talentPlanTop = 3
+
+// talentOptionView is one option of a talent plan as the tool answers it.
+type talentOptionView struct {
+	Orden       []string       `json:"ordenPuntos"`
+	Arboles     map[string]int `json:"arboles"`
+	DPS         theory.CI      `json:"dps"`
+	MuertesHora theory.CI      `json:"killsPorHora"`
+}
+
+// talentPlanAnswer is the talent plan as the tool answers it: the talents of the sheet, the best options
+// (best first) and the assumptions.
+type talentPlanAnswer struct {
+	Nivel          int                `json:"nivel"`
+	PuntosAñadidos int                `json:"puntosAñadidos"`
+	TalentosActual map[string]int     `json:"talentosActuales"`
+	DPSActual      theory.CI          `json:"dpsActual"`
+	Opciones       []talentOptionView `json:"opciones"`
+	Evaluaciones   int                `json:"evaluaciones"`
+	Supuestos      []string           `json:"supuestos"`
+}
+
+// talentPlanView keeps what the answer needs from a plan (see talentPlanTop).
+func talentPlanView(plan theory.TalentPlan) talentPlanAnswer {
+	v := talentPlanAnswer{
+		Nivel:          plan.Nivel,
+		PuntosAñadidos: plan.Puntos,
+		TalentosActual: plan.Actual.Talentos,
+		DPSActual:      plan.Actual.DPS,
+		Evaluaciones:   plan.Evaluadas,
+		Supuestos:      plan.Supuestos,
+	}
+	for i, opt := range plan.Top {
+		if i == talentPlanTop {
+			break
+		}
+		v.Opciones = append(v.Opciones, talentOptionView{
+			Orden: opt.Orden, Arboles: opt.Arboles,
+			DPS: opt.Resultado.DPS, MuertesHora: opt.Resultado.KillsPerHour,
+		})
+	}
+	return v
 }
 
 // optimizarRotacion answers optimizar_rotacion.
