@@ -393,15 +393,23 @@ func (w Warrior) calibrate(in theory.Input, m *model) []theory.Check {
 		c.Ok = math.Abs(c.Desvio) <= calibTolerance
 		out = append(out, c)
 	}
-	check("Poder de ataque base", k.APPerStrength*sh.Base.Str+k.APOffset, sh.Melee.APBase,
-		"2 × fuerza base − 20 (classic, guerrero)")
+	check("Poder de ataque base", k.APPerLevel*float64(sh.Level)+k.APPerStrength*sh.Base.Str+k.APOffset, sh.Melee.APBase,
+		"3 × nivel + 2 × fuerza base − 20 (la hoja de nivel 25 lo confirma)")
 	sheetTalents, _, err := sheetTalentRanks(m.tree, sh)
 	critTalents := 0.0
 	if err == nil {
 		critTalents = talentsOf(m.tree, sheetTalents, m.kind).critPts
 	}
-	check("Crítico", sh.Total.Agi/k.AgiPerCrit+critTalents+k.CritBaseTalent, sh.Melee.Crit,
-		"agilidad total / 20 + talentos (aprox.: la pendiente agilidad→crítico queda por verificar)")
+	critModel := sh.Total.Agi/k.AgiPerCrit + critTalents + k.CritBaseTalent
+	if sh.Melee.Crit == 0 && sh.Total.Agi > 0 {
+		// A sheet that reads 0 % crit with agility and crit talents has no usable reading (the same
+		// character reads 10,74 % in another stance): the model uses agility and talents instead.
+		out = append(out, theory.Check{Nombre: "Crítico", Modelo: round2(critModel), Hoja: 0, Ok: true,
+			Nota: "la hoja da 0 %: no se compara; el modelo usa agilidad/20 + talentos"})
+	} else {
+		check("Crítico", critModel, sh.Melee.Crit,
+			"agilidad total / 20 + talentos (aprox.: la pendiente agilidad→crítico queda por verificar)")
+	}
 	check("Velocidad de ataque", sh.Melee.MHSpeed, sh.Melee.AttackSpeed,
 		"velocidad base del arma frente a la de la hoja (la hoja incluye aceleraciones activas)")
 	out = append(out, theory.Check{Nombre: "Daño de golpe blanco", Ok: true,

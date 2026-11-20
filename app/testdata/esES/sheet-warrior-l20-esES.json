@@ -26,8 +26,8 @@
  "armor": 620,
  "armorEffective": 620,
  "melee": {
-  "ap": 124,
-  "apBase": 100,
+  "ap": 184,
+  "apBase": 160,
   "apPos": 24,
   "apNeg": 0,
   "crit": 5.6,

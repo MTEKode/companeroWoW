@@ -42,8 +42,10 @@ var abilityIDs = map[int]string{
 	1680: "whirlwind",
 	// Cleave
 	845: "cleave", 7369: "cleave", 11608: "cleave", 11609: "cleave", 20569: "cleave", 25231: "cleave",
-	// Death Wish
-	12292: "death_wish",
+	// Death Wish and Sweeping Strikes: the client's pair (Deseo de la Muerte = 12328, Golpes de barrido =
+	// 12292, Spanish-client sheet; see talentIDs). This table had them the other way round.
+	12328: "death_wish",
+	12292: "sweeping_strikes",
 	// Sunder Armor
 	7386: "sunder", 7405: "sunder", 8380: "sunder", 11596: "sunder", 11597: "sunder",
 	// Revenge
@@ -51,7 +53,7 @@ var abilityIDs = map[int]string{
 	// Battle Shout
 	6673: "battle_shout", 5242: "battle_shout", 6192: "battle_shout", 11549: "battle_shout", 11550: "battle_shout", 11551: "battle_shout", 25289: "battle_shout",
 	// Bloodrage, Berserker Rage, Victory Rush, Recklessness, Sweeping Strikes
-	2687: "bloodrage", 18499: "berserker_rage", 34428: "victory_rush", 1719: "recklessness", 12328: "sweeping_strikes",
+	2687: "bloodrage", 18499: "berserker_rage", 34428: "victory_rush", 1719: "recklessness",
 }
 
 // talentIDs maps a talent entry's spell id to the talent's slug (the site's slug, see slugOf).
@@ -77,6 +79,8 @@ var talentIDs = map[int]string{
 	// and the site's talent of the same tree, row and max rank. The client's pair wins over the older
 	// table: 12328 is Deseo de la Muerte (Death Wish) and 12292 is Golpes de barrido (Sweeping Strikes).
 	12328: "death-wish", 12292: "sweeping-strikes", // Deseo de la Muerte, Golpes de barrido
+	// abilityIDs uses the same pair. That is an inference: as with Mortal Strike and Bloodthirst above, the
+	// spell a talent grants is taken to have the talent's id; no sheet fixture shows the granted spell.
 	12319: "flurry",                 // Aluvión
 	12317: "enrage",                 // Enfurecer
 	12321: "booming-voice",          // Voz retumbante

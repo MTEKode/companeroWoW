@@ -267,7 +267,13 @@ func compileRanks(in theory.Input, tree *Tree, k Constants, buildRanks []int) (*
 
 	agi := sh.Total.Agi + d.Agi
 	m.ap = sh.Melee.AP + d.AP + k.APPerStrength*d.Str
-	m.crit = sh.Melee.Crit + d.Crit + dCrit + (agi-sh.Total.Agi)/k.AgiPerCrit + k.CritBaseTalent
+	// A crit reading of 0 with agility on the sheet is not a reading: the sheet's agility and talents give it.
+	critReading := sh.Melee.Crit
+	if critReading == 0 && sh.Total.Agi > 0 {
+		critReading = sh.Total.Agi/k.AgiPerCrit + sheetFX.critPts + k.CritBaseTalent
+		m.notes = append(m.notes, "La hoja marca 0 % de crítico con agilidad: el modelo usa agilidad/20 + talentos de crítico (no se usa el 0 de la hoja).")
+	}
+	m.crit = critReading + d.Crit + dCrit + (agi-sh.Total.Agi)/k.AgiPerCrit
 	m.hit = sh.Melee.Hit + d.Hit
 	m.skill = sh.Melee.MHSkill + d.Skill
 	if m.skill <= 0 {

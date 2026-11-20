@@ -129,20 +129,20 @@ func TestCalibrationMatchesTheSheet(t *testing.T) {
 			ap = &checks[i]
 		}
 	}
-	if ap == nil || ap.Modelo != 100 || ap.Hoja != 100 {
+	if ap == nil || ap.Modelo != 160 || ap.Hoja != 160 {
 		t.Fatalf("attack power check = %+v", ap)
 	}
 }
 
 func TestCalibrationDetectsAMismatch(t *testing.T) {
 	in := inputL20(t)
-	in.Sheet.Melee.APBase = 180 // the sheet says 180 where 2 × 60 − 20 gives 100
+	in.Sheet.Melee.APBase = 180 // the sheet says 180 where 3 × 20 + 2 × 60 − 20 gives 160
 	msg := theory.Mismatch(New().Calibrate(in))
 	if !strings.HasPrefix(msg, "modelo desajustado: Poder de ataque base") {
 		t.Fatalf("mismatch message = %q", msg)
 	}
 	in = inputL20(t)
-	in.Sheet.Melee.APBase = 101 // 1 %: inside the 3 % tolerance
+	in.Sheet.Melee.APBase = 161 // 0.6 %: inside the 3 % tolerance
 	if msg := theory.Mismatch(New().Calibrate(in)); msg != "" {
 		t.Fatalf("a 1 %% difference must not be reported: %s", msg)
 	}
