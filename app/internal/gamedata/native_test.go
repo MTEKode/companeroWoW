@@ -103,15 +103,18 @@ func TestAvailableQuestsNativeOnlyShowsSources(t *testing.T) {
 	}
 }
 
-func TestAvailableQuestsEmptyNamesQuestieAsOptional(t *testing.T) {
+// The fixture has no Questie data at all: an empty answer asks for a sync, and does not suggest installing
+// Questie (that is only said when the data says it is not installed; see gear_hints_test.go).
+func TestAvailableQuestsEmptyAsksForSyncWithoutQuestieData(t *testing.T) {
 	g := nativeService(t)
 	res, err := g.AvailableQuests("ahora", "Ventormenta")
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := asMap(res)
-	if n, _ := m["nota"].(string); !strings.Contains(n, "Questie es opcional") {
-		t.Errorf("nota = %q, want the optional Questie suggestion", n)
+	n, _ := m["nota"].(string)
+	if !strings.Contains(n, syncHint) || strings.Contains(n, "instal") {
+		t.Errorf("nota = %q, want the sync hint and no suggestion to install Questie", n)
 	}
 }
 

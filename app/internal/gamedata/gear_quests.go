@@ -112,8 +112,10 @@ func (g *Service) AvailableQuests(ventana, zona string) (any, error) {
 		"fuentes": gd.QuestSources.view(),
 	}
 	switch {
-	case total == 0 && !gd.QuestSources.Questie:
-		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos. Questie es opcional: instalarlo da más detalle."
+	case total == 0 && gd.QuestieKnown && !gd.QuestieInstalled:
+		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos. " + questieMissing
+	case total == 0 && !gd.QuestieKnown:
+		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos. " + syncHint + "."
 	case total == 0:
 		fields["nota"] = "No tengo misiones accesibles para ese filtro con estos datos."
 	case total > len(rows):

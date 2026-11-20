@@ -470,7 +470,7 @@ eq("estado: equipo vacio no sustituye al anterior", ch.state.equipment[1].itemID
 eq("estado: ubicacion ausente conserva la anterior", ch.state.location.zone, "Elwynn")
 -- Presupuesto: un bloque enorme no se guarda entero (se quitan secciones y, al final, hechizos).
 ch.profPlan = { steps = {} }
-for i = 1, 400 do ch.profPlan.steps[i] = { text = string.rep("paso " .. i .. " ", 20) } end
+for i = 1, 800 do ch.profPlan.steps[i] = { text = string.rep("paso " .. i .. " ", 20) } end
 St.SaveState(ch)
 check("presupuesto: el estado cabe en STATE_MAX_BYTES", #St.Serialize(ch.state) <= St.STATE_MAX_BYTES, tostring(#St.Serialize(ch.state)))
 check("presupuesto: se quita antes el plan de profesion que la hoja", ch.state.profPlan == nil and ch.state.sheet ~= nil)
@@ -509,6 +509,119 @@ check("migracion 2.1: la hoja pasa con claves largas", act.state.sheet.spells ~=
 check("migracion 2.1: el personaje antiguo no recibe hoja", dbm.characters.Viejo.state == nil)
 St.Sync()
 check("migracion 2.1: no se repite al volver a cargar", dbm.schemaMinor == 1 and act.state.sheet.level == 21)
+
+-- ---------------------------------------------------------------------------
+outln("(k) Estado: ventana de misiones, candidatos, mazmorras y resumen de Questie")
+CompaneroWoWDB = { schema = 2, settings = {}, characters = {} }
+St.Sync()
+local function countKeys(t)
+    local n = 0
+    for _ in pairs(t or {}) do n = n + 1 end
+    return n
+end
+-- Un personaje con la ventana completa: 300 misiones (200 accesibles), 200 candidatos y 6 mazmorras.
+local questsIn = {}
+for i = 1, 300 do
+    local id = 10000 + i
+    questsIn[id] = {
+        questID = id, name = "Mision " .. i, level = 20 + (i % 9), requiredLevel = 18 + (i % 5),
+        zone = "Zona " .. (i % 12), accessibleNow = (i % 3 ~= 0), source = "questie", inLog = false,
+        missingPrereqs = (i % 3 == 0) and { 9000 + i } or nil,
+        starter = { kind = "npc", id = 1000 + i, name = "PNJ " .. i, mapID = 1429, x = 40.1234, y = 55.5 },
+        finisher = { kind = "object", id = 2000 + i, name = "Objeto " .. i, mapID = 1429, x = 41.1, y = 56.2 },
+        rewards = { choice = { 5000 + i }, fixed = { 6000 + i }, rewardsKnownAs = "questie-reverse" },
+    }
+end
+local itemsIn = {}
+for i = 1, 200 do
+    itemsIn[3000 + i] = {
+        itemID = 3000 + i, name = "Objeto de prueba " .. i, itemLevel = 20 + (i % 40), requiredLevel = 20,
+        quality = 3, equipLoc = "INVTYPE_CHEST", class = "Armor", subclass = "Mail",
+        stats = { ITEM_MOD_STRENGTH_SHORT = 5 }, sources = { { kind = "quest", questID = 10000 + i, choice = true, source = "questie" } },
+    }
+end
+local dungeonsIn = { available = true, exportedAt = 7, sources = { fdj = true }, list = {} }
+for d = 1, 6 do
+    dungeonsIn.list[d] = { key = "d" .. d, name = "Mazmorra " .. d, minLevel = 20, maxLevel = 30, source = "fdj", levelsKnown = true, quests = { 1, 2 }, bosses = { { name = "Jefe", loot = { 3001 } } } }
+end
+local qch = attachedChar("Quest-Realm", { character = { name = "Quest", level = 25 }, updatedAt = 1 })
+qch.questWindow = { available = true, exportedAt = 7, level = 25, minLevel = 20, maxLevel = 28, quests = questsIn, sources = { questie = true } }
+qch.gearCandidates = { available = true, exportedAt = 7, items = itemsIn, sources = { questie = true } }
+qch.dungeons = dungeonsIn
+qch.sheet = { level = 25, class = "WARRIOR", spells = { { spellID = 1, name = "Golpe", cost = 15 } } }
+qch.completedQuests = "10001,10002,10010"
+qch.questie = { available = true, version = "12.10.0", exportedAt = 7, quests = { [1] = { questID = 1 } }, zoneQuests = { list = { 1, 2 } }, npcs = { 1, 2, 3 }, sources = { questie = true } }
+St.SaveState(qch)
+check("ventana: va al estado", qch.state.questWindow ~= nil and qch.state.questWindow.available == true)
+local qw = St.Expand(qch.state.questWindow)
+eq("ventana: 120 misiones como mucho (STATE_QUESTS)", countKeys(qw.quests), 120)
+eq("ventana: las 120 son accesibles ahora (hay 200)", (function()
+    local n = 0
+    for _, q in pairs(qw.quests) do if q.accessibleNow == true then n = n + 1 end end
+    return n
+end)(), 120)
+check("ventana: la mision del mismo nivel entra", qw.quests[10005] ~= nil and qw.quests[10005].level == 25)
+eq("ventana: nombre expandido", qw.quests[10005].name, "Mision 5")
+eq("ventana: id del PNJ inicial", qw.quests[10005].starter.id, 1005)
+eq("ventana: recompensa elegible (ids)", qw.quests[10005].rewards.choice[1], 5005)
+check("ventana: coordenada a 3 decimales", math.abs(qw.quests[10005].starter.x - 40.123) < 1e-9, tostring(qw.quests[10005].starter.x))
+check("ventana: el PNJ npc no lleva tipo", qw.quests[10005].starter.kind == nil)
+eq("ventana: el objeto lleva su tipo", qw.quests[10005].finisher.kind, "object")
+check("ventana: la clave corta va en el estado (qd)", qch.state.questWindow.quests[10005].qd == 10005)
+local cd = St.Expand(qch.state.gearCandidates)
+eq("candidatos: 80 como mucho (STATE_CANDIDATES), los de mayor nivel", countKeys(cd.items), 80)
+local minLv = 999
+for _, it in pairs(cd.items) do if it.itemLevel < minLv then minLv = it.itemLevel end end
+eq("candidatos: el mas bajo de los 80 es el nivel 44", minLv, 44)
+eq("candidatos: stats sin cambios", cd.items[3064].stats.ITEM_MOD_STRENGTH_SHORT, 5)
+eq("candidatos: origen expandido (questID)", cd.items[3064].sources[1].questID, 10064)
+eq("mazmorras: se guardan tal cual", qch.state.dungeons.list[1].name, "Mazmorra 1")
+check("questieStatus: instalado, con version y conteos", qch.state.questieStatus.available == true
+    and qch.state.questieStatus.version == "12.10.0" and qch.state.questieStatus.quests == 1
+    and qch.state.questieStatus.zoneQuests == 2 and qch.state.questieStatus.npcs == 3)
+check("questieStatus: solo el resumen, sin la exportacion completa", qch.state.questieStatus.quests == 1 and qch.state.questieStatus.zoneQuests ~= nil and qch.state.questieStatus.exportedAt == 7)
+check("presupuesto: el estado con ventana, candidatos, mazmorras y hoja cabe", #St.Serialize(qch.state) <= St.STATE_MAX_BYTES,
+    tostring(#St.Serialize(qch.state)))
+check("presupuesto: con todo cabiendo, la hoja y la ventana se quedan", qch.state.sheet ~= nil and qch.state.questWindow ~= nil)
+eq("completadas: el texto de ids va al estado", qch.state.completedQuests, "10001,10002,10010")
+qch.completedQuests = ""
+St.SaveState(qch)
+eq("completadas: un texto vacio no sustituye al anterior", qch.state.completedQuests, "10001,10002,10010")
+-- Questie no instalado: el dato dice available = false (la app solo sugiere instalarlo entonces).
+qch.questie = { available = false, reason = "Questie no está instalado (opcional)", sources = { juego = false } }
+St.SaveState(qch)
+check("questieStatus: no instalado lo dice", qch.state.questieStatus.available == false and qch.state.questieStatus.version == nil)
+-- Una exportacion que fallo (sin motivo) no dice que Questie falte: la seccion no cambia.
+local failed = attachedChar("Failed-Realm", { character = { name = "Failed", level = 10 }, updatedAt = 1 })
+failed.questie = { available = false }
+St.SaveState(failed)
+check("questieStatus: una exportacion fallida no dice que falte", failed.state == nil or failed.state.questieStatus == nil)
+-- Orden de recorte: con poco sitio caen primero las secciones de la izquierda (mazmorras, candidatos, ventana),
+-- y el resumen de Questie y la hoja se quedan.
+local savedMax = St.STATE_MAX_BYTES
+St.STATE_MAX_BYTES = 12 * 1024
+local small = attachedChar("Small-Realm", { character = { name = "Small", level = 25 }, updatedAt = 1 })
+small.questWindow = qch.questWindow
+small.gearCandidates = qch.gearCandidates
+small.dungeons = qch.dungeons
+small.questie = { available = true, version = "12.10.0", quests = {}, zoneQuests = { list = {} }, npcs = {} }
+small.sheet = { level = 25, class = "WARRIOR", spells = { { spellID = 1, name = "Golpe" } } }
+St.SaveState(small)
+St.STATE_MAX_BYTES = savedMax
+check("recorte: la hoja se queda", small.state.sheet ~= nil and small.state.sheet.level == 25)
+check("recorte: las mazmorras caen primero", small.state.dungeons == nil)
+check("recorte: los candidatos caen antes que la ventana", small.state.gearCandidates == nil)
+check("recorte: el resumen de Questie se queda", small.state.questieStatus ~= nil and small.state.questieStatus.available == true)
+-- Lo que no ha cambiado no se reescribe; una exportacion de Questie no disponible no tira la buena.
+local before = St.Serialize(qch.state)
+check("estado: sin cambios no escribe (con vistas)", St.SaveState(qch) == false and St.Serialize(qch.state) == before)
+local secs = St.STATE_SECTIONS
+eq("orden: la hoja es la ultima", secs[#secs], "sheet")
+check("orden: la ventana de misiones va antes que la hoja", (function()
+    local at = {}
+    for i, n in ipairs(secs) do at[n] = i end
+    return at.questWindow < at.sheet and at.gearCandidates < at.sheet and at.dungeons < at.sheet and at.questieStatus < at.sheet
+end)())
 
 -- ---------------------------------------------------------------------------
 outln("(i) Estado y serializacion")

@@ -15,8 +15,11 @@
 -- bandeja al cargar. Los campos de memoria se enrutan con metatablas: el codigo de los modulos no cambia.
 --
 -- Estado actual: characters[clave].state = { sheet, equipment, gear, proficiencies, professions,
--- training, profPlan, quests, location, at }. Es la ULTIMA copia de cada bloque, sobrescrita (no es
--- un historial ni va a la bandeja) y en formato largo (las claves son las del juego, como en el canal).
+-- training, profPlan, quests, location, completedQuests, dungeons, gearCandidates, questWindow,
+-- questieStatus, at }.
+-- Es la ULTIMA copia de cada bloque, sobrescrita (no es un historial ni va a la bandeja) y en formato
+-- largo (las claves son las del juego, como en el canal). questWindow y gearCandidates van en forma
+-- compacta (STATE_QUESTS, STATE_CANDIDATES); questieStatus es el resumen de Questie, no su exportacion.
 -- Se escribe con Storage.SaveState tras cada cambio de bloque. Tope por personaje: STATE_MAX_BYTES; si
 -- el fichero pasa de FILE_TARGET_BYTES, los demas personajes se recortan a su nucleo (hoja basica).
 --
@@ -47,7 +50,9 @@ Storage.MAX_ITEMS = 2000          -- tope secundario: items de la bandeja
 Storage.MAX_SV_BYTES = 60 * 1024  -- tope principal: bytes estimados de la bandeja serializada (SavedVariables)
 Storage.OUTBOX_MAX_AGE = 7 * 24 * 3600 -- un item de la bandeja se quita al cumplir 7 dias (at)
 Storage.ANSWER_MAX_BYTES = 2048   -- texto de cada respuesta guardada (Ask.lua)
-Storage.STATE_MAX_BYTES = 60 * 1024    -- tope por personaje del bloque state (serializado)
+Storage.STATE_MAX_BYTES = 96 * 1024   -- tope por personaje del bloque state (serializado; antes 60 KB, sin la ventana de misiones)
+Storage.STATE_QUESTS = 120             -- misiones de la ventana que van al estado (accesibles primero, luego las mas cercanas al nivel)
+Storage.STATE_CANDIDATES = 80          -- candidatos de equipo que van al estado (los de mayor nivel de objeto)
 Storage.FILE_TARGET_BYTES = 150 * 1024 -- tope orientativo del fichero entero (por encima se recortan los demas)
 
 -- Campos de cada personaje que se quedan en SavedVariables. Cualquier otro campo es de memoria.
@@ -595,7 +600,8 @@ end
 -- Secciones del estado, en orden de recorte: si el personaje no cabe en STATE_MAX_BYTES se quita primero
 -- la seccion de la izquierda. La hoja (sheet) es la ultima; si aun no cabe, se recortan sus hechizos.
 Storage.STATE_SECTIONS = {
-    "training", "profPlan", "gear", "proficiencies", "quests", "professions", "location", "equipment", "sheet",
+    "training", "profPlan", "gear", "proficiencies", "quests", "professions", "location", "equipment",
+    "completedQuests", "dungeons", "gearCandidates", "questWindow", "questieStatus", "sheet",
 }
 -- Campos de la hoja que se quedan en el nucleo de un personaje recortado (FILE_TARGET_BYTES).
 local STATE_CORE = { level = true, class = true, race = true, total = true, talents = true }
@@ -665,15 +671,139 @@ local function sheetState(sheet)
     return copyValue(out, 0)
 end
 
+-- Redondeo a d decimales (nil si no es numero).
+local function roundTo(v, d)
+    v = tonumber(v)
+    if not v then return nil end
+    local m = 10 ^ d
+    return floor(v * m + 0.5) / m
+end
+
+-- Punto de un PNJ u objeto (inicio o fin de una mision): tipo (solo si no es PNJ), id, nombre, mapa y
+-- coordenadas a 3 decimales (x e y van en fraccion 0-1).
+local function pointState(p)
+    if type(p) ~= "table" then return nil end
+    return copyValue({
+        kind = p.kind ~= "npc" and p.kind or nil, id = tonumber(p.id), name = p.name, mapID = tonumber(p.mapID),
+        x = roundTo(p.x, 3), y = roundTo(p.y, 3),
+    }, 0)
+end
+
+-- Una mision de la ventana en forma compacta: sus ids de inicio, fin y recompensa, y lo que le falta.
+local function questState(q)
+    local out = {
+        questID = tonumber(q.questID), name = q.name, level = tonumber(q.level), requiredLevel = tonumber(q.requiredLevel),
+        zone = q.zone, source = q.source, accessibleNow = q.accessibleNow == true, inLog = (q.inLog == true) or nil,
+        starter = pointState(q.starter), finisher = pointState(q.finisher),
+    }
+    if type(q.missingPrereqs) == "table" and #q.missingPrereqs > 0 then out.missingPrereqs = q.missingPrereqs end
+    if type(q.rewards) == "table" then
+        local r = {}
+        if type(q.rewards.choice) == "table" and #q.rewards.choice > 0 then r.choice = q.rewards.choice end
+        if type(q.rewards.fixed) == "table" and #q.rewards.fixed > 0 then r.fixed = q.rewards.fixed end
+        if next(r) ~= nil then out.rewards = r end
+    end
+    return copyValue(out, 0)
+end
+
+-- questWindow del estado: las STATE_QUESTS misiones mas relevantes (accesibles ahora primero, luego las mas
+-- cercanas a su nivel; a igualdad, la de menor id). nil si no hay bloque.
+local function questWindowState(block)
+    if type(block) ~= "table" then return nil end
+    if block.available ~= true then return { available = false, reason = block.reason } end
+    local level = tonumber(block.level) or 1
+    local list = {}
+    if type(block.quests) == "table" then
+        for key, q in pairs(block.quests) do
+            local id = type(q) == "table" and (tonumber(q.questID) or tonumber(key)) or nil
+            if id then
+                list[#list + 1] = { id = id, q = q, dist = math.abs((tonumber(q.level) or level) - level) }
+            end
+        end
+    end
+    sort(list, function(a, b)
+        local aa, ba = a.q.accessibleNow == true, b.q.accessibleNow == true
+        if aa ~= ba then return aa end
+        if a.dist ~= b.dist then return a.dist < b.dist end
+        return a.id < b.id
+    end)
+    local quests = {}
+    for i = 1, math.min(#list, Storage.STATE_QUESTS) do
+        quests[list[i].id] = questState(list[i].q)
+    end
+    return Storage.Compact(copyValue({
+        available = true, exportedAt = block.exportedAt, level = block.level,
+        minLevel = block.minLevel, maxLevel = block.maxLevel, sources = block.sources, quests = quests,
+    }, 0))
+end
+
+-- gearCandidates del estado: los STATE_CANDIDATES de mayor nivel de objeto (cada item tal cual lo exporta
+-- el addon: nombre, nivel, stats y origen).
+local function candidatesState(block)
+    if type(block) ~= "table" then return nil end
+    if block.available ~= true then return { available = false, reason = block.reason } end
+    local list = {}
+    if type(block.items) == "table" then
+        for key, it in pairs(block.items) do
+            local id = type(it) == "table" and (tonumber(it.itemID) or tonumber(key)) or nil
+            if id then list[#list + 1] = { id = id, it = it } end
+        end
+    end
+    sort(list, function(a, b)
+        local la, lb = tonumber(a.it.itemLevel) or 0, tonumber(b.it.itemLevel) or 0
+        if la ~= lb then return la > lb end
+        return a.id < b.id
+    end)
+    local items = {}
+    for i = 1, math.min(#list, Storage.STATE_CANDIDATES) do items[list[i].id] = list[i].it end
+    return Storage.Compact(copyValue({
+        available = true, exportedAt = block.exportedAt, pending = block.pending, sources = block.sources, items = items,
+    }, 0))
+end
+
+-- questieStatus: el resumen de la exportacion de Questie (si esta instalado, su version y cuantas misiones y
+-- PNJ exporto). Sin Questie: available = false (el dato dice que NO esta instalado). nil si no se ha exportado.
+local function questieState(data)
+    if type(data) ~= "table" then return nil end
+    -- Sin motivo ni datos: fallo de la exportacion, no "no instalado". Ese caso no dice nada de Questie.
+    if data.available ~= true and data.reason == nil then return nil end
+    local out = {
+        available = data.available == true, version = data.version, exportedAt = data.exportedAt,
+        reason = data.reason, sources = data.sources,
+    }
+    if out.available then
+        local nq = 0
+        if type(data.quests) == "table" then
+            for _ in pairs(data.quests) do nq = nq + 1 end
+        end
+        out.quests = nq
+        out.zoneQuests = (type(data.zoneQuests) == "table" and type(data.zoneQuests.list) == "table")
+            and #data.zoneQuests.list or 0
+        out.npcs = type(data.npcs) == "table" and #data.npcs or 0
+    end
+    return copyValue(out, 0)
+end
+
+-- Secciones que se guardan en forma de vista (no tal cual estan en memoria).
+local STATE_VIEWS = {
+    sheet = function(c) return sheetState(c.sheet) end,
+    questWindow = function(c) return questWindowState(c.questWindow) end,
+    gearCandidates = function(c) return candidatesState(c.gearCandidates) end,
+    questieStatus = function(c) return questieState(c.questie) end,
+}
+
 -- Valor de una seccion a partir de los campos de memoria del personaje. nil si no hay dato (una lectura
 -- vacia no sustituye al estado anterior).
 local function sectionValue(c, name)
     local v
-    if name == "sheet" then
-        v = sheetState(c.sheet)
+    local view = STATE_VIEWS[name]
+    if view then
+        v = view(c)
     else
         v = c[name]
     end
+    -- completedQuests es texto (ids separados por comas, como lo exporta Gear.lua).
+    if type(v) == "string" then return v ~= "" and v or nil end
     if type(v) ~= "table" or next(v) == nil then return nil end
     return copyValue(v, 0)
 end
