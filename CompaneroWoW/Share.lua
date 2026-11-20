@@ -1,6 +1,6 @@
 -- Share.lua: activacion del envio de datos bajo demanda. Se activa con la accion de teclado
--- "Compañero: compartir datos" (Bindings.xml, por defecto CTRL-SHIFT-SPACE; ademas abre y enfoca el
--- marco, UI.lua) o con /compa enviar, /compa sync (todo, sin recarga).
+-- "Compañero: compartir datos" (Bindings.xml, por defecto CTRL-SHIFT-SPACE; con el marco en el juego
+-- activado, ademas lo abre sin foco: UI.lua) o con /compa enviar, /compa sync (todo, sin recarga).
 -- Activar: muestra la franja y sirve la ventana de SHARE_SECONDS (Channel.lua); al acabar vuelve al
 -- reposo. Tambien aqui: la asignacion de la tecla la primera vez (fuera de combate, una sola vez).
 local ADDON_NAME, ns = ...
@@ -122,10 +122,11 @@ function Sh.Command()
     return Sh.Activate(true)
 end
 
--- Tecla (Bindings.xml): abre o enfoca el marco de Compañero (UI.lua) y empieza la ventana de envio
--- (sin pregunta, solo datos).
+-- Tecla (Bindings.xml): empieza la ventana de envio (sin pregunta, solo datos). Con el marco en el
+-- juego activado (settings.frame), ademas lo abre (sin foco: UI.lua); con el marco desactivado, la
+-- tecla no toca el marco.
 function Sh.Key()
-    if ns.UI then ns.SafeCall(ns.UI.OnShareKey) end
+    if ns.IsFrameOn() and ns.UI then ns.SafeCall(ns.UI.OnShareKey) end
     return Sh.Activate(false)
 end
 

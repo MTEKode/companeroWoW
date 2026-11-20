@@ -3,8 +3,11 @@
 -- Partes: titulo, navegacion entre las ultimas respuestas ("‹ ›"), area de respuesta (texto con
 -- negrita, viñetas, botones de accion y linea de fuente), campo de pregunta (Enter envia; Arriba/Abajo
 -- recorren las ultimas 10 preguntas), campo de pegado oculto (captura Ctrl+V) y aviso «Pensando…».
--- Posicion y tamaño por personaje (characters[clave].ui). Escape cierra (UISpecialFrames).
--- La tecla de compartir (Share.lua) llama a UI.OnShareKey. /compa abre el marco (Core.lua).
+-- Posicion y tamaño por personaje (characters[clave].ui). Escape quita el foco y cierra (UISpecialFrames).
+-- Con settings.frame desactivado (por defecto: se usa la ventana de la app) el marco no se abre ni se
+-- enfoca desde la tecla ni desde /compa enviar o /compa sync. La tecla (Share.lua) llama a UI.OnShareKey,
+-- que solo abre el marco sin foco. El foco solo lo pone /compa (sin texto), /compa marco on o el envio
+-- de una pregunta; se quita al cerrar, con Escape y con un clic en el mundo (GLOBAL_MOUSE_DOWN).
 local ADDON_NAME, ns = ...
 ns = ns or {}
 
@@ -140,6 +143,12 @@ local function updateHint()
     Method(UI.w.hint, "SetText", pending and UI.PASTE_HINT or "")
 end
 
+-- Escape en un campo de texto: quita el foco y cierra el marco.
+local function onEscape(self)
+    Method(self, "ClearFocus")
+    UI.Hide()
+end
+
 -- Campo de pregunta: Enter envia; Arriba/Abajo recorren las ultimas preguntas.
 local function onQuestionEnter(self)
     local text = self:GetText()
@@ -195,7 +204,8 @@ end
 function UI.OnQuestionSent(id)
     setStatus(string.format("Pregunta #%d enviada.", id))
     updateHint()
-    if UI.w.paste then Method(UI.w.paste, "SetFocus") end
+    -- Solo con el marco activado: con la ventana de la app no se pone el foco en el juego.
+    if UI.w.paste and ns.IsFrameOn() then Method(UI.w.paste, "SetFocus") end
 end
 
 local function build()
@@ -264,7 +274,7 @@ local function build()
     Method(w.qbox, "SetPoint", "BOTTOMLEFT", f, "BOTTOMLEFT", 16, 46)
     Method(w.qbox, "SetPoint", "BOTTOMRIGHT", f, "BOTTOMRIGHT", -16, 46)
     Method(w.qbox, "SetScript", "OnEnterPressed", function(self) ns.SafeCall(onQuestionEnter, self) end)
-    Method(w.qbox, "SetScript", "OnEscapePressed", function(self) Method(self, "ClearFocus") end)
+    Method(w.qbox, "SetScript", "OnEscapePressed", function(self) ns.SafeCall(onEscape, self) end)
     Method(w.qbox, "SetScript", "OnArrowPressed", function(self, key) ns.SafeCall(onQuestionArrow, self, key) end)
 
     -- Campo de pegado: enfocable pero invisible (alpha 0); recibe Ctrl+V.
@@ -277,7 +287,7 @@ local function build()
     Method(w.paste, "SetAlpha", 0)
     Method(w.paste, "EnableMouse", false)
     Method(w.paste, "SetScript", "OnTextChanged", function(self, userInput) ns.SafeCall(onPasteChanged, self, userInput) end)
-    Method(w.paste, "SetScript", "OnEscapePressed", function(self) Method(self, "ClearFocus") end)
+    Method(w.paste, "SetScript", "OnEscapePressed", function(self) ns.SafeCall(onEscape, self) end)
 
     w.grip = create("Button", nil, f)
     Method(w.grip, "SetSize", 16, 16)
@@ -297,8 +307,11 @@ local function build()
         ns.SafeCall(UI.SaveState)
     end)
     Method(f, "SetScript", "OnSizeChanged", function() ns.SafeCall(UI.Render) end)
-    Method(f, "SetScript", "OnHide", function() ns.SafeCall(UI.SaveState) end)
-    Method(f, "SetScript", "OnEvent", function() ns.SafeCall(UI.SyncCombat) end)
+    Method(f, "SetScript", "OnHide", function() ns.SafeCall(UI.OnHidden) end)
+    -- Clic en cualquier parte del mundo (GLOBAL_MOUSE_DOWN): quita el foco de los campos (OnWorldClick).
+    -- Si el cliente no conoce el evento, Method lo ignora en silencio.
+    Method(f, "RegisterEvent", "GLOBAL_MOUSE_DOWN")
+    Method(f, "SetScript", "OnEvent", function(_, event) ns.SafeCall(UI.OnEvent, event) end)
 
     restoreState(f)
     Method(f, "Hide")
@@ -476,6 +489,37 @@ function UI.Hide()
     if UI.frame then Method(UI.frame, "Hide") end
 end
 
+-- Quita el foco de los campos de texto (pregunta y pegado).
+function UI.ClearFocus()
+    for _, key in ipairs({ "qbox", "paste" }) do
+        local box = UI.w[key]
+        if box then Method(box, "ClearFocus") end
+    end
+end
+
+-- Al cerrarse el marco (Escape, boton, /compa marco off): sin foco en los campos y se guarda la posicion.
+function UI.OnHidden()
+    UI.ClearFocus()
+    UI.SaveState()
+end
+
+-- Clic en el mundo: si el marco esta abierto y el raton no esta sobre el, los campos pierden el foco
+-- (asi las teclas de movimiento no se escriben en la pregunta).
+function UI.OnWorldClick()
+    if not UI.IsShown() then return end
+    if Method(UI.frame, "IsMouseOver") == true then return end
+    UI.ClearFocus()
+end
+
+-- Eventos del marco (frame oculto incluido): clic global y cambios de combate.
+function UI.OnEvent(event)
+    if event == "GLOBAL_MOUSE_DOWN" then
+        UI.OnWorldClick()
+    else
+        UI.SyncCombat()
+    end
+end
+
 function UI.IsShown()
     return UI.frame ~= nil and Method(UI.frame, "IsShown") == true
 end
@@ -487,15 +531,16 @@ function UI.FocusQuestion()
     return true
 end
 
--- Tecla de compartir (Share.lua): si el campo de pregunta ya tiene el foco, la pulsacion cierra el
--- marco; si no, lo abre (o lo deja abierto) y pone el foco en la pregunta.
+-- Tecla de compartir (Share.lua), solo con el marco activado: si el campo de pregunta ya tiene el foco,
+-- la pulsacion cierra el marco; si no, lo abre (o lo deja abierto) SIN foco. La tecla nunca pone el
+-- cursor en el marco: /compa marco on o /compa (sin texto) lo hacen.
 function UI.OnShareKey()
+    if not ns.IsFrameOn() then return end
     if UI.IsShown() and UI.w.qbox and Method(UI.w.qbox, "HasFocus") == true then
         UI.Hide()
         return
     end
     UI.Open()
-    UI.FocusQuestion()
 end
 
 return UI

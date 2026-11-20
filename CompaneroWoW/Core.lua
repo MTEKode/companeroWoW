@@ -32,6 +32,9 @@ function ns.EnsureDB()
     if db.schema == nil then db.schema = ns.SCHEMA end
     if type(db.settings) ~= "table" then db.settings = {} end
     if db.settings.strip == nil then db.settings.strip = true end
+    -- Marco en el juego (UI.lua): desactivado por defecto. Quien ya usaba la ventana de la app lo
+    -- tiene en false; se activa con /compa marco on.
+    if db.settings.frame == nil then db.settings.frame = false end
     if type(db.characters) ~= "table" then db.characters = {} end
     if type(db.maps) ~= "table" then db.maps = {} end
     if type(db.knowledge) ~= "table" then db.knowledge = {} end
@@ -42,6 +45,25 @@ end
 
 function ns.InCombat()
     return ns.Call("InCombatLockdown") == true
+end
+
+-- Marco en el juego (settings.frame). false: la tecla y /compa enviar/sync no lo abren ni le dan el
+-- foco; /compa, /compa ? quedan inactivos (se usa la ventana de la app).
+local FRAME_OFF_MSG = "El marco está desactivado: usa la ventana de la app o /compa marco on"
+
+function ns.IsFrameOn()
+    local db = CompaneroWoWDB
+    return type(db) == "table" and type(db.settings) == "table" and db.settings.frame == true
+end
+
+-- Guarda la preferencia (settings.frame). Al apagarla, si el marco esta abierto se cierra.
+function ns.SetFrameEnabled(on)
+    on = on and true or false
+    if type(CompaneroWoWDB) == "table" then
+        if type(CompaneroWoWDB.settings) ~= "table" then CompaneroWoWDB.settings = {} end
+        CompaneroWoWDB.settings.frame = on
+    end
+    if not on and ns.UI then ns.SafeCall(ns.UI.Hide) end
 end
 
 -- true solo si el jugador esta dentro del mundo y los datos de las APIs son fiables:
@@ -309,8 +331,9 @@ end
 -- ---------------------------------------------------------------------------
 
 local function showHelp()
-    say("Comandos (/compa sin texto abre el marco; /compa ? <pregunta> pregunta directamente):")
-    say("  /compa ? <texto> - envía una pregunta a Compañero (la respuesta llega por el portapapeles: pulsa Ctrl+V en el marco)")
+    say("Comandos (con el marco activado, /compa sin texto lo abre; /compa ? <pregunta> pregunta directamente):")
+    say("  /compa marco on|off - marco en el juego (por defecto off: se usa la ventana de la app; la tecla solo comparte datos)")
+    say("  /compa ? <texto> - envía una pregunta a Compañero (requiere el marco activado; la respuesta llega por el portapapeles: pulsa Ctrl+V en el marco)")
     say("  /compa sync - actualiza los datos (misiones del juego, Questie si está, WhatsTraining, SkillUpForever, equipo) y los envía todos durante 20 s, sin recargar")
     say("  /compa sync reload - igual, y además recarga la interfaz (escribe SavedVariables)")
     say("  /compa enviar - comparte los datos que han cambiado durante 20 s (igual que la tecla Compañero: compartir datos)")
@@ -351,6 +374,7 @@ local function showStatus()
     say(string.format("Conocimiento: %d misiones, %d PNJ", nQuests, nNpcs))
     if ns.Storage then say(ns.Storage.StatusLine()) end
     say("Compartir datos: " .. (ns.IsStripOn() and "activado" or "desactivado (/compa strip on)"))
+    say("Marco en el juego: " .. (ns.IsFrameOn() and "activado (/compa marco off para desactivarlo)" or "desactivado (/compa marco on para activarlo)"))
     if ns.Share then say("Canal de envío: " .. ns.Share.Channel()) end
     if ns.Shot then
         for _, line in ipairs(ns.Shot.StatusLines()) do say(line) end
@@ -394,8 +418,14 @@ end
 local function handleSlash(msg)
     local question = string.match(msg or "", "^%s*%?%s*(.-)%s*$")
     if question then
-        -- /compa ? <texto>: pregunta directa (el texto conserva sus mayusculas).
-        if ns.Ask then ns.Ask.Send(question) else say("Preguntas no disponibles.") end
+        -- /compa ? <texto>: pregunta directa (el texto conserva sus mayusculas). Solo con el marco activado.
+        if not ns.IsFrameOn() then
+            say(FRAME_OFF_MSG)
+        elseif ns.Ask then
+            ns.Ask.Send(question)
+        else
+            say("Preguntas no disponibles.")
+        end
         return
     end
     local cmd, rest = string.match(msg or "", "^%s*(%S*)%s*(.-)%s*$")
@@ -404,7 +434,20 @@ local function handleSlash(msg)
     cmd = string.lower(cmd or "")
     rest = string.lower(rest)
     if cmd == "" then
-        openFrame()
+        if ns.IsFrameOn() then openFrame() else showHelp() end
+    elseif cmd == "marco" then
+        if rest == "on" then
+            ns.SetFrameEnabled(true)
+            say("Marco en el juego: activado. /compa marco off para desactivarlo.")
+            openFrame() -- abierto a mano: aqui si pone el cursor en la pregunta
+        elseif rest == "off" then
+            ns.SetFrameEnabled(false)
+            say("Marco en el juego: desactivado. Usa la ventana de la app; la tecla solo comparte datos.")
+        elseif rest == "" then
+            say("Marco en el juego: " .. (ns.IsFrameOn() and "activado" or "desactivado") .. " (/compa marco on|off).")
+        else
+            say("Uso: /compa marco on|off")
+        end
     elseif cmd == "ayuda" then
         showHelp()
     elseif cmd == "sync" then
