@@ -1,23 +1,32 @@
--- Storage.lua: datos guardados (SavedVariables, esquema 2) y la BANDEJA (outbox) del addon.
--- Contrato LEAN STORAGE (identico en el addon y en la app; la app SQLite es el sistema de registro).
+-- Storage.lua: datos guardados (SavedVariables, esquema 2.1), la BANDEJA (outbox) y el ESTADO ACTUAL
+-- del personaje. Contrato LEAN STORAGE (identico en el addon y en la app; la app SQLite es el sistema
+-- de registro).
 --
 -- SavedVariables (CompaneroWoWDB) tras la migracion:
---   schema = 2, settings, maps, mark
+--   schema = 2, schemaMinor = 1, settings, maps, mark
 --   outbox = { seq = <ultimo seq>, win = <ultima ventana de envio>,
 --              items = { { seq, msgType, at, shares, win, payload = { oseq, p, v } }, ... } }
---   characters[clave] = SOLO los campos de Storage.PERSIST_CHAR (personaje core, marcas de tiempo,
+--              Solo historial aprendido: combates (7), conocimiento (9) y mundo (16).
+--   characters[clave] = los campos de Storage.PERSIST_CHAR (personaje core, marcas de tiempo,
 --              marco, preguntas y respuestas, sesion, copias de seguridad de barras y macros,
---              contador de combates y hashes del ultimo envio).
+--              contador de combates, hashes del ultimo envio) y state (ver mas abajo).
 -- Memoria de juego (nunca se guarda): el resto de campos del personaje (bloques de estado actual,
 -- recalculados en juego y enviados en cada ventana), y knowledge/world, que se reconstruyen desde la
 -- bandeja al cargar. Los campos de memoria se enrutan con metatablas: el codigo de los modulos no cambia.
 --
--- Bandeja: cada registro aprendido (conocimiento 9, mundo 16, combates 7, hoja 12 cuando cambia) se
--- anade con Storage.Learn como item con seq creciente. Payload (lo que viaja en el canal): { oseq, p, v }
+-- Estado actual: characters[clave].state = { sheet, equipment, gear, proficiencies, professions,
+-- training, profPlan, quests, location, at }. Es la ULTIMA copia de cada bloque, sobrescrita (no es
+-- un historial ni va a la bandeja) y en formato largo (las claves son las del juego, como en el canal).
+-- Se escribe con Storage.SaveState tras cada cambio de bloque. Tope por personaje: STATE_MAX_BYTES; si
+-- el fichero pasa de FILE_TARGET_BYTES, los demas personajes se recortan a su nucleo (hoja basica).
+--
+-- Bandeja: cada registro aprendido (conocimiento 9, mundo 16, combates 7) se anade con Storage.Learn
+-- como item con seq creciente. Payload (lo que viaja en el canal): { oseq, p, v }
 --   p = ruta del registro (array), v = registro en forma compacta (Storage.KEYS).
--- Un item se quita tras haber salido en MAX_SHARES ventanas distintas, o al superar MAX_SV_BYTES (tamano
--- estimado del item serializado como SavedVariables, no del JSON) o MAX_ITEMS items (el mas antiguo primero).
--- Formato exacto del canal para la app: docs/outbox-format.md.
+-- Un item NO se quita al salir en una ventana (no hay confirmacion de que la app lo haya recibido): se
+-- quita al cumplir OUTBOX_MAX_AGE (7 dias desde su hora de aprendizaje, at), o al superar MAX_SV_BYTES
+-- (tamano estimado del item serializado como SavedVariables, no del JSON) o MAX_ITEMS items (el mas
+-- antiguo primero). Formato exacto del canal para la app: docs/outbox-format.md.
 --
 -- Codificacion compacta: claves largas -> cortas (Storage.KEYS); x/y y coordenadas de giver/turnIn con
 -- 3 decimales; lastSeen/lastOffered no se guardan (son volatiles y no cambian el registro).
@@ -33,16 +42,19 @@ local Storage = {}
 ns.Storage = Storage
 
 Storage.SCHEMA = 2
+Storage.SCHEMA_MINOR = 1          -- 2.1: characters[clave].state (estado actual, ver mas abajo)
 Storage.MAX_ITEMS = 2000          -- tope secundario: items de la bandeja
 Storage.MAX_SV_BYTES = 60 * 1024  -- tope principal: bytes estimados de la bandeja serializada (SavedVariables)
-Storage.MAX_SHARES = 3            -- un item sale en este numero de ventanas y se quita
+Storage.OUTBOX_MAX_AGE = 7 * 24 * 3600 -- un item de la bandeja se quita al cumplir 7 dias (at)
 Storage.ANSWER_MAX_BYTES = 2048   -- texto de cada respuesta guardada (Ask.lua)
+Storage.STATE_MAX_BYTES = 60 * 1024    -- tope por personaje del bloque state (serializado)
+Storage.FILE_TARGET_BYTES = 150 * 1024 -- tope orientativo del fichero entero (por encima se recortan los demas)
 
 -- Campos de cada personaje que se quedan en SavedVariables. Cualquier otro campo es de memoria.
 Storage.PERSIST_CHAR = {
     character = true, updatedAt = true, loggedOutAt = true, ui = true, ask = true,
     session = true, sessionBase = true, actionBarsBackup = true, macroBackup = true,
-    combatSeq = true, sent = true,
+    combatSeq = true, sent = true, state = true,
 }
 -- Claves de primer nivel de CompaneroWoWDB que viven solo en memoria (se reconstruyen de la bandeja).
 Storage.LIVE_TOP = { knowledge = true, world = true }
@@ -290,6 +302,12 @@ local function outboxOf(db)
     return box
 end
 
+-- Un item caduca al cumplir OUTBOX_MAX_AGE desde su hora de aprendizaje (at). Sin hora (0): no caduca.
+local function expired(item, now)
+    local at = tonumber(item.at) or 0
+    return at > 0 and now - at > Storage.OUTBOX_MAX_AGE
+end
+
 -- Quita el item en la posicion i de la lista (y de los indices).
 local function removeAt(box, i)
     local item = table.remove(box.items, i)
@@ -310,9 +328,10 @@ local function indexOutbox(db)
     local box = outboxOf(db)
     S.byseq, S.sizes, S.total, S.lastHash = {}, {}, 0, {}
     local kept = {}
+    local now = ns.Now()
     for _, item in ipairs(box.items) do
         local pl = type(item) == "table" and item.payload or nil
-        if type(pl) == "table" and type(pl.p) == "table" and type(item.seq) == "number" then
+        if type(pl) == "table" and type(pl.p) == "table" and type(item.seq) == "number" and not expired(item, now) then
             local pjson = ns.Json.Encode(pl)
             local vjson = ns.Json.Encode(pl.v)
             if pjson and vjson then
@@ -330,8 +349,12 @@ local function indexOutbox(db)
     end
 end
 
--- Quita los items mas antiguos mientras se superen los topes.
+-- Quita los items caducados y, despues, los mas antiguos mientras se superen los topes.
 local function enforceCaps(box)
+    local now = ns.Now()
+    for i = #box.items, 1, -1 do
+        if expired(box.items[i], now) then removeAt(box, i) end
+    end
     while #box.items > Storage.MAX_ITEMS or S.total > Storage.MAX_SV_BYTES do
         if #box.items == 0 then break end
         removeAt(box, 1)
@@ -377,6 +400,10 @@ function Storage.Sync()
     indexOutbox(db)
     if db.schema ~= Storage.SCHEMA then Storage.Migrate(db) end
     db.schema = Storage.SCHEMA
+    if (tonumber(db.schemaMinor) or 0) < Storage.SCHEMA_MINOR then
+        Storage.MigrateState(db)
+        db.schemaMinor = Storage.SCHEMA_MINOR
+    end
     attachDB(db)
     S.epoch = S.epoch + 1
     return S.epoch
@@ -404,28 +431,19 @@ function Storage.Learn(msgType, path, value, at)
     return append(db, msgType, path, v, hash, lastKey, at or ns.Now())
 end
 
--- Sale de la bandeja: la ventana win ha enviado el item seq. Lo quita al cumplir MAX_SHARES.
--- Devuelve counted (contado en esta ventana) y dropped (se quito).
+-- La ventana win ha enviado el item seq: cuenta una ventana para el item. El item NO se quita (solo
+-- caduca o cae por los topes): no hay confirmacion de que la app lo haya recibido.
+-- Devuelve true si se conto en esta ventana (false si ya estaba contado o no existe).
 function Storage.MarkShared(seq, win)
     local db = current()
     local item = db and S.byseq[seq] or nil
-    if not item or win == nil or item.win == win then return false, false end
+    if not item or win == nil or item.win == win then return false end
     item.win = win
     item.shares = (item.shares or 0) + 1
     local oldSize = S.sizes[seq] or 0
     S.sizes[seq] = itemSize(item)
     S.total = S.total - oldSize + S.sizes[seq]
-    if item.shares >= Storage.MAX_SHARES then
-        local box = outboxOf(db)
-        for i, it in ipairs(box.items) do
-            if it == item then
-                removeAt(box, i)
-                break
-            end
-        end
-        return true, true
-    end
-    return true, false
+    return true
 end
 
 -- Numero de la ventana de envio nueva (se guarda en la base).
@@ -569,6 +587,200 @@ function Storage.Migrate(db)
     end
     db.schema = Storage.SCHEMA
     return #migrated
+end
+
+-- ---------------------------------------------------------------------------
+-- Estado actual (characters[clave].state, esquema 2.1)
+-- ---------------------------------------------------------------------------
+-- Secciones del estado, en orden de recorte: si el personaje no cabe en STATE_MAX_BYTES se quita primero
+-- la seccion de la izquierda. La hoja (sheet) es la ultima; si aun no cabe, se recortan sus hechizos.
+Storage.STATE_SECTIONS = {
+    "training", "profPlan", "gear", "proficiencies", "quests", "professions", "location", "equipment", "sheet",
+}
+-- Campos de la hoja que se quedan en el nucleo de un personaje recortado (FILE_TARGET_BYTES).
+local STATE_CORE = { level = true, class = true, race = true, total = true, talents = true }
+
+-- Copia profunda de un valor (sin funciones ni userdata); nil si pasa de la profundidad.
+local function copyValue(v, depth)
+    local t = type(v)
+    if t == "table" then
+        if depth > 12 then return nil end
+        local out = {}
+        for k, x in pairs(v) do
+            local cx = copyValue(x, depth + 1)
+            if cx ~= nil then out[k] = cx end
+        end
+        return out
+    end
+    if t == "function" or t == "userdata" or t == "thread" then return nil end
+    return v
+end
+
+-- Igualdad profunda de dos valores (sin codificar).
+local function sameValue(a, b, depth)
+    if a == b then return true end
+    if type(a) ~= "table" or type(b) ~= "table" or depth > 12 then return false end
+    for k, v in pairs(a) do
+        if not sameValue(v, b[k], depth + 1) then return false end
+    end
+    for k in pairs(b) do
+        if a[k] == nil then return false end
+    end
+    return true
+end
+
+-- Dos bloques de estado son iguales si lo son todas sus secciones (la hora "at" no cuenta).
+local function sameState(old, new)
+    if type(old) ~= "table" then return false end
+    for k, v in pairs(old) do
+        if k ~= "at" and not sameValue(v, new[k], 0) then return false end
+    end
+    for k in pairs(new) do
+        if old[k] == nil then return false end
+    end
+    return true
+end
+
+-- La hoja sin exportedAt y sin textos de tooltip de sus hechizos: los numeros (coste, alcance, lanzamiento,
+-- enfriamiento) se quedan. nil si no hay hoja.
+local function sheetState(sheet)
+    if type(sheet) ~= "table" then return nil end
+    local out = {}
+    for k, v in pairs(sheet) do
+        if k ~= "exportedAt" and k ~= "spells" then out[k] = v end
+    end
+    if type(sheet.spells) == "table" then
+        local spells = {}
+        for i, sp in ipairs(sheet.spells) do
+            local e = {}
+            if type(sp) == "table" then
+                for k, v in pairs(sp) do
+                    if k ~= "tooltip" then e[k] = v end
+                end
+            end
+            spells[i] = e
+        end
+        out.spells = spells
+    end
+    return copyValue(out, 0)
+end
+
+-- Valor de una seccion a partir de los campos de memoria del personaje. nil si no hay dato (una lectura
+-- vacia no sustituye al estado anterior).
+local function sectionValue(c, name)
+    local v
+    if name == "sheet" then
+        v = sheetState(c.sheet)
+    else
+        v = c[name]
+    end
+    if type(v) ~= "table" or next(v) == nil then return nil end
+    return copyValue(v, 0)
+end
+
+-- Recorta un bloque de estado hasta STATE_MAX_BYTES: quita secciones en orden (STATE_SECTIONS) y, al final,
+-- los hechizos de la hoja desde el ultimo. Modifica state.
+local function fitState(state)
+    while #Storage.Serialize(state) > Storage.STATE_MAX_BYTES do
+        local dropped = false
+        for _, name in ipairs(Storage.STATE_SECTIONS) do
+            if name ~= "sheet" and state[name] ~= nil then
+                state[name] = nil
+                dropped = true
+                break
+            end
+        end
+        if not dropped and type(state.sheet) == "table" and type(state.sheet.spells) == "table"
+            and #state.sheet.spells > 0 then
+            state.sheet.spells[#state.sheet.spells] = nil
+            dropped = true
+        end
+        if not dropped then break end
+    end
+end
+
+-- Nucleo de un bloque de estado (para un personaje recortado): solo los campos basicos de la hoja.
+local function coreState(state)
+    local out = { at = state.at }
+    if type(state.sheet) == "table" then
+        local core = {}
+        for k in pairs(STATE_CORE) do
+            if state.sheet[k] ~= nil then core[k] = copyValue(state.sheet[k], 0) end
+        end
+        out.sheet = core
+    end
+    return out
+end
+
+-- Si el fichero pasa de FILE_TARGET_BYTES, recorta el estado de los demas personajes a su nucleo.
+local function trimOthers(keep)
+    local db = current()
+    if not db or Storage.SavedBytes() <= Storage.FILE_TARGET_BYTES then return end
+    for _, other in pairs(rawget(db, "characters") or {}) do
+        if other ~= keep and type(other) == "table" and type(other.state) == "table" then
+            other.state = coreState(other.state)
+        end
+    end
+end
+
+-- Guarda el estado actual del personaje c (sus campos de memoria: sheet, equipment, gear, proficiencies,
+-- professions, training, profPlan, quests, location). Cada seccion sin dato nuevo conserva la anterior.
+-- Solo escribe si algo cambio. Devuelve true si escribio.
+function Storage.SaveState(c)
+    if type(c) ~= "table" or not current() then return false end
+    local old = c.state
+    local fresh = {}
+    if type(old) == "table" then
+        for k, v in pairs(old) do
+            if k ~= "at" then fresh[k] = copyValue(v, 0) end
+        end
+    end
+    for _, name in ipairs(Storage.STATE_SECTIONS) do
+        local v = sectionValue(c, name)
+        if v ~= nil then fresh[name] = v end
+    end
+    if next(fresh) == nil then return false end
+    fitState(fresh)
+    if sameState(old, fresh) then return false end
+    fresh.at = ns.Now()
+    c.state = fresh
+    trimOthers(c)
+    return true
+end
+
+-- Paso al esquema 2.1: la hoja mas reciente de la bandeja (tipo 12, que ya no se guarda ahi) pasa al
+-- estado del personaje activo (el de mayor updatedAt/loggedOutAt). Los items tipo 12 salen de la bandeja.
+local function activeCharacter(db)
+    local best, rank = nil, -1
+    for _, c in pairs(rawget(db, "characters") or {}) do
+        if type(c) == "table" then
+            local r = math.max(tonumber(rawget(c, "updatedAt")) or 0, tonumber(rawget(c, "loggedOutAt")) or 0)
+            if r > rank then best, rank = c, r end
+        end
+    end
+    return best
+end
+
+function Storage.MigrateState(db)
+    local box = outboxOf(db)
+    local newest, kept = nil, {}
+    for _, item in ipairs(box.items) do
+        if type(item) == "table" and item.msgType == Storage.TYPE_SHEET then
+            if newest == nil or (tonumber(item.seq) or 0) > (tonumber(newest.seq) or 0) then newest = item end
+        else
+            kept[#kept + 1] = item
+        end
+    end
+    box.items = kept
+    local owner = activeCharacter(db)
+    if newest and owner and type(newest.payload) == "table" and type(newest.payload.v) == "table" then
+        local state = type(owner.state) == "table" and owner.state or {}
+        state.sheet = sheetState(Storage.Expand(newest.payload.v))
+        state.at = tonumber(newest.at) or ns.Now()
+        owner.state = state
+    end
+    indexOutbox(db)
+    return newest ~= nil
 end
 
 -- Tamano estimado (bytes) de lo que se guardaria en SavedVariables.

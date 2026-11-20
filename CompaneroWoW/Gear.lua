@@ -665,6 +665,7 @@ local function writeResults(out)
     if out.questWindow then c.questWindow = ns.PreferAvailable(c.questWindow, out.questWindow) end
     if out.gearCandidates then c.gearCandidates = ns.PreferAvailable(c.gearCandidates, out.gearCandidates) end
     if out.dungeons then c.dungeons = ns.PreferAvailable(c.dungeons, out.dungeons) end
+    if ns.Storage then ns.Storage.SaveState(c) end
     G.last = out
 end
 

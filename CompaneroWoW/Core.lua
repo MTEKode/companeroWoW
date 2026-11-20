@@ -196,6 +196,8 @@ function ns.SnapshotAll()
         -- Exportacion de WhatsTraining / SkillUpForever: mismo criterio (Integrations.lua).
         ns.SafeCall(ns.RequestIntegrationsExport)
     end
+    -- Estado actual (characters[k].state): la ultima copia de cada bloque, sobrescrita (Storage.lua).
+    if ns.Storage then ns.Storage.SaveState(c) end
     lastSnapshot = nowSec()
     return true
 end

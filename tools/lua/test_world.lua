@@ -777,9 +777,11 @@ local again = runShare()
 check("ventana 2: el vendedor vuelve a salir", #again >= 1)
 check("ventana 2: cuenta 2", worldItems()[1] ~= nil and worldItems()[1].shares == 2)
 
--- Tercera ventana: al cumplir 3 envios sale de la bandeja.
+-- Tercera ventana: el item sigue en la bandeja (ya no se quita por envios: caduca a los 7 dias o cae por topes).
 runShare()
-eq("tras tres ventanas el item se quita", #worldItems(), 0)
+eq("tras tres ventanas el item sigue en la bandeja", #worldItems(), 1)
+eq("tras tres ventanas cuenta 3", worldItems()[1] ~= nil and worldItems()[1].shares, 3)
+reset()
 
 -- Mensajes grandes: cada item es pequeno; todos salen, cada mensaje <= el tope del canal.
 reset()
@@ -817,8 +819,8 @@ local allSeen = true
 for _, i in ipairs(kept) do if not seen[i] then allSeen = false end end
 check("mensajes grandes: todos los vendedores de la bandeja llegan", allSeen and #kept > 0)
 
--- Sobrante: lo que no cabe en una ventana sale en las siguientes (oldest first) hasta que la
--- bandeja se vacia (cada item sale en 3 ventanas como maximo).
+-- Sobrante: lo que no cabe en una ventana sale en las siguientes hasta que todos han salido al menos
+-- una vez (los que nunca han salido van primero). La bandeja no se vacia.
 reset()
 for i = 1, 30 do
     T.time = T.time + 1
@@ -837,10 +839,16 @@ for _, it in ipairs(worldItems()) do
     if id then expectIds[#expectIds + 1] = id end
 end
 local got, activations = "", 0
+local function allExpectedSeen()
+    for _, id in ipairs(expectIds) do
+        if not string.find(got, '"p":["vendors",' .. id .. "]", 1, true) then return false end
+    end
+    return true
+end
 for _ = 1, 10 do
     activations = activations + 1
     got = got .. table.concat(runShare(), "|")
-    if #worldItems() == 0 then break end
+    if allExpectedSeen() then break end
 end
 local missing = 0
 for _, id in ipairs(expectIds) do
@@ -848,8 +856,8 @@ for _, id in ipairs(expectIds) do
 end
 check("sobrante: hay vendedores en la bandeja tras el tope", #expectIds > 0 and #expectIds < 30, tostring(#expectIds))
 eq("sobrante: ningun vendedor de la bandeja se pierde entre ventanas", missing, 0)
-eq("sobrante: la bandeja queda vacia tras las ventanas", #worldItems(), 0)
-check("sobrante: hizo falta mas de una ventana", activations >= 2, tostring(activations))
+check("sobrante: la bandeja no se vacia tras las ventanas", #worldItems() == #expectIds, tostring(#worldItems()))
+check("sobrante: la siguiente ventana vuelve a enviar vendedores (sin tope de envios)", #runShare() >= 1)
 
 -- Recarga: solo viaja lo que esta en SavedVariables (schema, outbox, settings, characters). El mundo
 -- se reconstruye desde la bandeja y no se guarda como bloque propio.

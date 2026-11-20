@@ -485,7 +485,11 @@ repeat
     for _, m in ipairs(lastRun.msgs9) do
         for id in string.gmatch(m, '"p":%["npcs",(%d+)%]') do seen[id] = true end
     end
-until #lastRun.msgs9 == 0 or runs >= 80
+    local all = true
+    for _, id in ipairs(expect) do
+        if not seen[id] then all = false break end
+    end
+until all or runs >= 80
 local missing = 0
 for _, id in ipairs(expect) do
     if not seen[id] then missing = missing + 1 end
@@ -494,7 +498,7 @@ outln(string.format("  info  2000 PNJ: %d activaciones; %d bytes de conocimiento
 check("2000 PNJ: el tope de la bandeja descarta los mas antiguos", #expect < 2000 and #expect > 0, tostring(#expect))
 check("2000 PNJ: todos los PNJ de la bandeja llegan en las activaciones (sin faltantes)", missing == 0, tostring(missing) .. " faltan")
 check("2000 PNJ: la primera ventana no basta para todo (se reparte)", runs > 1)
-check("2000 PNJ: al vaciarse la bandeja la activacion siguiente no envia conocimiento", #lastRun.msgs9 == 0)
+check("2000 PNJ: la bandeja no se vacia: una activacion nueva vuelve a enviar conocimiento", #lastRun.msgs9 >= 1)
 
 -- Cambio de un PNJ entre activaciones: entra un item nuevo y solo ese PNJ sale.
 ns.Storage.Learn(9, { "npcs", 1005 }, {

@@ -1,9 +1,10 @@
-# Formato de la bandeja (outbox) del canal: msgType 7, 9, 12 y 16
+# Formato de la bandeja (outbox) y del estado actual del canal: msgType 7, 9 y 16 (bandeja) y el
+# estado `characters[clave].state` (esquema 2.1)
 Documento de contrato entre el addon (`CompaneroWoW/`) y la app (ingesta a SQLite). El addon es la
 fuente de verdad de la forma; si cambia, cambia este documento y `CompaneroWoW/Storage.lua` a la vez.
 Referencias en el addon:
 - `CompaneroWoW/Storage.lua`: bandeja, tabla de claves (`Storage.KEYS`), redondeo (`Storage.ROUND`),
-  claves volatiles (`Storage.DROP`), escape de claves, topes.
+  claves volatiles (`Storage.DROP`), escape de claves, topes, estado actual (`Storage.SaveState`).
 - `CompaneroWoW/Channel.lua` (cabecera): trama v3, trozos, `msgId`, `msgType`.
 - `tools/lua/test_storage.lua`: ida y vuelta de la codificacion compacta y topes.
 - `tools/lua/test_world.lua`, `tools/lua/test_session.lua`, `tools/lua/test_channel.lua`: envio.
@@ -12,13 +13,13 @@ Cada mensaje del canal es un JSON en UTF-8 (reensamblado de trozos por `msgId`, 
 `Channel.lua`). El `msgType` de la trama indica el tipo. El cuerpo de un mensaje de la bandeja es un
 **objeto JSON** con exactamente tres claves: `oseq`, `p` y `v`. Las claves salen ordenadas y sin espacios
 (`{"oseq":3,"p":[...],"v":{...}}`).
-Los mensajes de estado actual (tipos 1, 2, 3, 4, 5, 6, 8, 10, 11, 13, 14 y el bloque de hoja del tipo 12)
-**no** son de la bandeja: no llevan `oseq`. Para distinguir: un mensaje es de la bandeja si y solo si es
-un objeto con la clave `oseq`.
+Los mensajes de estado actual (tipos 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14) **no** son de la bandeja:
+no llevan `oseq`. Para distinguir: un mensaje es de la bandeja si y solo si es un objeto con la clave
+`oseq`. La hoja (12) viaja en el canal como estado actual y tambien se guarda en el estado (seccion 8).
 ## 2. Envelope
 | Campo | Tipo | Significado |
 |-------|------|-------------|
-| `oseq` | entero >= 1 | Numero de orden del item. Unico y creciente dentro de la misma instalacion del addon (la bandeja es de la cuenta: `CompaneroWoWDB`). Puede haber huecos (items que se han descartado). |
+| `oseq` | entero >= 1 | Numero de orden del item. Unico y creciente dentro de la misma instalacion del addon (la bandeja es de la cuenta: `CompaneroWoWDB`). Puede haber huecos (items que se han descartado por caducidad o topes). |
 | `p` | array | Ruta del registro. Los elementos son cadenas o enteros y **no** se codifican (ver tabla por tipo). |
 | `v` | objeto o array | El registro en **forma compacta** (ver seccion 4). Es el registro completo, no un delta. |
 El `msgType` del mensaje (cabecera de la trama) dice que tipo de registro es. El campo `at` del item
@@ -28,7 +29,6 @@ El `msgType` del mensaje (cabecera de la trama) dice que tipo de registro es. El
 |---------|----------|-----|-----|
 | 7 | Combate | `["combats", id]` | Combate (seccion 5.1) |
 | 9 | Conocimiento | `["quests", questID]` o `["npcs", npcID]` | Mision o PNJ (5.2) |
-| 12 | Hoja, cambio | `["sheet", dia]` | Hoja (5.3). `dia` = segundos epoch / 86400 (entero) |
 | 16 | Mundo | ver abajo | Segun ruta (5.4) |
 Rutas del tipo 16:
 - `["flight", faccion, "nodes", nodeID]`: nodo de vuelo. `faccion` = `"Alliance"`, `"Horde"` o `"Neutral"`.
@@ -107,14 +107,16 @@ PNJ (`p = ["npcs", npcID]`). Claves largas: `npcID`, `name`, `mapID`, `x`, `y`, 
 ```json
 {"oseq":2,"p":["npcs",1234],"v":{"ac":2,"fs":1700000000,"m":1429,"n":"Granjero Tomas","pn":1234,"qg":true,"r":5,"sv":["Peligro en la granja"],"x":0.251,"y":0.663}}
 ```
-### 5.3 Hoja de personaje, cambio (msgType 12)
-`p = ["sheet", dia]`. `v` es la hoja (`Sheet.lua`, `SH.Collect`) sin `exportedAt` y sin `tooltip` de los
-hechizos. Claves de primer nivel habituales: `level` (`lv`), `class`, `race`, `stance`, `base`, `total`,
-`health`, `healthMax`, `power`, `powerMax`, `powerType`, `armor`, `armorEffective`, `crit`, `haste`, `hit`,
-`defense`, `melee`, `ranged`, `regen`, `resist`, `spell`, `talents`, y, si hay datos, `weaponSkills`,
-`spells`, `buffs`. Los hechizos llevan `spellID`, `n` (nombre), `rank`, `known` y los campos que anade `spellNumbers` (`Sheet.lua`). Las claves anidadas viajan con su nombre largo.
+### 5.3 Hoja de personaje (ya no es msgType 12 de la bandeja)
+La hoja no se guarda en la bandeja desde el esquema 2.1: es el bloque `sheet` del estado (seccion 8).
+Su forma: `Sheet.lua`, `SH.Collect`, sin `exportedAt` y sin `tooltip` de los hechizos (los numeros del
+hechizo, `castTime`, `range`, `cost`, `cooldown`, si se pudieron leer, se quedan). Claves de primer nivel
+habituales: `level`, `class`, `race`, `stance`, `base`, `total`, `health`, `healthMax`, `power`,
+`powerMax`, `powerType`, `armor`, `armorEffective`, `melee`, `ranged`, `defense`, `spell`, `regen`,
+`resist`, `talents` (arboles con `name`, `spellID`, `rank`, `maxRank`), y, si hay datos, `weaponSkills`,
+`spells` (`spellID`, `name` en el idioma del cliente, `rank`, `known`, y los numeros) y `buffs`.
 ```json
-{"oseq":11,"p":["sheet",20000],"v":{"class":"WARRIOR","health":4200,"healthMax":4200,"lv":60,"melee":{"ap":1200,"crit":12.5},"race":"Human","spells":[{"n":"Golpe furtivo","rank":"","spellID":1752}]}}
+{"sheet":{"class":"WARRIOR","level":60,"race":"Human","spells":[{"cooldown":6,"known":true,"name":"Golpe heroico","rank":"","spellID":78}],"talents":{"tabs":[{"name":"Armas","talents":[{"name":"Golpe mortal","spellID":12294,"rank":5,"maxRank":5}]}]}}}
 ```
 ### 5.4 Mundo (msgType 16)
 Nodo de vuelo (`nodeID`->`nd`, `name`->`n`, `mapID`->`m`, `x`, `y`, `known`->`kn`):
@@ -146,23 +148,72 @@ Consumible (`itemID`->`i`, `restores{health, mana, seconds->se}`, `requiredLevel
 {"oseq":9,"p":["consumables",2001],"v":{"i":2001,"kind":"food","n":"Pan","restores":{"health":0,"mana":0,"se":0}}}
 ```
 ## 6. Reglas de ingesta
-1. **Idempotencia por `oseq`**: el mismo `oseq` puede llegar mas de una vez (un item sale en hasta 3
-   ventanas de envio). Un `oseq` ya guardado se ignora.
+1. **Idempotencia por `oseq`**: el mismo `oseq` puede llegar mas de una vez (un item sale en cada
+   ventana de envio mientras no caduque). Un `oseq` ya guardado se ignora.
 2. **Registro completo, ultimo gana**: cada `v` es el registro entero de su ruta. Para una ruta
    `(msgType, p)` se guarda el de `oseq` mayor. Si llega un `oseq` menor que el guardado, se ignora.
-   Para el tipo 12, cada dia puede tener varios items: el de `oseq` mayor es el estado del dia.
 3. **Sin borrados**: no existe mensaje de borrado. Un registro que deja de llegar conserva su ultima copia.
-4. **Huecos son normales**: el addon descarta items (tope de tamano o de cantidad, o tras 3 ventanas).
-   Un `oseq` que nunca llega no es un error.
+4. **Huecos son normales**: el addon descarta items (tope de tamano o de cantidad, o por caducidad a
+   los 7 dias). Un `oseq` que nunca llega no es un error.
 5. **Orden de llegada**: no se garantiza. Se decide siempre por `oseq`, no por el orden de recepcion.
 6. **Mensajes de estado actual** (sin `oseq`) se tratan aparte: reemplazan el bloque anterior del
-   personaje (ver `Channel.lua`, `C.TYPES`).
+   personaje (ver `Channel.lua`, `C.TYPES`). El estado guardado (seccion 8) sigue la misma regla: cada
+   seccion se reemplaza entera.
 ## 7. Topes y retencion (lado addon)
 - Bandeja: tope principal de **60 KB serializados** (`Storage.MAX_SV_BYTES`, tamano del texto que
   ocuparia en SavedVariables, no del JSON) y tope secundario de **2000 items** (`Storage.MAX_ITEMS`).
   Al pasarse, se descarta lo mas antiguo.
-- Un item sale en una ventana de envio cuando se envia completo. Cuando ha salido en **3 ventanas**
-  distintas, se quita de la bandeja. Una ventana es una activacion de envio que empieza desde reposo.
+- **Caducidad**: un item se quita de la bandeja al cumplir **7 dias** desde su hora de aprendizaje
+  (`at`, `Storage.OUTBOX_MAX_AGE`). Un item sin hora (`at` = 0) no caduca.
+- **Sin borrado por envios**: salir en una ventana no quita el item (el addon no tiene confirmacion de
+  que la app lo haya recibido). Cada ventana de envio reenvia la bandeja: primero los items que nunca han
+  salido, despues los que menos veces han salido (`shares`, contado al salir entero).
 - `/compa limpiar si` vacia la bandeja; el `oseq` siguiente sigue creciendo.
 - La migracion desde el esquema 1 crea items nuevos (con `oseq` nuevos) a partir del conocimiento,
   el mundo y los combates que habia en SavedVariables.
+- La migracion desde el esquema 2 (sin `schemaMinor`) saca los items de tipo 12 de la bandeja: la hoja
+  mas reciente pasa al estado del personaje activo (seccion 8).
+
+## 8. Estado actual: `characters[clave].state` (esquema 2.1)
+`CompaneroWoWDB.schema = 2` y `CompaneroWoWDB.schemaMinor = 1` (la app lo lee en la ingesta de
+SavedVariables; sin `state` el fichero es 2.0). El estado es la **ultima copia** de cada bloque del
+personaje: se sobrescribe, no es un historial y no va a la bandeja.
+
+| Seccion | Origen en el addon | Contenido |
+|---------|--------------------|-----------|
+| `sheet` | `Sheet.lua` (`SH.Collect`) | Hoja sin `exportedAt` y sin `tooltip` de los hechizos |
+| `equipment` | `Collectors.lua` (`CollectEquipment`) | Equipo por ranura (1..19), con `link`, `itemID`, `itemLevel` |
+| `gear` | `Gear.lua` (`CollectGear`) | Gear del personaje (fuentes y calidades) |
+| `proficiencies` | `Gear.lua` | Competencias (armas, armaduras) |
+| `professions` | `Collectors.lua` (`CollectProfessions`) | Profesiones con `rank` y `maxRank` |
+| `training` | `Integrations.lua` (WhatsTraining) | Entrenamiento pendiente |
+| `profPlan` | `Integrations.lua` (SkillUpForever) | Plan de profesiones y listas de compra |
+| `quests` | `Collectors.lua` (`CollectQuests`) | Registro de misiones: `questID`, `title`, `level`, `zoneOrSort`, `isComplete`, `isFailed`, `isTracked`, `objectives` |
+| `location` | `Collectors.lua` (`CollectLocation`) | Ubicacion: `mapID`, `zone`, `subZone`, `x`, `y`, `instanceName`, `instanceType` |
+| `at` | Storage.lua | Hora (Unix) de la ultima escritura de un bloque |
+
+Las claves van **en formato largo** (como en el canal), sin codificacion compacta: es un bloque de
+lectura, no de la bandeja.
+
+```lua
+characters["Tester-Ravencrest"].state = {
+  at = 1700000000,
+  sheet = { class = "WARRIOR", level = 60, race = "Human", total = { ... }, talents = { ... },
+            spells = { { spellID = 78, name = "Golpe heroico", rank = "", known = true, cooldown = 6 } } },
+  equipment = { [1] = { slotID = 1, itemID = 2, link = "|Hitem:2|h[...]|h|r", itemLevel = 40, quality = 4 } },
+  location = { mapID = 1429, zone = "Elwynn", x = 0.41, y = 0.52 },
+  -- ... los demas bloques de la tabla, si hay datos
+}
+```
+
+Reglas:
+- **Escritura**: `Storage.SaveState` tras cada cambio de bloque (snapshot, hoja, entrenamiento, plan,
+  equipo). Solo escribe si algun bloque cambio; `at` se actualiza entonces.
+- **Lectura vacia no borra**: un bloque sin dato nuevo (nil o vacio) conserva la copia anterior.
+- **Presupuesto por personaje**: **60 KB** serializados (`Storage.STATE_MAX_BYTES`). Si no cabe, se quitan
+  bloques en este orden: `training`, `profPlan`, `gear`, `proficiencies`, `quests`, `professions`,
+  `location`, `equipment`; despues los hechizos de la hoja, desde el ultimo.
+- **Fichero**: si el fichero entero pasa de **150 KB** (`Storage.FILE_TARGET_BYTES`), el estado de los
+  demas personajes se recorta a su nucleo: `sheet` con `level`, `class`, `race`, `total` y `talents`.
+- **Ingesta (app)**: cada seccion se guarda en `char_state` (la forma que leen los lectores). Un bloque
+  mas nuevo (por `at`) reemplaza al anterior; a igual hora gana el de mayor `oseq`, como en el canal.

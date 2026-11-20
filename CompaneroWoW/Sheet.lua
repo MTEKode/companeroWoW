@@ -569,27 +569,6 @@ local function currentRecord()
     return c, key
 end
 
--- Copia de la hoja para la bandeja (Storage.lua, tipo 12): sin exportedAt y sin textos de tooltip
--- de los hechizos (esos solo viajan en la ventana de envio, nunca se guardan).
-local function outboxCopy(sheet)
-    local copy = {}
-    for k, v in pairs(sheet) do
-        if k ~= "exportedAt" then copy[k] = v end
-    end
-    if type(sheet.spells) == "table" then
-        local spells = {}
-        for i, s in ipairs(sheet.spells) do
-            local e = {}
-            for k, v in pairs(s) do
-                if k ~= "tooltip" then e[k] = v end
-            end
-            spells[i] = e
-        end
-        copy.spells = spells
-    end
-    return copy
-end
-
 -- Recalcula la hoja. Escribe solo si el contenido cambio. Devuelve true si escribio.
 local function refreshNow()
     SH.stats.refreshes = SH.stats.refreshes + 1
@@ -605,10 +584,8 @@ local function refreshNow()
     if sameSheet(c.sheet, sheet) then return false end
     sheet.exportedAt = ns.Now()
     c.sheet = sheet
-    -- Cambio de hoja a la bandeja: un registro por dia (clave = dia desde 1970).
-    if ns.Storage then
-        ns.Storage.Learn(ns.Storage.TYPE_SHEET, { "sheet", math.floor(ns.Now() / 86400) }, outboxCopy(sheet))
-    end
+    -- Estado actual del personaje (characters[k].state, Storage.lua): la ultima hoja, sin tooltips.
+    if ns.Storage then ns.Storage.SaveState(c) end
     SH.stats.writes = SH.stats.writes + 1
     if ns.Channel and ns.Channel.Send then ns.Channel.Send(12) end
     return true
