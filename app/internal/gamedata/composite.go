@@ -62,6 +62,16 @@ func (g *Service) PlayerContext() (any, error) {
 			}
 		}
 	}
+	// The sheet (class, level, talent points) whichever source holds it: the store, the file or the live
+	// channel. Without one the answer says so, so that the player is asked for /compa sync and not for
+	// talents the context never had.
+	if ch, _, ok := g.activeCharacter(); ok {
+		hoja := g.sheetSummary(ch)
+		out["hoja"] = hoja
+		if !truthy(hoja["disponible"]) {
+			notes = append(notes, "Falta la hoja del personaje (clase, nivel, talentos): escribe /compa sync en el juego.")
+		}
+	}
 	if mo, err := g.Money(); err == nil {
 		if m := asMap(mo); truthy(m["available"]) {
 			out["dinero"] = fmt.Sprintf("%d oro, %d plata, %d cobre",
@@ -114,23 +124,29 @@ func (g *Service) PlayerContext() (any, error) {
 	// professions. A note asks for a sync only when such a field is in this answer.
 	fresh := map[string]any{"questieDisponible": false}
 	bridge := false
-	svAge, svKnown := 0.0, false
 	if st, err := g.Status(); err == nil {
 		if m := asMap(st); m != nil {
 			bridge = truthy(m["bridgeConnected"])
 			fresh["puenteConectado"] = m["bridgeConnected"]
 			if age, ok := numOK(m["savedVariablesAgeSec"]); ok {
-				svAge, svKnown = age, true
 				fresh["svHaceSeg"] = age
 			}
 		}
 	}
+	// The age of the newest data of any source (the file, the store, the live channel): a copy of the
+	// addon's data in the store is as current as the file it came from, whichever was written last.
+	newest, from := g.newestData()
+	dataKnown := !newest.IsZero()
+	if dataKnown {
+		fresh["masRecienteHaceSeg"] = int64(time.Since(newest).Seconds())
+		fresh["masReciente"] = from
+	}
 	_, hasTracked := out["misionRastreada"]
 	_, hasProfs := out["profesiones"]
-	if svKnown && svAge > staleAddonSec && (hasTracked || hasProfs) {
+	if dataKnown && time.Since(newest).Seconds() > staleAddonSec && (hasTracked || hasProfs) {
 		notes = append(notes, "Los datos de misiones o profesiones del addon tienen más de 10 minutos: pide /compa sync en el juego.")
 	}
-	if !svKnown && !bridge && (hasTracked || hasProfs) {
+	if !dataKnown && !bridge && (hasTracked || hasProfs) {
 		notes = append(notes, "No hay datos del addon: escribe /compa sync en el juego.")
 	}
 	if ch, _, ok := g.activeCharacter(); ok {

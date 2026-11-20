@@ -419,6 +419,15 @@ func (w *SVWatcher) Current() *SavedVars {
 	return w.reload(path)
 }
 
+// Peek returns the data loaded now, or nil when none is held (never loaded, or dropped by ReleaseIdle).
+// Unlike Current it never reads the file again and does not count as a use, so a periodic check that
+// only needs what Poll just loaded leaves the idle release alone.
+func (w *SVWatcher) Peek() *SavedVars {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.current
+}
+
 // reload reads the file again after ReleaseIdle. pollMu serializes it with Poll, so the two
 // never hold two copies of the data at once.
 func (w *SVWatcher) reload(path string) *SavedVars {

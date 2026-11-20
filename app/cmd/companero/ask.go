@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,8 +45,7 @@ const askTimeout = 6 * time.Minute
 func runAsk(cfg *config.Config, dir, question, svFile string) int {
 	q := strings.TrimSpace(question)
 	if q == "" {
-		fmt.Fprintln(os.Stderr, "--ask: la pregunta está vacía")
-		return 2
+		return askFail(2, "--ask: la pregunta está vacía")
 	}
 	c := *cfg
 	if svFile != "" {
@@ -53,12 +54,22 @@ func runAsk(cfg *config.Config, dir, question, svFile string) int {
 	if err := skill.DeployAll(dir); err != nil {
 		log.Printf("ask: skill: %v", err)
 	}
-	st, err := store.Open(filepath.Join(dir, "companero.db"))
+	// The run works on a copy of the database (see askStore), so it runs while the app has its database open.
+	st, closeStore, err := askStore(dir)
 	if err != nil {
-		log.Printf("ask: store: %v", err)
-		return 1
+		return askFail(1, "--ask: no pude abrir la base de datos: %v", err)
 	}
-	defer func() { _ = st.Close() }()
+	defer closeStore()
+	// The tools port: the configured one is the running app's when the app runs, so this run serves on a free
+	// one and the CLI providers are given that address (see ai.mcpURL).
+	port, err := askMCPPort(c.MCPPort)
+	if err != nil {
+		return askFail(1, "--ask: no hay un puerto libre para el servidor de herramientas: %v", err)
+	}
+	if port != c.MCPPort {
+		log.Printf("ask: el puerto MCP %d está en uso; esta ejecución usa el %d", c.MCPPort, port)
+	}
+	c.MCPPort = port
 
 	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
 	defer cancel()
@@ -84,8 +95,7 @@ func runAsk(cfg *config.Config, dir, question, svFile string) int {
 	go func() { mcpErr <- mcp.ListenAndServe(ctx, c.MCPPort) }()
 	select {
 	case err := <-mcpErr:
-		fmt.Fprintf(os.Stderr, "el servidor de herramientas no pudo iniciar en el puerto %d: %v\n", c.MCPPort, err)
-		return 1
+		return askFail(1, "--ask: el servidor de herramientas no pudo iniciar en el puerto %d: %v", c.MCPPort, err)
 	case <-time.After(300 * time.Millisecond):
 	}
 
@@ -97,8 +107,7 @@ func runAsk(cfg *config.Config, dir, question, svFile string) int {
 	resp, err := asst.Answer(ctx, q, false)
 	calls := rec.Drain()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "--ask: no hubo respuesta: %v\n", err)
-		return 1
+		return askFail(1, "--ask: no hubo respuesta: %v", err)
 	}
 	names := make([]string, 0, len(calls))
 	for _, call := range calls {
@@ -106,4 +115,57 @@ func runAsk(cfg *config.Config, dir, question, svFile string) int {
 	}
 	fmt.Printf("Pregunta: %s\nProveedor: %s\nHerramientas: %s\n\n%s\n", q, resp.Provider, strings.Join(names, ", "), resp.Text)
 	return 0
+}
+
+// askFail reports why --ask stopped, on the standard output and on the error output: a caller that captures
+// only one of them still sees the reason, and the exit code says the run failed.
+func askFail(code int, format string, a ...any) int {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Println(msg)
+	fmt.Fprintln(os.Stderr, msg)
+	return code
+}
+
+// askStore opens the store of one --ask run on a copy of the data directory's database (store.Snapshot), so the
+// run never writes into the database the app keeps open, and it works while the app runs. The import of the
+// SavedVariables file and the migrations touch only the copy. The returned func closes the store and removes
+// the copy. Without a database yet the run starts on an empty one.
+func askStore(dir string) (*store.Store, func(), error) {
+	tmp, err := os.MkdirTemp("", "companero-ask-")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	dst := filepath.Join(tmp, "companero.db")
+	src := filepath.Join(dir, "companero.db")
+	if _, err := os.Stat(src); err == nil {
+		if err := store.Snapshot(src, dst); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+	}
+	st, err := store.Open(dst)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return st, func() {
+		_ = st.Close()
+		cleanup()
+	}, nil
+}
+
+// askMCPPort is the port one --ask run serves its tools on: the configured one when it is free, otherwise a free
+// one chosen by the system. The running app holds the configured port, and the run must not reach its server.
+func askMCPPort(configured int) (int, error) {
+	if ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(configured))); err == nil {
+		_ = ln.Close()
+		return configured, nil
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port, nil
 }

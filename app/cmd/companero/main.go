@@ -126,6 +126,9 @@ func run(o options) int {
 	cfg, created, err := config.LoadInfo(filepath.Join(dir, "config.json"))
 	if err != nil {
 		log.Printf("config: %v", err)
+		if o.ask != "" {
+			return askFail(1, "--ask: no pude leer la configuración: %v", err)
+		}
 		return 1
 	}
 	if o.trace || cfg.Trace {
@@ -273,6 +276,11 @@ func runApp(cfg *config.Config, dir string, start appStart) int {
 		}
 	}
 	g.Start(ctx)
+	if onDemand {
+		// The watcher is paused in this mode: nothing else looks at the file while the app is idle.
+		// This look stores a changed file within a minute, so the next question finds it stored.
+		go g.RunSavedVariablesCheck(ctx, gamedata.SavedVariablesIdleCheck)
+	}
 	// A session left open by an earlier run (a crash) ends at its last data. The tracker
 	// then follows every read of the bridge and is saved in the store; it ends after ten
 	// minutes without data, and Close ends it when the app exits. In the on-demand mode the
