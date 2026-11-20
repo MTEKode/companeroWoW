@@ -94,6 +94,9 @@ func (b *onDemandBackend) Ask(ctx context.Context, question string, withScreensh
 	if err != nil {
 		return ai.Response{}, err
 	}
+	// The file may have been written while the wait ran (the /compa sync of the player): it is
+	// stored before the answer reads the context and the tools.
+	refreshSavedVariables(b.g)
 	ctx = assistant.WithDataNote(ctx, ondemand.StaleNote(stale))
 	return b.Assistant.Ask(ctx, question, withScreenshot)
 }

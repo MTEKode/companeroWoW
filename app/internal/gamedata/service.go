@@ -51,11 +51,28 @@ type Service struct {
 	combats   combatCache  // the combat history read from the store (ingest.go)
 	state     stateCache   // the character state read from the store (state.go)
 	startOnce sync.Once
+
+	// importMu serializes the imports of the SavedVariables file: the watcher's goroutine, a refresh
+	// before a question and a read of the data may all find a changed file at once.
+	importMu sync.Mutex
+	// checkMu guards checkAt, the last time a read looked at the file (see checkSavedVariables).
+	checkMu sync.Mutex
+	checkAt time.Time
+	// checkEvery is how often a read looks at the file again; the test sets it to 0.
+	checkEvery time.Duration
 }
+
+// svCheckEvery is the least time between two looks at the SavedVariables file made by reads: a
+// question that runs for a minute sees the file as it is at each tool call, at the cost of one stat.
+const svCheckEvery = time.Second
+
+// SavedVariablesIdleCheck is how often the on-demand mode looks at the file while nothing asks: a stat, and a
+// read only when the file changed, so the store holds the newest data before the next question.
+const SavedVariablesIdleCheck = time.Minute
 
 // NewService creates the facade over the given sources.
 func NewService(r *bridge.Reader, w *bridge.SVWatcher, s *store.Store) *Service {
-	return &Service{reader: r, watcher: w, store: s}
+	return &Service{reader: r, watcher: w, store: s, checkEvery: svCheckEvery}
 }
 
 // Start starts the reader and the SavedVariables watcher (both are idempotent) and
@@ -88,14 +105,56 @@ func (g *Service) SetOnDemand(on bool) {
 // OnDemand reports whether the on-demand mode is selected.
 func (g *Service) OnDemand() bool { return g.onDemand.Load() }
 
-// RefreshSavedVariables checks the SavedVariables file once and reloads it if it changed. It is
-// a no-op without a watcher. The error is the watcher's (a missing file, or a load that failed
-// and kept the previous data).
+// RefreshSavedVariables checks the SavedVariables file once and, when it changed, reloads it and stores
+// what it holds before it returns: a question asked right after must not read the store before the
+// import (the watcher's channel is drained later, so it cannot be waited for). It is a no-op without a
+// watcher. The error is the watcher's (a missing file, or a load that failed and kept the previous data).
 func (g *Service) RefreshSavedVariables() error {
 	if g.watcher == nil {
 		return nil
 	}
-	return g.watcher.Poll()
+	err := g.watcher.Poll()
+	// Peek, not Current: a file dropped by the idle release is not read again just to compare it.
+	g.importKnowledge(g.watcher.Peek())
+	return err
+}
+
+// checkSavedVariables is the look a read makes at the file: at most once per checkEvery, so that a
+// SavedVariables file written while a question is being answered is stored before the next tool
+// reads the data. It does nothing without a watcher and never fails the read; a failed look keeps the
+// data the store and the file already have.
+func (g *Service) checkSavedVariables() {
+	if g.watcher == nil || g.store == nil {
+		return
+	}
+	g.checkMu.Lock()
+	due := g.checkAt.IsZero() || time.Since(g.checkAt) >= g.checkEvery
+	if due {
+		g.checkAt = time.Now()
+	}
+	g.checkMu.Unlock()
+	if due {
+		_ = g.RefreshSavedVariables()
+	}
+}
+
+// RunSavedVariablesCheck looks at the file every `every` until ctx ends (see RefreshSavedVariables). The
+// on-demand mode pauses the watcher, so without it a file written while nothing asks would be stored only
+// at the next question.
+func (g *Service) RunSavedVariablesCheck(ctx context.Context, every time.Duration) {
+	if g.watcher == nil || every <= 0 {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = g.RefreshSavedVariables()
+		}
+	}
 }
 
 func (g *Service) importLoop(ctx context.Context) {
@@ -121,6 +180,8 @@ func (g *Service) importKnowledge(sv *bridge.SavedVars) {
 	if g.store == nil || sv == nil {
 		return
 	}
+	g.importMu.Lock()
+	defer g.importMu.Unlock()
 	if last, ok, err := g.store.LastSVImport(sv.Path); err == nil && ok && last.SHA256 == sv.SHA256 {
 		return
 	}
@@ -525,6 +586,7 @@ type charEntry struct {
 //   - the store: the newest section of the character (sheet, equipment, quests, session, ...);
 //   - the live channel: the blocks newer than the stored ones (overlayLive).
 func (g *Service) activeCharacter() (charEntry, *bridge.SavedVars, bool) {
+	g.checkSavedVariables()
 	sv := g.savedVars()
 	legacy := map[string]map[string]any{}
 	if sv != nil {
@@ -838,12 +900,5 @@ func listOf(v any) []any {
 // that the store does not. The --ask run calls it before the question, so the answer reads the data as
 // it is in the file.
 func (g *Service) ImportSavedVariablesNow() error {
-	if g.watcher == nil {
-		return nil
-	}
-	if err := g.watcher.Poll(); err != nil {
-		return err
-	}
-	g.importKnowledge(g.watcher.Current())
-	return nil
+	return g.RefreshSavedVariables()
 }
