@@ -218,12 +218,19 @@ func (in *ingester) characterState(charKey string, st map[string]any) error {
 		if name == "at" || v == nil {
 			continue
 		}
+		if compactStateSections[name] {
+			v = expandKeys(v) // the addon writes these with the short keys of Storage.KEYS (Storage.Compact)
+		}
 		if err := in.putSection(charKey, name, v, at, 0); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+// compactStateSections are the state sections the addon writes in the compact encoding (short keys, see
+// Storage.KEYS): the store keeps them under the long names the readers use.
+var compactStateSections = map[string]bool{"questWindow": true, "gearCandidates": true}
 
 // pick2 returns a map with the given keys of m (the keys that are absent are left out).
 func pick2(m map[string]any, a, b string) map[string]any {

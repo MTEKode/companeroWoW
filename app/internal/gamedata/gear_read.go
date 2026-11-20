@@ -15,13 +15,18 @@ import (
 // is recorded as a Spanish hint in the notes of gearData; the answers that need it say so
 // instead of failing. Nothing here invents an item, quest, coordinate or dungeon.
 
+// syncHint is what the answers say when a block is missing: the player syncs the addon. It is the only
+// fix offered for missing data; Questie is suggested only when the data says it is not installed (see
+// gear_quests.go).
 const (
-	hintCompleted   = "No tengo las misiones completadas del personaje: escribe /compa sync en el juego"
-	hintProficiency = "No tengo las armas y armaduras que puede usar: escribe /compa sync en el juego"
-	hintGear        = "No tengo el equipo puesto: escribe /compa sync en el juego"
-	hintQuestWindow = "No tengo las misiones accesibles para tu nivel: escribe /compa sync en el juego (Questie es opcional y mejora el detalle)"
-	hintCandidates  = "No tengo objetos candidatos para el equipo: escribe /compa sync en el juego (hacen falta las recompensas de tus misiones)"
-	hintDungeons    = "No tengo datos de mazmorras: escribe /compa sync en el juego (ForeverDungeonJournal es opcional; el diario del juego también sirve)"
+	syncHint        = "Haz /compa sync reload en el juego"
+	questieMissing  = "Questie no está instalado: instalarlo da más detalle (es opcional)."
+	hintCompleted   = "No tengo las misiones completadas del personaje. " + syncHint + "."
+	hintProficiency = "No tengo las armas y armaduras que puede usar. " + syncHint + "."
+	hintGear        = "No tengo el equipo puesto. " + syncHint + "."
+	hintQuestWindow = "No tengo las misiones accesibles para tu nivel. " + syncHint + "."
+	hintCandidates  = "No tengo objetos candidatos para el equipo. " + syncHint + "."
+	hintDungeons    = "No tengo datos de mazmorras. " + syncHint + "."
 
 	gearMaxSlot      = 19 // inventory slot ids 1..19
 	gearMaxQuests    = 400
@@ -131,6 +136,10 @@ type gearData struct {
 	CandidatesKnown bool
 	DungeonsKnown   bool
 
+	// QuestieKnown: the data says whether Questie is installed (questieStatus, or the Questie export).
+	QuestieKnown     bool
+	QuestieInstalled bool
+
 	Equipped   map[int]gearItem
 	Completed  map[int64]bool
 	Quests     map[int64]windowQuest
@@ -183,6 +192,7 @@ func (g *Service) loadGearData() (gearData, bool) {
 	gd.readQuestWindow(ch.data)
 	gd.readCandidates(ch.data)
 	gd.readDungeons(ch.data)
+	gd.readQuestieStatus(ch.data)
 	return gd, true
 }
 
@@ -230,18 +240,26 @@ func (gd gearData) unavailableFor(key, hint string) map[string]any {
 	return u
 }
 
-// readCompleted reads completedQuests, the comma-joined ids of the quests done.
+// readCompleted reads completedQuests: the comma-joined ids of the quests done (the addon's text, in the
+// state and in the export) or the list of ids (the live channel and the store).
 func (gd *gearData) readCompleted(data map[string]any) {
-	s, ok := data["completedQuests"].(string)
-	if !ok {
-		gd.note("completed", hintCompleted, nil)
-		return
-	}
-	gd.CompletedKnown = true
-	for _, part := range strings.Split(s, ",") {
-		if id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil && id > 0 {
-			gd.Completed[id] = true
+	switch v := data["completedQuests"].(type) {
+	case string:
+		gd.CompletedKnown = true
+		for _, part := range strings.Split(v, ",") {
+			if id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil && id > 0 {
+				gd.Completed[id] = true
+			}
 		}
+	case []any:
+		gd.CompletedKnown = true
+		for _, x := range v {
+			if id := int64(numberOf(x)); id > 0 {
+				gd.Completed[id] = true
+			}
+		}
+	default:
+		gd.note("completed", hintCompleted, nil)
 	}
 }
 
@@ -381,6 +399,23 @@ func (gd *gearData) readDungeons(data map[string]any) {
 		}
 		gd.Dungeons = append(gd.Dungeons, d)
 	}
+}
+
+// readQuestieStatus reads whether Questie is installed: the questieStatus summary of the state, or else the
+// Questie export. Unknown (QuestieKnown false) when the character has neither.
+func (gd *gearData) readQuestieStatus(data map[string]any) {
+	m := asMap(data["questieStatus"])
+	if m == nil {
+		m = asMap(data["questie"])
+	}
+	if m == nil {
+		return
+	}
+	if _, ok := m["available"]; !ok {
+		return
+	}
+	gd.QuestieKnown = true
+	gd.QuestieInstalled = truthy(m["available"])
 }
 
 // parseGearItem reads one item table. ok is false when it has neither a name nor an id.

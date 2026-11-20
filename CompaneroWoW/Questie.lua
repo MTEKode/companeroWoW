@@ -742,6 +742,8 @@ function ns.ExportQuestieNow()
     c.questie = ns.PreferAvailable(c.questie, data)
     Q.last = c.questie
     Q.lastAt = nowSec()
+    -- El resumen de Questie (questieStatus) va al estado del personaje en cuanto cambia.
+    if ns.Storage then ns.Storage.SaveState(c) end
     return data
 end
 
