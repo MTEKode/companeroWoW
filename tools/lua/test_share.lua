@@ -1,7 +1,8 @@
 -- test_share.lua: activacion del envio bajo demanda (T38). Cubre: reposo sin OnUpdate y con la franja
 -- oculta; activacion por tecla y por /compa enviar; orden del primer envio; ventana de 20 s y
 -- vuelta al reposo; pulsar otra vez alarga la ventana; byte 30 = shareRemainingSec; /compa strip
--- on|off; /compa estado; asignacion de la tecla la primera vez (libre, ocupada, en combate);
+-- on|off; /compa estado; marco en el juego (settings.frame: la tecla solo comparte si no esta activado);
+-- asignacion de la tecla la primera vez (libre, ocupada, en combate);
 -- Bindings.xml y .toc; coste por trama.
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/test_share.lua
 package.path = "tools/lua/?.lua;" .. package.path
@@ -262,6 +263,30 @@ _G.CompaneroWoW_ShareKey()
 check("estado: 'Compartiendo (N s)' durante la ventana", Sh.StatusLine():find("Compartiendo (", 1, true) ~= nil, Sh.StatusLine())
 C.Stop()
 ns.StripRest()
+
+-- ---------------------------------------------------------------------------
+outln("(g2) Marco en el juego: la tecla solo lo abre con settings.frame activado")
+freshDB()
+check("marco: desactivado por defecto (settings.frame)", ns.IsFrameOn() == false)
+local opened = 0 -- spy de UI.OnShareKey: cuenta si la tecla intenta abrir el marco
+ns.UI = { OnShareKey = function() opened = opened + 1 end, Hide = function() end }
+_G.CompaneroWoW_ShareKey()
+eq("marco off: la tecla no abre el marco", opened, 0)
+check("marco off: la tecla empieza la ventana de envio", C.IsSharing())
+run(25, 0.2)
+Sh.Command()
+eq("marco off: /compa enviar no abre el marco", opened, 0)
+check("marco off: /compa enviar empieza la ventana", C.IsSharing())
+run(25, 0.2)
+SlashCmdList.COMPA("estado")
+check("marco off: /compa estado: Marco en el juego desactivado", chatHas("Marco en el juego: desactivado"))
+ns.SetFrameEnabled(true)
+check("marco on: guardado en settings.frame", CompaneroWoWDB.settings.frame == true and ns.IsFrameOn())
+_G.CompaneroWoW_ShareKey()
+eq("marco on: la tecla abre el marco una vez", opened, 1)
+check("marco on: la tecla empieza la ventana de envio", C.IsSharing())
+run(25, 0.2)
+ns.UI = nil
 
 -- ---------------------------------------------------------------------------
 outln("(h) Primera vez: asignacion de CTRL-SHIFT-SPACE")

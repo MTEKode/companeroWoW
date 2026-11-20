@@ -2,7 +2,8 @@
 -- "||", lineas de accion, pegado ajeno o incompleto, id anterior, tope de 4000 caracteres); envio de
 -- preguntas (id persistido, prioridad maxima, reenvio cada 2 s, sustitucion, historial); tecla y /compa
 -- (abrir, pregunta directa, sync sin recarga, sync reload, combate); envio solo de lo que cambia y fin
--- temprano; despacho de acciones (marca, barras, macro, combate); estado del marco (posicion, tamaño
+-- temprano; despacho de acciones (marca, barras, macro, combate); marco desactivado por defecto (tecla,
+-- /compa, /compa ?, migracion), Escape y clic en el mundo quitan el foco; estado del marco (posicion, tamaño
 -- minimo, Escape). Frames simulados; el canal corre por el OnUpdate real de Bridge.lua.
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/test_ui.lua
 package.path = "tools/lua/?.lua;" .. package.path
@@ -70,6 +71,7 @@ Obj.GetText = function(self) return self.text or "" end
 Obj.SetFocus = function(self) self.focus = true end
 Obj.ClearFocus = function(self) self.focus = false end
 Obj.HasFocus = function(self) return self.focus == true end
+Obj.IsMouseOver = function(self) return self.mouseOver == true end
 Obj.SetSize = function(self, w, h) self.w, self.h = w, h end
 Obj.GetWidth = function(self) return self.w end
 Obj.GetHeight = function(self) return self.h end
@@ -174,6 +176,7 @@ local function freshDB()
     CompaneroWoWDB = nil
     C.testing.reset()
     ns.EnsureDB()
+    CompaneroWoWDB.settings.frame = true -- los tests del marco lo quieren activado (por defecto va desactivado)
     CompaneroWoWDB.characters[KEY] = {
         character = { name = "Tester", level = 60, money = 100 },
         quests = { { id = 1 } },
@@ -465,19 +468,23 @@ eq("navegacion: ‹ va a la anterior", UI.w.counter.text, "1 / 2")
 UI.Step(1)
 eq("navegacion: › vuelve a la ultima", UI.w.counter.text, "2 / 2")
 
--- Tecla de compartir: abre, enfoca y empieza la ventana (sin pregunta: no hay id 15).
+-- Tecla de compartir (marco activado): abre el marco SIN foco y empieza la ventana (sin pregunta: no hay id 15).
 freshDB()
 UI.Hide()
 qbox.focus = false
 _G.CompaneroWoW_ShareKey()
 check("tecla: abre el marco", UI.IsShown())
-check("tecla: enfoca la pregunta", qbox.focus == true)
+check("tecla: NO enfoca la pregunta (las teclas de movimiento seguirian en el juego)", qbox.focus ~= true and paste.focus ~= true)
 check("tecla: empieza la ventana de envio", C.IsSharing() and F.scripts.OnUpdate ~= nil)
 check("tecla sin pregunta: no hay mensaje 15", jobOf(15) == nil)
 drive(25)
 check("tecla: la ventana acaba (<= 20 s)", not C.IsSharing())
 _G.CompaneroWoW_ShareKey()
-check("tecla: pulsar otra vez con el foco en la pregunta cierra el marco", UI.IsShown() == false)
+check("tecla: con el marco abierto y sin foco, lo deja abierto", UI.IsShown())
+qbox.focus = true -- el jugador pone el cursor en la pregunta
+_G.CompaneroWoW_ShareKey()
+check("tecla: pulsar con el foco en la pregunta cierra el marco", UI.IsShown() == false)
+check("tecla: al cerrar, la pregunta pierde el foco", qbox.focus ~= true)
 _G.CompaneroWoW_ShareKey()
 check("tecla: pulsar con el marco cerrado lo abre", UI.IsShown())
 -- Dentro de la ventana el campo sigue enfocado: el Escape (UISpecialFrames) lo cierra.
@@ -595,7 +602,101 @@ eq("estado: tamaño minimo alto 260", UI.frame.h, 260)
 eq("estado: posicion restaurada", UI.frame.points[1] and UI.frame.points[1].x, 10)
 
 -- ---------------------------------------------------------------------------
-outln("(i) Textos y ficheros")
+outln("(i) Marco en el juego desactivado (settings.frame): migracion, tecla, /compa, Escape y clic")
+-- Migracion: una base sin settings.frame (usuarios anteriores) queda en false.
+CompaneroWoWDB = nil
+ns.EnsureDB()
+eq("migracion: settings.frame queda en false", CompaneroWoWDB.settings.frame, false)
+check("migracion: ns.IsFrameOn() es false", ns.IsFrameOn() == false)
+-- Con el marco desactivado, nada lo abre ni le da el foco (la ventana de la app es la que se usa).
+-- La seccion (h) reconstruyo el marco: los campos son los actuales.
+qbox, paste = UI.w.qbox, UI.w.paste
+freshDB()
+UI.Hide()
+CompaneroWoWDB.settings.frame = false
+local function anyFocus()
+    for _, k in ipairs({ "qbox", "paste" }) do
+        if UI.w[k] and UI.w[k].focus then return true end
+    end
+    return false
+end
+_G.CompaneroWoW_ShareKey()
+check("off: la tecla no abre el marco", not UI.IsShown())
+check("off: la tecla no pone el foco", not anyFocus())
+check("off: la tecla empieza la ventana de envio", C.IsSharing())
+drive(25)
+SlashCmdList.COMPA("enviar")
+check("off: /compa enviar no abre el marco", not UI.IsShown() and C.IsSharing())
+drive(25)
+SlashCmdList.COMPA("sync")
+check("off: /compa sync no abre el marco ni enfoca", not UI.IsShown() and not anyFocus() and C.IsSharing())
+drive(25)
+chat = {}
+SlashCmdList.COMPA("")
+check("off: /compa sin texto no abre el marco", not UI.IsShown() and not anyFocus())
+check("off: /compa sin texto muestra la ayuda", chatHas("Comandos ("))
+chat = {}
+SlashCmdList.COMPA("? Hola")
+check("off: /compa ? avisa de que el marco esta desactivado", chatHas("El marco está desactivado: usa la ventana de la app o /compa marco on"))
+check("off: /compa ? no envia la pregunta", not (CompaneroWoWDB.characters[KEY].ask and CompaneroWoWDB.characters[KEY].ask.lastId))
+chat = {}
+SlashCmdList.COMPA("estado")
+check("off: /compa estado: Marco en el juego desactivado", chatHas("Marco en el juego: desactivado"))
+-- Una pregunta enviada sin marco no pone el foco en el campo de pegado.
+UI.OnQuestionSent(7)
+check("off: una pregunta enviada no enfoca el campo de pegado", not anyFocus())
+-- /compa marco on: abre el marco con el cursor en la pregunta (explicito).
+chat = {}
+SlashCmdList.COMPA("marco on")
+check("marco on: guardado", CompaneroWoWDB.settings.frame == true and ns.IsFrameOn())
+check("marco on: abre el marco", UI.IsShown())
+check("marco on: el cursor va a la pregunta (explicito)", qbox.focus == true)
+check("marco on: mensaje en espanol", chatHas("Marco en el juego: activado"))
+chat = {}
+SlashCmdList.COMPA("marco")
+check("marco: sin argumento muestra el estado", chatHas("Marco en el juego: activado"))
+SlashCmdList.COMPA("marco ?")
+check("marco: argumento no valido -> uso", chatHas("Uso: /compa marco on|off"))
+chat = {}
+SlashCmdList.COMPA("estado")
+check("marco on: /compa estado: Marco en el juego activado", chatHas("Marco en el juego: activado"))
+-- Escape: quita el foco y cierra.
+qbox.scripts.OnEscapePressed(qbox)
+check("Escape en la pregunta: quita el foco", not qbox.focus)
+check("Escape en la pregunta: cierra el marco", not UI.IsShown())
+SlashCmdList.COMPA("")
+check("/compa sin texto (marco on): abre con el cursor en la pregunta", UI.IsShown() and qbox.focus == true)
+paste.scripts.OnEscapePressed(paste)
+check("Escape en el campo de pegado: quita el foco y cierra", not anyFocus() and not UI.IsShown())
+-- Cerrar sin Escape (boton) tambien quita el foco.
+SlashCmdList.COMPA("")
+UI.Hide()
+check("cerrar: la pregunta pierde el foco", not qbox.focus)
+-- Clic en el mundo: quita el foco si el raton no esta sobre el marco; dentro del marco lo mantiene.
+local regs = callsOn(UI.frame, "RegisterEvent")
+local registered = false
+for _, c in ipairs(regs) do if c.args[1] == "GLOBAL_MOUSE_DOWN" then registered = true end end
+check("clic: el marco escucha GLOBAL_MOUSE_DOWN", registered)
+SlashCmdList.COMPA("")
+UI.frame.mouseOver = true
+UI.frame.scripts.OnEvent(UI.frame, "GLOBAL_MOUSE_DOWN", "LeftButton")
+check("clic dentro del marco: mantiene el foco", qbox.focus == true)
+UI.frame.mouseOver = false
+UI.frame.scripts.OnEvent(UI.frame, "GLOBAL_MOUSE_DOWN", "LeftButton")
+check("clic en el mundo: quita el foco", not qbox.focus)
+check("clic en el mundo: el marco sigue abierto", UI.IsShown())
+-- Apagarlo cierra el marco.
+SlashCmdList.COMPA("marco off")
+check("marco off: guardado", CompaneroWoWDB.settings.frame == false and not ns.IsFrameOn())
+check("marco off: cierra el marco", not UI.IsShown() and not anyFocus())
+check("marco off: mensaje en espanol", chatHas("Marco en el juego: desactivado"))
+-- Con el marco off, la tecla con el marco abierto no lo cierra ni lo reabre (solo comparte).
+UI.Open()
+_G.CompaneroWoW_ShareKey()
+check("off con el marco abierto: la tecla no lo cierra", UI.IsShown())
+
+-- ---------------------------------------------------------------------------
+outln("(j) Textos y ficheros")
 local tocText = io.open("CompaneroWoW/CompaneroWoW.toc", "rb"):read("*a")
 check("toc: carga Markup.lua, Ask.lua y UI.lua", string.find(tocText, "Markup.lua", 1, true) and string.find(tocText, "Ask.lua", 1, true) and string.find(tocText, "UI.lua", 1, true))
 check("toc: Markup.lua antes que UI.lua", string.find(tocText, "Markup.lua", 1, true) < string.find(tocText, "UI.lua", 1, true))
