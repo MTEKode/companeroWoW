@@ -76,6 +76,9 @@ type options struct {
 	testAnswer   bool
 	exportFB     string
 	profileMem   string
+	dataDir      string
+	svFile       string
+	ask          string
 }
 
 func main() {
@@ -92,6 +95,9 @@ func main() {
 	flag.BoolVar(&o.testTip, "test-tip", false, "con la ventana, envía un consejo de prueba por el mismo camino que los proactivos (globo de la bandeja o panel, según ajustes)")
 	flag.BoolVar(&o.testAnswer, "test-answer", false, "pone una respuesta de ejemplo en el portapapeles, suena el aviso y sale (prueba del modo juego)")
 	flag.StringVar(&o.exportFB, "export-feedback", "", "escribe las valoraciones 👍/👎 en este archivo .json y sale")
+	flag.StringVar(&o.ask, "ask", "", "responde esta pregunta por la cadena real de proveedores, imprime la respuesta y sale (con --data-dir y --sv para una prueba aislada)")
+	flag.StringVar(&o.dataDir, "data-dir", "", "carpeta de datos de la app en vez de la de %APPDATA% (base, configuración y registros)")
+	flag.StringVar(&o.svFile, "sv", "", "con --ask, --eval o --ingest-sv: lee este CompaneroWoW.lua en vez del de la configuración")
 	flag.StringVar(&o.profileMem, "profile-mem", "", "escribe un perfil de memoria (heap, pprof) en este archivo tras 30 s de arranque, y un resumen en <archivo>.txt")
 	flag.Parse()
 	os.Exit(run(o))
@@ -103,6 +109,10 @@ func run(o options) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if o.dataDir != "" {
+		dir = o.dataDir
+	}
+	svFileOverride = o.svFile
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "no pude crear", dir, ":", err)
 		return 1
@@ -128,6 +138,9 @@ func run(o options) int {
 	}
 	if o.diag {
 		return runDiag(cfg, dir, o.diagOut)
+	}
+	if o.ask != "" {
+		return runAsk(cfg, dir, o.ask, o.svFile)
 	}
 	if o.eval {
 		return runEval(cfg, dir, o.evalOut, o.evalProvider)

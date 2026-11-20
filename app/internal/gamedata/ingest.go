@@ -110,6 +110,7 @@ func (g *Service) storeJob(job ingestJob) {
 		log.Printf("gamedata: store message %s: %v", bridge.MsgNames[job.t], err)
 	}
 	g.combats.invalidate()
+	g.invalidateState()
 }
 
 // withStoreCombats lays the combat history of the character from the store under its own combats

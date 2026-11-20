@@ -71,7 +71,57 @@ var talentIDs = map[int]string{
 	// Two-Handed Weapon Specialization
 	12163: "two-handed-weapon-specialization", 12711: "two-handed-weapon-specialization", 12712: "two-handed-weapon-specialization",
 	// Talents that are also the spell they grant
-	12294: "mortal-strike", 23881: "bloodthirst", 12292: "death-wish", 12328: "sweeping-strikes",
+	12294: "mortal-strike", 23881: "bloodthirst",
+	// The ids of this client's talent entries (the addon's Sheet.lua, definitionID.spellID), checked
+	// against a Spanish-client sheet: the name the client gives each entry, its tree, row and max rank,
+	// and the site's talent of the same tree, row and max rank. The client's pair wins over the older
+	// table: 12328 is Deseo de la Muerte (Death Wish) and 12292 is Golpes de barrido (Sweeping Strikes).
+	12328: "death-wish", 12292: "sweeping-strikes", // Deseo de la Muerte, Golpes de barrido
+	12319: "flurry",                 // Aluvión
+	12317: "enrage",                 // Enfurecer
+	12321: "booming-voice",          // Voz retumbante
+	12322: "unbridled-wrath",        // Cólera desbocada
+	20500: "improved-berserker-rage", // Ira rabiosa mejorada
+	20502: "improved-execute",       // Ejecutar mejorado
+	20504: "improved-intercept",     // Intercepción mejorada
+	23584: "dual-wield-specialization", // Especialización en doble empuñadura
+	12323: "piercing-howl",          // Aullido penetrante
+	12289: "improved-hamstring",     // Seccionar mejorado
+	1290261: "weaponmaster",         // Maestro de armas
+	1310222: "spearing-strike",      // Lanzazo
+	12834: "deep-wounds",            // Heridas profundas
+	12296: "anger-management",       // Control de furia
+	12295: "improved-tactical-mastery", // Maestría táctica mejorada
+	12290: "improved-overpower",     // Abrumar mejorado
+	12285: "improved-charge",        // Embestir mejorado
+	12282: "improved-heroic-strike", // Golpe heroico mejorado
+	12286: "improved-rend",          // Desgarrar mejorado
+	16487: "blood-craze",            // Manía sangrienta
+	1323963: "furious-precision",    // Precisión furiosa
+	1323964: "lingering-rage",       // Ira persistente
+	1323967: "gore-drinker",         // Bebedor de entrañas
+	12962: "iron-will",              // Voluntad férrea
+	12298: "shield-specialization",  // Especialización en escudos
+	12297: "anticipation",           // Anticipación
+	12301: "improved-bloodrage",     // Sanguinario mejorado
+	12308: "improved-sunder-armor",  // Hender armadura mejorado
+	12311: "improved-shield-bash",   // Azote de escudo mejorado
+	12312: "improved-shield-wall",   // Muro de escudo mejorado
+	12313: "improved-disarm",        // Desarmar mejorado
+	12287: "improved-thunder-clap",  // Trueno mejorado
+	12797: "improved-revenge",       // Revancha mejorada
+	12792: "defiance",               // Desafío
+	12809: "concussion-blow",        // Golpe de concusión
+	12862: "improved-slam",          // Embate mejorado
+	12975: "last-stand",             // Última posición
+	1310315: "improved-whirlwind",   // Torbellino mejorado
+	1310316: "master-of-defense",    // Maestro de defensa
+	1310317: "vanguard",             // Vanguardia
+	1329555: "reckless-swings",      // Golpes temerarios
+	23922: "shield-slam",            // Embate con escudo
+	29787: "focused-rage",           // Ira enfocada
+	16538: "bastion",                // Bastión
+	1289682: "bloodthrill",          // Fragor de la sangre
 }
 
 // abilityKeyOf returns the rotation key of a spell id.

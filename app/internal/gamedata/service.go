@@ -49,6 +49,7 @@ type Service struct {
 
 	ingest    *ingestQueue // channel messages waiting to be stored, see ingest.go
 	combats   combatCache  // the combat history read from the store (ingest.go)
+	state     stateCache   // the character state read from the store (state.go)
 	startOnce sync.Once
 }
 
@@ -113,9 +114,14 @@ func (g *Service) importLoop(ctx context.Context) {
 }
 
 // importKnowledge stores what the SavedVariables file holds (the outbox, knowledge, world and the
-// characters' history) in the store. Everything is an upsert, so a file read again changes nothing.
+// characters' history) in the store. It runs on start and each time the file changes (mtime or size,
+// see bridge.SVWatcher): a file whose content hash is the one last imported is already in the store
+// and is skipped. Everything is an upsert, so a file read again changes nothing.
 func (g *Service) importKnowledge(sv *bridge.SavedVars) {
-	if g.store == nil {
+	if g.store == nil || sv == nil {
+		return
+	}
+	if last, ok, err := g.store.LastSVImport(sv.Path); err == nil && ok && last.SHA256 == sv.SHA256 {
 		return
 	}
 	imp, err := g.store.ImportSavedVariables(sv, time.Now())
@@ -123,6 +129,8 @@ func (g *Service) importKnowledge(sv *bridge.SavedVars) {
 		log.Printf("gamedata: ingest saved variables: %v", err)
 		return
 	}
+	g.invalidateState()
+	g.combats.invalidate()
 	if imp.Stats.Failed > 0 {
 		log.Printf("gamedata: saved variables: %d items not stored", imp.Stats.Failed)
 	}
@@ -508,33 +516,92 @@ type charEntry struct {
 	updatedAt time.Time
 }
 
-// activeCharacter picks the character with the newest updatedAt from SavedVariables.
+// activeCharacter returns the character the player is on, and the SavedVariables file it came from
+// (nil when there is none). The character is the one with the newest activity: its updatedAt or
+// loggedOutAt in SavedVariables, or the newest state the store holds for it (the channel and the
+// outbox of schema 2 write that state). Its data is laid up in three layers, each over the one below:
+//
+//   - SavedVariables schema 1, the character's table (the last resort);
+//   - the store: the newest section of the character (sheet, equipment, quests, session, ...);
+//   - the live channel: the blocks newer than the stored ones (overlayLive).
 func (g *Service) activeCharacter() (charEntry, *bridge.SavedVars, bool) {
 	sv := g.savedVars()
-	if sv == nil {
-		return charEntry{}, nil, false
+	legacy := map[string]map[string]any{}
+	if sv != nil {
+		chars, _ := sv.Raw["characters"].(map[string]any)
+		for k, v := range chars {
+			if m, ok := v.(map[string]any); ok {
+				legacy[k] = m
+			}
+		}
 	}
-	chars, _ := sv.Raw["characters"].(map[string]any)
-	var best charEntry
-	var bestTS float64
+	stored := g.storedCharacters()
+	var bestKey string
+	var bestRank float64
 	found := false
-	for k, v := range chars {
-		m, ok := v.(map[string]any)
-		if !ok {
-			continue
+	for k, m := range legacy {
+		rank := store.ActiveRank(m)
+		if st, ok := stored[k]; ok && float64(st.Unix()) > rank {
+			rank = float64(st.Unix())
 		}
-		ts := numberOf(m["updatedAt"])
-		if !found || ts > bestTS || (ts == bestTS && k < best.key) {
-			best = charEntry{key: k, data: m, updatedAt: unixTime(ts)}
-			bestTS = ts
-			found = true
+		if !found || rank > bestRank || (rank == bestRank && k < bestKey) {
+			bestKey, bestRank, found = k, rank, true
 		}
 	}
-	if found {
-		best = g.overlayLive(best)      // bloques del canal en vivo mas nuevos que SavedVariables
-		best = g.withStoreCombats(best) // el historial de combates sale de la base (store) antes que de SavedVariables
+	for k, st := range stored {
+		rank := float64(st.Unix())
+		if !found || rank > bestRank || (rank == bestRank && k < bestKey) {
+			bestKey, bestRank, found = k, rank, true
+		}
 	}
-	return best, sv, found
+	if !found {
+		return charEntry{}, sv, false
+	}
+	return g.characterEntry(bestKey, legacy[bestKey]), sv, true
+}
+
+// characterEntry lays the store state of key over its SavedVariables table base, then the live
+// channel and the stored combats (see activeCharacter).
+func (g *Service) characterEntry(key string, base map[string]any) charEntry {
+	merged := make(map[string]any, len(base)+8)
+	for k, v := range base {
+		merged[k] = v
+	}
+	at := unixTime(store.ActiveRank(base))
+	if st, ok := g.storedState(key); ok {
+		for name, v := range st.Sections {
+			merged[name] = v
+		}
+		if st.Latest.After(at) {
+			at = st.Latest
+		}
+	}
+	ch := charEntry{key: key, data: merged, updatedAt: at}
+	ch = g.overlayLive(ch)          // bloques del canal en vivo mas nuevos que la base
+	ch = withSheetBlocks(ch)        // la hoja trae el libro de hechizos y los talentos
+	ch = g.withStoreCombats(ch)     // el historial de combates sale de la base (store) antes que de SavedVariables
+	return ch
+}
+
+// withSheetBlocks lays the spells and the talents of the character's sheet under their own blocks,
+// where the readers look for them (the book of spells of the rotation, the talents of the context). The
+// sheet is the newest copy of both, so it replaces the blocks of the table.
+func withSheetBlocks(ch charEntry) charEntry {
+	sheet := asMap(ch.data["sheet"])
+	if sheet == nil {
+		return ch
+	}
+	merged := make(map[string]any, len(ch.data)+2)
+	for k, v := range ch.data {
+		merged[k] = v
+	}
+	for _, name := range []string{"spells", "talents"} {
+		if v := sheet[name]; v != nil {
+			merged[name] = v
+		}
+	}
+	ch.data = merged
+	return ch
 }
 
 func (g *Service) savedVars() *bridge.SavedVars {
@@ -765,4 +832,18 @@ func listOf(v any) []any {
 		out = append(out, e.value)
 	}
 	return out
+}
+
+// ImportSavedVariablesNow reads the SavedVariables file now (when it changed) and stores what it holds
+// that the store does not. The --ask run calls it before the question, so the answer reads the data as
+// it is in the file.
+func (g *Service) ImportSavedVariablesNow() error {
+	if g.watcher == nil {
+		return nil
+	}
+	if err := g.watcher.Poll(); err != nil {
+		return err
+	}
+	g.importKnowledge(g.watcher.Current())
+	return nil
 }

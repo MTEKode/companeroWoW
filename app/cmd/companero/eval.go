@@ -63,7 +63,7 @@ func runEval(cfg *config.Config, dir, outPath, provider string) int {
 	defer func() { _ = st.Close() }()
 
 	reader := bridge.NewReader(c.PixelPoll())
-	watcher := bridge.NewSVWatcherFunc(c.SavedVariablesPath, 0)
+	watcher := bridge.NewSVWatcherFunc(func() (string, error) { return svPathOf(&c) }, 0)
 	g := gamedata.NewService(reader, watcher, st)
 	g.Start(ctx)
 	waitForGame(g)

@@ -18,7 +18,7 @@ import (
 // with the file's path, size and content hash (store.ImportSavedVariables), so the result can be
 // checked with the last import of that file.
 func runIngestSV(cfg *config.Config, dir string) int {
-	path, err := cfg.SavedVariablesPath()
+	path, err := svPathOf(cfg)
 	if err != nil {
 		log.Printf("ingest-sv: %v", err)
 		fmt.Fprintln(os.Stderr, "ingest-sv:", err)
