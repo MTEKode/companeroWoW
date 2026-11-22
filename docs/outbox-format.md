@@ -195,9 +195,17 @@ personaje: se sobrescribe, no es un historial y no va a la bandeja.
 | `completedQuests` | `Gear.lua` (`CompletedList`) | Texto con los ids de las misiones completadas, separados por comas |
 | `dungeons` | `Gear.lua` (`G.BuildDungeons`) | Mazmorras del rango de nivel, con sus jefes y botín |
 | `questieStatus` | `Questie.lua` (resumen de `questie`) | `available` (si Questie está instalado), `version`, `exportedAt`, `quests`, `zoneQuests`, `npcs`, `sources`. Sin Questie: `available = false`. No es la exportación completa de Questie |
+| `bags` | `Collectors.lua` (`CollectInventory`), en forma compacta (0.2.0) | Bolsas: `freeSlots`, `totalSlots`, `distinct` e `items` (hasta **150** objetos distintos, agrupados por id: `itemID`, `name`, `count`, `quality`). Sin enlaces ni posiciones |
+| `bank` | `Extras.lua` (`CollectBank`), en forma compacta (0.2.0) | Banco, igual que `bags` (hasta **200** objetos) y con `at` (hora de la lectura). Solo se lee con el banco abierto; cerrado, se conserva la ultima lectura |
+| `reputations` | `Collectors.lua` (`CollectReputations`) (0.2.0) | Lista de `factionID`, `name`, `standing` (1-8), `current` y `max` (progreso dentro del nivel); hasta **80** |
+| `currencies` | `Extras.lua` (`CollectCurrencies`) (0.2.0) | Monedas y fichas: lista de `name`, `count`, `id` (si el juego lo da); hasta **40** |
+| `recipes` | `Extras.lua` (0.2.0) | Recetas conocidas: lista de profesiones `{ name, rank, max, at, list = { nombres } }` (hasta **250** recetas por profesion). Se leen al abrir la ventana de la profesion y se acumulan (una ventana filtrada no borra) |
+| `guildRoster` | `Extras.lua` (`CollectRoster`), en forma compacta (0.2.0) | Hermandad: `guild`, `total`, `online`, `at` y `members` (hasta **150**: `name`, `level`, `class`, `rank`, `zone` y `online` de los conectados). **Nunca** las notas publica ni de oficial |
+| `info` | `Extras.lua` (`CollectInfo`) (0.2.0) | `hearth` (piedra de hogar), `guildRank`, `guildRankIndex`, `pvp` (`kills`, `dishonorable`, `highestRank`, `rank`, `rankName`, `honor`), `pet` (`name`, `level`, `family`, `abilities`), `lockouts` (`name`, `resetAt`) y `played` (`total`, `level`, `at`; solo si el juego lo anuncia, p. ej. con `/played`) |
 | `at` | Storage.lua | Hora (Unix) de la ultima escritura de un bloque |
 
-Las claves van **en formato largo** (como en el canal), salvo `questWindow` y `gearCandidates`, que van
+Las claves van **en formato largo** (como en el canal), salvo `questWindow`, `gearCandidates` y, desde la 0.2.0,
+`bags`, `bank` y `guildRoster`, que van
 con las claves cortas de `Storage.KEYS` (`qd` = questID, `n` = name, `lv` = level, `rw` = rewards, `ch` =
 choice, `m` = mapID, `i` = itemID, `it` = items...; x e y a 3 decimales). La app los expande al ingerirlos
 (`store/ingest.go`, `compactStateSections`): los lectores siempre ven los nombres largos.
@@ -218,11 +226,14 @@ Reglas:
   equipo). Solo escribe si algun bloque cambio; `at` se actualiza entonces.
 - **Lectura vacia no borra**: un bloque sin dato nuevo (nil o vacio) conserva la copia anterior.
 - **Presupuesto por personaje**: **96 KB** serializados (`Storage.STATE_MAX_BYTES`; antes 60 KB, sin la
-  ventana de misiones). Si no cabe, se quitan bloques en este orden: `training`, `profPlan`, `gear`,
+  ventana de misiones). Si no cabe, se quitan bloques en este orden: `guildRoster`, `recipes`,
+  `bank`, `bags`, `currencies`, `reputations`, `info` (los de la 0.2.0, primero), `macros`, `actionBars`, `training`, `profPlan`, `gear`,
   `proficiencies`, `quests`, `professions`, `location`, `equipment`, `completedQuests`, `dungeons`, `gearCandidates`,
   `questWindow`, `questieStatus`; despues los hechizos de la hoja, desde el ultimo. La hoja (`sheet`) es la
   ultima en caer.
 - **Fichero**: si el fichero entero pasa de **150 KB** (`Storage.FILE_TARGET_BYTES`), el estado de los
-  demas personajes se recorta a su nucleo: `sheet` con `level`, `class`, `race`, `total` y `talents`.
+  demas personajes se recorta a su nucleo: `sheet` con `level`, `class`, `race`, `total` y `talents`, mas
+  `bank` y `recipes` (solo se releen en el banco o con la ventana de la profesion) mientras cada uno
+  ocupe como mucho 24 KB (`Storage.CORE_SECTION_BYTES`).
 - **Ingesta (app)**: cada seccion se guarda en `char_state` (la forma que leen los lectores). Un bloque
   mas nuevo (por `at`) reemplaza al anterior; a igual hora gana el de mayor `oseq`, como en el canal.

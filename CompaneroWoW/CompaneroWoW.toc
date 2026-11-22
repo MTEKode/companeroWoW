@@ -2,7 +2,7 @@
 ## Title: CompaneroWoW
 ## Notes: Compañero de IA para World of Warcraft: Forever (lectura de estado y puente de píxeles)
 ## Author: Marcos
-## Version: 0.1.0
+## Version: 0.2.0
 ## SavedVariables: CompaneroWoWDB
 ## OptionalDeps: Questie, WhatsTraining, SkillUpForever, ForeverDungeonJournal
 
@@ -17,6 +17,7 @@ Questie.lua
 QuestWindow.lua
 Gear.lua
 Integrations.lua
+Extras.lua
 Marks.lua
 Bridge.lua
 Channel.lua

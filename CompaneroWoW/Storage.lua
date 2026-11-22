@@ -16,12 +16,14 @@
 --
 -- Estado actual: characters[clave].state = { sheet, equipment, gear, proficiencies, professions,
 -- training, profPlan, quests, location, completedQuests, dungeons, gearCandidates, questWindow,
--- questieStatus, at }.
+-- questieStatus, macros, actionBars, at } y, desde la 0.2.0, { info, reputations, currencies, bags, bank,
+-- recipes, guildRoster } (Extras.lua; bags, bank y guildRoster en forma compacta).
 -- Es la ULTIMA copia de cada bloque, sobrescrita (no es un historial ni va a la bandeja) y en formato
 -- largo (las claves son las del juego, como en el canal). questWindow y gearCandidates van en forma
 -- compacta (STATE_QUESTS, STATE_CANDIDATES); questieStatus es el resumen de Questie, no su exportacion.
 -- Se escribe con Storage.SaveState tras cada cambio de bloque. Tope por personaje: STATE_MAX_BYTES; si
--- el fichero pasa de FILE_TARGET_BYTES, los demas personajes se recortan a su nucleo (hoja basica).
+-- el fichero pasa de FILE_TARGET_BYTES, los demas personajes se recortan a su nucleo (hoja basica, mas
+-- bank y recipes si son pequenos).
 --
 -- Bandeja: cada registro aprendido (conocimiento 9, mundo 16, combates 7) se anade con Storage.Learn
 -- como item con seq creciente. Payload (lo que viaja en el canal): { oseq, p, v }
@@ -53,7 +55,12 @@ Storage.ANSWER_MAX_BYTES = 2048   -- texto de cada respuesta guardada (Ask.lua)
 Storage.STATE_MAX_BYTES = 96 * 1024   -- tope por personaje del bloque state (serializado; antes 60 KB, sin la ventana de misiones)
 Storage.STATE_QUESTS = 120             -- misiones de la ventana que van al estado (accesibles primero, luego las mas cercanas al nivel)
 Storage.STATE_CANDIDATES = 80          -- candidatos de equipo que van al estado (los de mayor nivel de objeto)
+Storage.STATE_BAG_ITEMS = 150          -- objetos distintos de las bolsas que van al estado
+Storage.STATE_BANK_ITEMS = 200         -- objetos distintos del banco que van al estado
+Storage.STATE_REPUTATIONS = 80         -- reputaciones que van al estado
 Storage.FILE_TARGET_BYTES = 150 * 1024 -- tope orientativo del fichero entero (por encima se recortan los demas)
+Storage.CORE_SECTION_BYTES = 24 * 1024 -- tope de bank y de recipes para quedarse en un personaje recortado
+Storage.STATE_MACRO_BODY = 255         -- bytes del cuerpo de una macro en el estado (el limite del juego)
 
 -- Campos de cada personaje que se quedan en SavedVariables. Cualquier otro campo es de memoria.
 Storage.PERSIST_CHAR = {
@@ -268,6 +275,40 @@ function Storage.AttachChar(c)
     end
     setmetatable(c, CHAR_MT)
     return c
+end
+
+-- Un personaje guardado sin reino ("Nombre", de cuando el juego no dio el reino) pasa a su clave
+-- completa key ("Nombre-Reino"): de cada campo guardado queda el del registro mas reciente (o el del
+-- otro si falta), y el contador de combates mas alto. Devuelve true si habia uno y se unio.
+function Storage.AdoptRealmless(db, name, key)
+    local chars = type(db) == "table" and rawget(db, "characters") or nil
+    if type(chars) ~= "table" or type(name) ~= "string" or type(key) ~= "string" or key == name then return false end
+    local orphan = rawget(chars, name)
+    if type(orphan) ~= "table" then return false end
+    local target = rawget(chars, key)
+    rawset(chars, name, nil)
+    if type(target) ~= "table" then
+        chars[key] = orphan
+        return true
+    end
+    local function rank(c)
+        return math.max(tonumber(rawget(c, "updatedAt")) or 0, tonumber(rawget(c, "loggedOutAt")) or 0)
+    end
+    local orphanNewer = rank(orphan) > rank(target)
+    local newer, older = orphanNewer and orphan or target, orphanNewer and target or orphan
+    local seq = math.max(tonumber(rawget(orphan, "combatSeq")) or 0, tonumber(rawget(target, "combatSeq")) or 0)
+    for k in pairs(Storage.PERSIST_CHAR) do
+        local v = rawget(newer, k)
+        if v == nil then v = rawget(older, k) end
+        rawset(target, k, v)
+    end
+    if seq > 0 then rawset(target, "combatSeq", seq) end
+    if orphanNewer and live[orphan] then
+        Storage.AttachChar(target)
+        for k, v in pairs(live[orphan]) do target[k] = v end
+    end
+    live[orphan] = nil
+    return true
 end
 
 -- Campos de memoria de la base y de los personajes (idempotente).
@@ -600,11 +641,18 @@ end
 -- Secciones del estado, en orden de recorte: si el personaje no cabe en STATE_MAX_BYTES se quita primero
 -- la seccion de la izquierda. La hoja (sheet) es la ultima; si aun no cabe, se recortan sus hechizos.
 Storage.STATE_SECTIONS = {
+    -- 0.2.0 (Extras.lua): lo nuevo es lo primero que se recorta; lo que ya habia conserva su orden.
+    "guildRoster", "recipes", "bank", "bags", "currencies", "reputations", "info",
+    -- Macros y barras: despues de lo nuevo y antes que todo lo demas (muchas macros largas no deben
+    -- echar del estado a las misiones, el equipo o la ventana de misiones).
+    "macros", "actionBars",
     "training", "profPlan", "gear", "proficiencies", "quests", "professions", "location", "equipment",
     "completedQuests", "dungeons", "gearCandidates", "questWindow", "questieStatus", "sheet",
 }
 -- Campos de la hoja que se quedan en el nucleo de un personaje recortado (FILE_TARGET_BYTES).
 local STATE_CORE = { level = true, class = true, race = true, total = true, talents = true }
+-- Secciones que tambien se quedan en el nucleo si son pequenas (CORE_SECTION_BYTES cada una).
+local STATE_CORE_KEEP = { "bank", "recipes" }
 
 -- Copia profunda de un valor (sin funciones ni userdata); nil si pasa de la profundidad.
 local function copyValue(v, depth)
@@ -784,8 +832,112 @@ local function questieState(data)
     return copyValue(out, 0)
 end
 
+-- Barras y macros: el bloque tal cual (como en el canal). Un bloque no disponible no se guarda (nil).
+local function availableBlock(block)
+    if type(block) ~= "table" or block.available == false then return nil end
+    return block
+end
+
+-- Texto acotado a max bytes sin partir un caracter UTF-8.
+local function capText(s, max)
+    if #s <= max then return s end
+    local cut = max
+    while cut > 0 do
+        local b = string.byte(s, cut + 1)
+        if b < 128 or b >= 192 then break end -- el siguiente byte empieza un caracter: corte limpio
+        cut = cut - 1
+    end
+    return string.sub(s, 1, cut)
+end
+
+-- Macros: el bloque (copia) con el cuerpo de cada macro acotado a STATE_MACRO_BODY.
+local function macrosState(block)
+    block = availableBlock(block)
+    if not block then return nil end
+    local out = copyValue(block, 0)
+    for _, scope in pairs(out) do
+        local list = type(scope) == "table" and scope.list or nil
+        if type(list) == "table" then
+            for _, m in pairs(list) do
+                if type(m) == "table" and type(m.body) == "string" then
+                    m.body = capText(m.body, Storage.STATE_MACRO_BODY)
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Nombre de un objeto a partir de su enlace ("|Hitem:2589:...|h[Tela de lino]|h"). nil si no lo lleva.
+local function linkName(link)
+    if type(link) ~= "string" then return nil end
+    return string.match(link, "%[(.-)%]")
+end
+
+-- Bolsas o banco: los objetos agrupados por id (id, nombre, cantidad, calidad), los de mas calidad y
+-- cantidad primero, hasta maxItems. Sin enlaces ni posiciones. nil si no hay lectura.
+local function itemsState(block, maxItems)
+    if type(block) ~= "table" or type(block.items) ~= "table" then return nil end
+    local byID, list = {}, {}
+    for _, it in pairs(block.items) do
+        local id = type(it) == "table" and tonumber(it.itemID) or nil
+        if id then
+            local e = byID[id]
+            if not e then
+                e = { itemID = id, count = 0 }
+                byID[id] = e
+                list[#list + 1] = e
+            end
+            e.count = e.count + (tonumber(it.count) or 1)
+            if e.name == nil and type(it.name) == "string" then e.name = it.name end
+            if e.name == nil then e.name = linkName(it.link) end
+            if e.quality == nil then e.quality = tonumber(it.quality) end
+        end
+    end
+    sort(list, function(a, b)
+        local qa, qb = a.quality or 0, b.quality or 0
+        if qa ~= qb then return qa > qb end
+        if a.count ~= b.count then return a.count > b.count end
+        return a.itemID < b.itemID
+    end)
+    local items = {}
+    for i = 1, math.min(#list, maxItems) do items[i] = list[i] end
+    return Storage.Compact(copyValue({
+        at = tonumber(block.at), freeSlots = tonumber(block.freeSlots), totalSlots = tonumber(block.totalSlots),
+        distinct = #list, items = items,
+    }, 0))
+end
+
+-- Reputaciones: id, nombre, nivel (1-8) y progreso dentro del nivel, hasta STATE_REPUTATIONS.
+local function reputationsState(list)
+    if type(list) ~= "table" then return nil end
+    local out = {}
+    for _, r in ipairs(list) do
+        if #out >= Storage.STATE_REPUTATIONS then break end
+        if type(r) == "table" and type(r.name) == "string" then
+            out[#out + 1] = {
+                factionID = tonumber(r.factionID), name = r.name, standing = tonumber(r.standing),
+                current = tonumber(r.current), max = tonumber(r.max),
+            }
+        end
+    end
+    return out
+end
+
+-- Lista de la hermandad en forma compacta (claves cortas de Storage.KEYS). nil si no hay bloque.
+local function rosterState(block)
+    if type(block) ~= "table" then return nil end
+    return Storage.Compact(copyValue(block, 0))
+end
+
 -- Secciones que se guardan en forma de vista (no tal cual estan en memoria).
 local STATE_VIEWS = {
+    bags = function(c) return itemsState(c.inventory, Storage.STATE_BAG_ITEMS) end,
+    bank = function(c) return itemsState(c.bank, Storage.STATE_BANK_ITEMS) end,
+    reputations = function(c) return reputationsState(c.reputations) end,
+    guildRoster = function(c) return rosterState(c.guildRoster) end,
+    actionBars = function(c) return availableBlock(c.actionBars) end,
+    macros = function(c) return macrosState(c.macros) end,
     sheet = function(c) return sheetState(c.sheet) end,
     questWindow = function(c) return questWindowState(c.questWindow) end,
     gearCandidates = function(c) return candidatesState(c.gearCandidates) end,
@@ -839,10 +991,17 @@ local function coreState(state)
         end
         out.sheet = core
     end
+    -- El banco y las recetas solo se pueden releer en el banco o con la ventana de la profesion: se quedan
+    -- mientras cada uno quepa en CORE_SECTION_BYTES (ya van acotados: STATE_BANK_ITEMS, RECIPES_MAX).
+    for _, name in ipairs(STATE_CORE_KEEP) do
+        local v = state[name]
+        if type(v) == "table" and #Storage.Serialize(v) <= Storage.CORE_SECTION_BYTES then out[name] = v end
+    end
     return out
 end
 
--- Si el fichero pasa de FILE_TARGET_BYTES, recorta el estado de los demas personajes a su nucleo.
+-- Si el fichero pasa de FILE_TARGET_BYTES, recorta el estado de los demas personajes a su nucleo
+-- (hoja basica, banco y recetas).
 local function trimOthers(keep)
     local db = current()
     if not db or Storage.SavedBytes() <= Storage.FILE_TARGET_BYTES then return end

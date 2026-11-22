@@ -384,6 +384,175 @@ end
 
 
 -- ---------------------------------------------------------------------------
+-- APIs de Extras.lua: bolsas y banco (API clasica de contenedores), reputaciones, ventana de profesion
+-- (trade skill y craft), monedas, hermandad, JcJ, mascota, bloqueos y piedra de hogar.
+-- Opt-in: M.installExtras(). Sin llamarla (o tras uninstallExtras) ninguna de estas funciones existe.
+-- M.EXTRAS guarda el estado mutable; M.EXTRAS.fail[nombre] = true hace que esa funcion lance un error.
+-- ---------------------------------------------------------------------------
+M.EXTRAS = nil
+
+local EXTRAS_GLOBALS = {
+    "GetContainerNumSlots", "GetContainerNumFreeSlots", "GetContainerItemInfo", "NUM_BAG_SLOTS", "NUM_BANKBAGSLOTS",
+    "BANK_CONTAINER", "GetNumFactions", "GetFactionInfo", "GetMoney", "GetXPExhaustion", "GetTradeSkillLine",
+    "GetNumTradeSkills", "GetTradeSkillInfo", "GetCraftDisplaySkillLine", "GetNumCrafts", "GetCraftInfo",
+    "GetCurrencyListSize", "GetCurrencyListInfo", "GetNumGuildMembers", "GetGuildRosterInfo", "GetGuildInfo",
+    "GetBindLocation", "GetPVPLifetimeStats", "UnitPVPRank", "GetPVPRankInfo", "GetHonorCurrency", "UnitExists",
+    "UnitCreatureFamily", "GetPetActionInfo", "GetNumSavedInstances", "GetSavedInstanceInfo", "C_CurrencyInfo",
+    "C_TradeSkillUI", "IsInGuild", -- IsInGuild no se instala: la pone la prueba que la necesita
+}
+
+function M.installExtras()
+    local S = {
+        fail = {},
+        money = 123456, rested = 1500,
+        -- [contenedor] = { slots = n, items = { [hueco] = { id, nombre, cantidad, calidad } } }
+        containers = {
+            [0] = { slots = 16, items = { [1] = { 2589, "Tela de lino", 20, 1 }, [2] = { 2589, "Tela de lino", 7, 1 },
+                                          [3] = { 4306, "Tela de seda", 12, 1 }, [5] = { 6948, "Piedra de hogar", 1, 1 } } },
+            [1] = { slots = 8, items = { [1] = { 1210, "Gema de sombra", 2, 2 } } },
+            [-1] = { slots = 24, items = { [1] = { 4306, "Tela de seda", 40, 1 }, [2] = { 2840, "Barra de cobre", 15, 1 } } },
+            [5] = { slots = 10, items = { [4] = { 7909, "Aguamarina", 3, 2 } } },
+        },
+        factions = {
+            { name = "Alianza", header = true },
+            { name = "Ventormenta", standing = 6, min = 9000, max = 21000, value = 12000, id = 72 },
+            { name = "Forjaz", standing = 5, min = 3000, max = 9000, value = 4500, id = 47 },
+        },
+        trade = { name = "Sastrería", rank = 150, max = 225, list = {
+            { "Ropa", "header" }, { "Camisa de lino blanca", "trivial" }, { "Bolsa de seda", "optimal" } } },
+        craft = nil, -- { name, rank, max, list = { { nombre, subtexto, tipo } } }
+        currencies = { { "JcJ", true }, { "Favor del mercader", false, 14 }, { "Distintivo de justicia", false, 3 } },
+        guild = { name = "Legio VII", rank = "Oficial", rankIndex = 2, online = 2, members = {
+            -- nombre, rango, indice, nivel, clase, zona, nota, nota de oficial, conectado, estado, clase (fichero)
+            { "Tester-Ravencrest", "Oficial", 2, 30, "Guerrero", "Elwynn", "nota publica", "nota de oficial", true, 0, "WARRIOR" },
+            { "Brutus", "Miembro", 4, 42, "Mago", "Tanaris", "alter de Pepe", "no fiable", false, 0, "MAGE" },
+            { "Aela", "Miembro", 4, 18, "Cazador", "Los Baldíos", "", "", true, 0, "HUNTER" },
+        } },
+        hearth = "Ventormenta",
+        pvp = { hk = 120, dk = 1, highest = 5, rank = 7, rankName = "Cabo", rankNumber = 3, honor = 450 },
+        pet = { name = "Colmillo", level = 29, family = "Lobo",
+                actions = { "PET_ACTION_ATTACK", "PET_ACTION_FOLLOW", "Mordedura", "Gruñido" } },
+        lockouts = { { "Monasterio Escarlata", 111, 7200 }, { "Caducada", 112, 0 } },
+    }
+    M.EXTRAS = S
+    -- Envuelve fn: si S.fail[name] esta puesto, lanza un error (como una API con otra forma).
+    local function def(name, fn)
+        _G[name] = function(...)
+            if S.fail[name] then error("stub: " .. name .. " roto") end
+            return fn(...)
+        end
+    end
+    -- S.oneNil = true: los booleanos salen como en los clientes antiguos (1 / nil).
+    local function flag(v)
+        if S.oneNil then return v and 1 or nil end
+        return v
+    end
+    _G.NUM_BAG_SLOTS, _G.NUM_BANKBAGSLOTS, _G.BANK_CONTAINER = 4, 6, -1
+    def("GetContainerNumSlots", function(bag) return S.containers[bag] and S.containers[bag].slots or 0 end)
+    def("GetContainerNumFreeSlots", function(bag)
+        local c = S.containers[bag]
+        if not c then return 0 end
+        local used = 0
+        for _ in pairs(c.items) do used = used + 1 end
+        return c.slots - used
+    end)
+    def("GetContainerItemInfo", function(bag, slot)
+        local it = S.containers[bag] and S.containers[bag].items[slot]
+        if not it then return nil end
+        local link = "|cffffffff|Hitem:" .. it[1] .. "::::::::30:::::|h[" .. it[2] .. "]|h|r"
+        -- S.noItemID: cliente antiguo, sin el decimo valor (itemID).
+        if S.noItemID then return 134000, it[3], false, it[4], false, false, link end
+        return 134000, it[3], false, it[4], false, false, link, false, false, it[1]
+    end)
+    def("GetMoney", function() return S.money end)
+    def("GetXPExhaustion", function() return S.rested end)
+    def("GetNumFactions", function() return #S.factions end)
+    def("GetFactionInfo", function(i)
+        local f = S.factions[i]
+        if not f then return nil end
+        return f.name, "", f.standing, f.min, f.max, f.value, false, false, f.header == true, false, false, false, false, f.id
+    end)
+    def("GetTradeSkillLine", function()
+        if not S.trade then return "UNKNOWN", 0, 0 end
+        return S.trade.name, S.trade.rank, S.trade.max
+    end)
+    def("GetNumTradeSkills", function() return S.trade and #S.trade.list or 0 end)
+    def("GetTradeSkillInfo", function(i)
+        local r = S.trade and S.trade.list[i]
+        if not r then return nil end
+        return r[1], r[2], 0, true
+    end)
+    def("GetCraftDisplaySkillLine", function()
+        if not S.craft then return nil end
+        return S.craft.name, S.craft.rank, S.craft.max
+    end)
+    def("GetNumCrafts", function() return S.craft and #S.craft.list or 0 end)
+    def("GetCraftInfo", function(i)
+        local r = S.craft and S.craft.list[i]
+        if not r then return nil end
+        return r[1], r[2], r[3]
+    end)
+    def("GetCurrencyListSize", function() return #S.currencies end)
+    def("GetCurrencyListInfo", function(i)
+        local c = S.currencies[i]
+        if not c then return nil end
+        return c[1], flag(c[2]), true, false, false, c[3] or 0
+    end)
+    def("GetNumGuildMembers", function() return #S.guild.members, S.guild.online end)
+    def("GetGuildRosterInfo", function(i)
+        local m = S.guild.members[i]
+        if not m then return nil end
+        return m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], flag(m[9]), m[10], m[11]
+    end)
+    def("GetGuildInfo", function() return S.guild.name, S.guild.rank, S.guild.rankIndex end)
+    def("GetBindLocation", function() return S.hearth end)
+    def("GetPVPLifetimeStats", function() return S.pvp.hk, S.pvp.dk, S.pvp.highest end)
+    def("UnitPVPRank", function() return S.pvp.rank end)
+    def("GetPVPRankInfo", function() return S.pvp.rankName, S.pvp.rankNumber end)
+    -- S.pvp.honorExtra: segundo valor que devuelven algunos clientes (maximo, texto...).
+    def("GetHonorCurrency", function()
+        if S.pvp.honorExtra ~= nil then return S.pvp.honor, S.pvp.honorExtra end
+        return S.pvp.honor
+    end)
+    def("UnitExists", function(unit)
+        if unit == "pet" then return flag(S.pet ~= nil) end
+        return flag(true)
+    end)
+    local unitName, unitLevel = _G.UnitName, _G.UnitLevel
+    S.restore = { UnitName = unitName, UnitLevel = unitLevel }
+    _G.UnitName = function(unit)
+        if unit == "pet" then return S.pet and S.pet.name or nil end
+        return unitName and unitName(unit) or nil
+    end
+    _G.UnitLevel = function(unit)
+        if unit == "pet" then return S.pet and S.pet.level or nil end
+        return unitLevel and unitLevel(unit) or nil
+    end
+    def("UnitCreatureFamily", function() return S.pet and S.pet.family or nil end)
+    def("GetPetActionInfo", function(i)
+        local a = S.pet and S.pet.actions[i]
+        if not a then return nil end
+        return a, "", 132000, string.sub(a, 1, 4) == "PET_"
+    end)
+    def("GetNumSavedInstances", function() return #S.lockouts end)
+    def("GetSavedInstanceInfo", function(i)
+        local l = S.lockouts[i]
+        if not l then return nil end
+        return l[1], l[2], l[3], 1, l[3] > 0
+    end)
+    return S
+end
+
+function M.uninstallExtras()
+    local S = M.EXTRAS
+    for _, name in ipairs(EXTRAS_GLOBALS) do _G[name] = nil end
+    if S and S.restore then
+        _G.UnitName, _G.UnitLevel = S.restore.UnitName, S.restore.UnitLevel
+    end
+    M.EXTRAS = nil
+end
+
+-- ---------------------------------------------------------------------------
 -- Addons fuente de Integrations.lua: WhatsTraining (WT_API), SkillUpForever.API.
 -- Son datos de prueba con la forma publica de cada API; se instalan y desinstalan por separado.
 -- ---------------------------------------------------------------------------
@@ -964,7 +1133,15 @@ function M.installBars()
     _G.GetActionInfo = function(slot)
         local a = B.actions[slot]
         if not a then return nil end
-        return a.type, a.id, nil
+        return a.type, a.id, a.subType
+    end
+    -- Texto del boton: el nombre de la macro (a.text si el id del slot no es el indice de la macro).
+    _G.GetActionText = function(slot)
+        local a = B.actions[slot]
+        if not a or a.type ~= "macro" then return nil end
+        if a.text then return a.text end
+        local m = B.macros[a.id]
+        return m and m.name or nil
     end
     _G.GetBindingKey = function(name)
         rec("GetBindingKey", name)
@@ -1017,7 +1194,7 @@ function M.installBars()
 end
 
 function M.uninstallBars()
-    for _, name in ipairs({ "GetActionInfo", "GetBindingKey", "GetMacroInfo", "GetNumMacros", "GetCursorInfo",
+    for _, name in ipairs({ "GetActionInfo", "GetActionText", "GetBindingKey", "GetMacroInfo", "GetNumMacros", "GetCursorInfo",
                             "ClearCursor", "PickupAction", "PlaceAction", "PickupMacro", "C_SpellBook",
                             "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight", "MultiBarLeft" }) do
         _G[name] = nil

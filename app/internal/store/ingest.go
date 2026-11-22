@@ -225,6 +225,19 @@ func (in *ingester) characterState(charKey string, st map[string]any) error {
 			return err
 		}
 	}
+	// The action bars and the macros of the state also fill their tables (v_barras, v_macros), so a
+	// reload delivers them without the channel. The file is read when it changes, and its state is
+	// the newest copy the addon had when it was written.
+	if bars := asObj(st["actionBars"]); bars != nil {
+		if err := in.actionBars(charKey, map[string]any{"actionBars": bars}); err != nil {
+			return err
+		}
+	}
+	if macros := asObj(st["macros"]); macros != nil {
+		if err := in.macros(charKey, macros); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

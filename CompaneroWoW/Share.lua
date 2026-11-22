@@ -45,11 +45,11 @@ end
 function Sh.ChannelCommand(rest)
     rest = string.lower(rest or "")
     if rest == "" then
-        say("Canal de envío: " .. Sh.Channel() .. " (/compa canal tira|captura).")
+        say("Canal de envío: " .. Sh.Channel() .. " (/compa canal tira||captura).")
         return
     end
     if not Sh.CHANNELS[rest] then
-        say("Uso: /compa canal tira|captura")
+        say("Uso: /compa canal tira||captura")
         return
     end
     if type(CompaneroWoWDB) == "table" then
