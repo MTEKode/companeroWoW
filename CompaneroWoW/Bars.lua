@@ -2,7 +2,7 @@
 -- y ofrece /compa barras | aplicar | deshacer.
 -- Exportacion: fuera de combate, al entrar al mundo, con ACTIONBAR_SLOT_CHANGED (con throttle)
 -- y en /compa sync. Nunca se cambia nada sin que el jugador lo escriba.
--- Solo APIs estandar de acciones: GetActionInfo, GetBindingKey, PickupSpell/C_Spell.PickupSpell,
+-- Solo APIs estandar de acciones: GetActionInfo, GetActionText, GetBindingKey, PickupSpell/C_Spell.PickupSpell,
 -- PickupItem, PickupMacro, PickupAction, PlaceAction, ClearCursor, GetCursorInfo.
 local ADDON_NAME, ns = ...
 ns = ns or {}
@@ -57,9 +57,37 @@ local function bindingFor(slot)
     return nil
 end
 
+-- Indice de la macro con ese nombre (hint = indice probable, se comprueba primero). nil si no existe.
+local function macroIndexByName(name, hint)
+    if not name then return nil end
+    if hint and Str(Call("GetMacroInfo", hint)) == name then return hint end
+    local g, p = ns.Call("GetNumMacros")
+    for i = 1, (Num(g) or 0) do
+        if Str(Call("GetMacroInfo", i)) == name then return i end
+    end
+    for i = 121, 120 + (Num(p) or 0) do
+        if Str(Call("GetMacroInfo", i)) == name then return i end
+    end
+    return nil
+end
+
+-- Nombre e indice de la macro de un slot. Cuando la macro lanza un hechizo o usa un objeto,
+-- GetActionInfo devuelve el id de ese hechizo u objeto (subType "spell"/"item"), no el indice
+-- de la macro: el nombre sale de GetActionText y el indice se busca por nombre.
+local function macroOfSlot(slot, id, subType)
+    local name = ns.Get("GetActionText") and Str(Call("GetActionText", slot)) or nil
+    if name then
+        return name, macroIndexByName(name, id)
+    end
+    if subType == "spell" or subType == "item" then return nil, nil end
+    if id then return Str(Call("GetMacroInfo", id)), id end
+    return nil, nil
+end
+
 -- Entrada de un slot: { kind, id, name } o nil si esta vacio.
+-- En una macro, id es el indice de la macro (nil si no se pudo identificar).
 local function slotInfo(slot)
-    local t, id = ns.Call("GetActionInfo", slot)
+    local t, id, subType = ns.Call("GetActionInfo", slot)
     t = Str(t)
     if t == nil then return nil end
     id = Num(id)
@@ -69,8 +97,8 @@ local function slotInfo(slot)
         name = Str(Call("C_Spell.GetSpellName", id))
     elseif kind == "item" and id then
         name = Str(Call("C_Item.GetItemNameByID", id)) or Str(Call("GetItemInfo", id))
-    elseif kind == "macro" and id then
-        name = Str(Call("GetMacroInfo", id))
+    elseif kind == "macro" then
+        name, id = macroOfSlot(slot, id, Str(subType))
     end
     return { kind = kind, id = id, name = name }
 end
@@ -124,6 +152,8 @@ local function writeBlock(block)
     local old = c.actionBars
     if block.available == false and type(old) == "table" and old.available ~= false then return true end
     c.actionBars = block
+    -- Las barras tambien van al estado guardado: llegan a la app con una recarga, sin depender del canal.
+    if ns.Storage then ns.Storage.SaveState(c) end
     return true
 end
 
@@ -349,15 +379,7 @@ end
 
 -- Localiza una macro por nombre (el indice puede haber cambiado). nil si no existe.
 local function findMacro(e)
-    if e.id and Str(Call("GetMacroInfo", e.id)) == e.name then return e.id end
-    local g, p = ns.Call("GetNumMacros")
-    for i = 1, (Num(g) or 0) do
-        if Str(Call("GetMacroInfo", i)) == e.name then return i end
-    end
-    for i = 121, 120 + (Num(p) or 0) do
-        if Str(Call("GetMacroInfo", i)) == e.name then return i end
-    end
-    return nil
+    return macroIndexByName(e.name, e.id)
 end
 
 -- Restaura un slot desde su copia. true si quedo restaurado.

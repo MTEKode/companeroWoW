@@ -84,6 +84,13 @@ local function bagFree(bag)
     return free
 end
 
+-- Id de un objeto a partir de su enlace ("|Hitem:2589:..."). nil si no lo lleva.
+local function linkItemID(link)
+    link = Str(link)
+    if not link then return nil end
+    return tonumber(string.match(link, "item:(%d+)"))
+end
+
 local function containerItem(bag, slot)
     if Get("C_Container.GetContainerItemInfo") then
         local info = Clean(Call("C_Container.GetContainerItemInfo", bag, slot))
@@ -91,7 +98,7 @@ local function containerItem(bag, slot)
         return {
             bag = bag,
             slot = slot,
-            itemID = Num(info.itemID),
+            itemID = Num(info.itemID) or linkItemID(info.hyperlink),
             link = Str(info.hyperlink),
             count = Num(info.stackCount),
             quality = Num(info.quality),
@@ -102,12 +109,17 @@ local function containerItem(bag, slot)
     return {
         bag = bag,
         slot = slot,
-        itemID = Num(itemID),
+        -- Los clientes antiguos no devuelven el decimo valor (itemID): sale del enlace.
+        itemID = Num(itemID) or linkItemID(link),
         link = Str(link),
         count = Num(count),
         quality = Num(quality),
     }
 end
+
+-- Lectura de un contenedor cualquiera (bolsas del banco incluidas): para Extras.lua.
+ns.ContainerSlots = bagSlots
+ns.ContainerItem = containerItem
 
 -- Slots libres totales (nil si la API no esta disponible). Usado por la franja.
 function ns.CountFreeBagSlots()

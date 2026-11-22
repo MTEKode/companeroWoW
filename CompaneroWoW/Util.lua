@@ -143,18 +143,41 @@ function ns.PlayerName()
 end
 
 -- Reino normalizado sin espacios (coincide entre llamadas).
+-- GetNormalizedRealmName puede devolver "" (o nil) durante la carga: entonces se usa GetRealmName.
+-- nil si ninguna de las dos da un nombre.
 function ns.RealmName()
-    local r = ns.Str(ns.Call("GetNormalizedRealmName")) or ns.Str(ns.Call("GetRealmName"))
-    if r then r = (string.gsub(r, "%s+", "")) end
-    return r
+    for _, api in ipairs({ "GetNormalizedRealmName", "GetRealmName" }) do
+        local r = ns.Str(ns.Call(api))
+        if r then
+            r = (string.gsub(r, "%s+", ""))
+            if r ~= "" then return r end
+        end
+    end
+    return nil
 end
 
--- Clave de personaje "Nombre-Reino". nil si no hay nombre.
+-- Clave ya guardada "Nombre-<reino>" de ese nombre, si hay exactamente una. nil si no.
+local function savedKeyFor(name)
+    local db = _G.CompaneroWoWDB
+    local chars = type(db) == "table" and rawget(db, "characters") or nil
+    if type(chars) ~= "table" then return nil end
+    local prefix, found = name .. "-", nil
+    for key in pairs(chars) do
+        if type(key) == "string" and string.sub(key, 1, #prefix) == prefix then
+            if found then return nil end
+            found = key
+        end
+    end
+    return found
+end
+
+-- Clave de personaje "Nombre-Reino". nil si no hay nombre. Si el juego no da el reino, se usa la
+-- clave ya guardada de ese nombre (asi no se crea un segundo personaje sin reino).
 function ns.CharKey()
     local name = ns.PlayerName()
     if not name then return nil end
     local realm = ns.RealmName()
-    if not realm or realm == "" then return name end
+    if not realm then return savedKeyFor(name) or name end
     return name .. "-" .. realm
 end
 

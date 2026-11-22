@@ -634,5 +634,109 @@ check("estado: linea 'Datos guardados: N KB, bandeja: N elementos (N KB)'",
 local ser = St.Serialize({ a = 1, b = "x\ny", c = { true, false } })
 check("serializa: tabla tipo SavedVariables", string.sub(ser, 1, 1) == "{" and string.find(ser, "[\"a\"]=1", 1, true) ~= nil)
 
+outln("(j) Estado: barras y macros")
+CompaneroWoWDB = { schema = 2, schemaMinor = 1, settings = {}, characters = {} }
+St.Sync()
+CompaneroWoWDB.characters["Bar-Realm"] = { updatedAt = 1 }
+local bch = CompaneroWoWDB.characters["Bar-Realm"]
+bch.actionBars = { exportedAt = 5, visibleBars = { 1 }, slots = { [52] = { slot = 52, kind = "macro", id = 121, name = "abrumar", key = "F" } } }
+bch.macros = { exportedAt = 5, account = { used = 0, max = 120, list = {} },
+    character = { used = 1, max = 18, list = { { index = 121, name = "abrumar", body = "/cast Abrumar" } } } }
+St.SaveState(bch)
+eq("estado: las barras se guardan", rawOf(bch, "state").actionBars.slots[52].name, "abrumar")
+eq("estado: las macros se guardan con su cuerpo", rawOf(bch, "state").macros.character.list[1].body, "/cast Abrumar")
+check("estado: el bloque de memoria de barras no va suelto a SavedVariables", rawOf(bch, "actionBars") == nil)
+bch.actionBars = { available = false, reason = "sin API" }
+St.SaveState(bch)
+eq("estado: un bloque no disponible no sustituye a las barras guardadas", bch.state.actionBars.slots[52].id, 121)
+
+-- Cuerpo de macro: tope de 255 bytes en el estado, sin partir un caracter UTF-8.
+bch.actionBars = nil
+bch.macros = { exportedAt = 6, account = { used = 1, max = 120, list = { { index = 1, name = "larga", body = string.rep("x", 400) } } },
+    character = { used = 2, max = 18, list = { { index = 121, name = "abrumar", body = "/cast Abrumar" },
+                                               { index = 122, name = "acentos", body = string.rep("x", 254) .. "ñandú" } } } }
+St.SaveState(bch)
+eq("macros: el cuerpo se acota a 255", #bch.state.macros.account.list[1].body, 255)
+eq("macros: un cuerpo corto no cambia", bch.state.macros.character.list[1].body, "/cast Abrumar")
+eq("macros: no se parte un caracter UTF-8", bch.state.macros.character.list[2].body, string.rep("x", 254))
+eq("macros: el bloque de memoria no cambia", #bch.macros.account.list[1].body, 400)
+-- Recorte: muchas macros largas no echan a las misiones ni al equipo; lo nuevo (0.2.0) cae antes.
+local at = {}
+for i, n in ipairs(St.STATE_SECTIONS) do at[n] = i end
+check("orden: macros y barras se recortan antes que misiones, equipo y ventana de misiones",
+    at.macros < at.quests and at.macros < at.equipment and at.macros < at.questWindow and at.macros < at.training
+    and at.actionBars < at.quests and at.actionBars < at.equipment and at.actionBars < at.questWindow)
+check("orden: lo nuevo (bolsas, banco, recetas, monedas, hermandad, info) se recorta antes que las macros",
+    at.bags < at.macros and at.bank < at.macros and at.recipes < at.macros and at.currencies < at.macros
+    and at.guildRoster < at.macros and at.info < at.macros)
+CompaneroWoWDB.characters["Mac-Realm"] = { updatedAt = 1 }
+local mch = CompaneroWoWDB.characters["Mac-Realm"]
+mch.sheet = { level = 30, class = "WARRIOR", spells = { { spellID = 1, name = "Golpe" } } }
+mch.quests = { [7] = { questID = 7, title = "La mision" } }
+mch.equipment = { [1] = { slotID = 1, itemID = 2 } }
+mch.questWindow = { available = true, level = 30, quests = { [9] = { questID = 9, name = "Cercana", level = 30, accessibleNow = true } } }
+mch.info = { hearth = "Ventormenta" }
+mch.macros = { exportedAt = 7, account = { used = 100, max = 120, list = {} }, character = { used = 0, max = 18, list = {} } }
+for i = 1, 100 do mch.macros.account.list[i] = { index = i, name = "m" .. i, body = string.rep("/cast Algo largo\n", 15) } end
+local macroMax = St.STATE_MAX_BYTES
+St.STATE_MAX_BYTES = 4000
+St.SaveState(mch)
+check("recorte: el estado cabe", #St.Serialize(mch.state) <= St.STATE_MAX_BYTES)
+check("recorte: las macros largas caen", mch.state.macros == nil)
+check("recorte: misiones, equipo, ventana y hoja se quedan", mch.state.quests ~= nil and mch.state.equipment ~= nil
+    and mch.state.questWindow ~= nil and mch.state.sheet ~= nil)
+St.STATE_MAX_BYTES = macroMax
+-- Otros personajes recortados al nucleo: el banco y las recetas se quedan (solo se releen en el banco o
+-- con la ventana de la profesion); el resto cae. Una seccion desmedida no se queda.
+local function altChar(key, recipeNames)
+    CompaneroWoWDB.characters[key] = { updatedAt = 1 }
+    local a = CompaneroWoWDB.characters[key]
+    a.sheet = { level = 20, class = "MAGE", spells = { { spellID = 1, name = "Bola" } } }
+    a.location = { zone = "Elwynn" }
+    a.inventory = { items = { { itemID = 2589, count = 3, name = "Tela de lino" } }, totalSlots = 16, freeSlots = 15 }
+    a.bank = { items = { { itemID = 4306, count = 40, name = "Tela de seda", quality = 1 } }, totalSlots = 24, freeSlots = 23, at = 5 }
+    local list = {}
+    for i = 1, recipeNames do list[i] = string.format("Receta de nombre bastante largo %04d", i) end
+    a.recipes = { { name = "Sastrería", rank = 150, max = 225, list = list, at = 5 } }
+    St.SaveState(a)
+    return a
+end
+local alt, altBig = altChar("Alt-Realm", 3), altChar("AltGrande-Realm", 250)
+check("otros: antes de recortar tienen banco, recetas y bolsas", alt.state.bank ~= nil and alt.state.recipes ~= nil and alt.state.bags ~= nil)
+local fileTarget, coreMax = St.FILE_TARGET_BYTES, St.CORE_SECTION_BYTES
+St.FILE_TARGET_BYTES, St.CORE_SECTION_BYTES = 1000, 2000
+mch.location = { zone = "Tanaris" }
+St.SaveState(mch)
+St.FILE_TARGET_BYTES, St.CORE_SECTION_BYTES = fileTarget, coreMax
+check("otros: recortado al nucleo (sin bolsas, ubicacion ni hechizos)", alt.state.bags == nil and alt.state.location == nil
+    and alt.state.sheet ~= nil and alt.state.sheet.spells == nil and alt.state.sheet.level == 20)
+check("otros: el banco se queda", alt.state.bank ~= nil and St.Expand(alt.state.bank).items[1].itemID == 4306)
+check("otros: las recetas se quedan", alt.state.recipes ~= nil and #alt.state.recipes[1].list == 3)
+check("otros: unas recetas desmedidas no se quedan", altBig.state.recipes == nil and altBig.state.bank ~= nil)
+check("otros: el activo no se recorta", mch.state.quests ~= nil and mch.state.location.zone == "Tanaris")
+
+outln("(k) Personaje guardado sin reino")
+local savedNorm, savedRealm, savedUnit = _G.GetNormalizedRealmName, _G.GetRealmName, _G.UnitName
+_G.UnitName = function() return "Sinreino" end
+_G.GetNormalizedRealmName = function() return "" end
+_G.GetRealmName = function() return "Mi Reino" end
+eq("reino: \"\" cae a GetRealmName (sin espacios)", ns.CharKey(), "Sinreino-MiReino")
+_G.GetRealmName = function() return nil end
+CompaneroWoWDB = { schema = 2, schemaMinor = 1, settings = {}, characters = {} }
+St.Sync()
+eq("sin reino y sin clave guardada: solo el nombre", ns.CharKey(), "Sinreino")
+CompaneroWoWDB.characters["Sinreino-MiReino"] = { updatedAt = 10, combatSeq = 79, actionBarsBackup = { { at = 1 } },
+    state = { at = 10, sheet = { level = 26 } } }
+eq("sin reino: se usa la clave ya guardada de ese nombre", ns.CharKey(), "Sinreino-MiReino")
+CompaneroWoWDB.characters["Sinreino"] = { updatedAt = 20, combatSeq = 3, state = { at = 20, sheet = { level = 27 } } }
+check("union: se une el registro sin reino", St.AdoptRealmless(CompaneroWoWDB, "Sinreino", "Sinreino-MiReino") == true)
+local merged = CompaneroWoWDB.characters["Sinreino-MiReino"]
+check("union: el registro sin reino desaparece", rawOf(CompaneroWoWDB.characters, "Sinreino") == nil)
+eq("union: queda el estado mas reciente", merged.state.sheet.level, 27)
+eq("union: lo que solo tenia el antiguo se conserva", merged.actionBarsBackup[1].at, 1)
+eq("union: el contador de combates mas alto", merged.combatSeq, 79)
+check("union: sin registro sin reino no hace nada", St.AdoptRealmless(CompaneroWoWDB, "Sinreino", "Sinreino-MiReino") == false)
+_G.GetNormalizedRealmName, _G.GetRealmName, _G.UnitName = savedNorm, savedRealm, savedUnit
+
 outln(failures == 0 and "ALL TESTS PASSED" or ("FAILED: " .. failures .. " check(s)"))
 if failures > 0 then os.exit(1) end

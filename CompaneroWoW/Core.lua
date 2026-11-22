@@ -4,7 +4,7 @@ ns = ns or {}
 
 local Call, Num, Clean = ns.Call, ns.Num, ns.Clean
 
-ns.VERSION = "0.1.0"
+ns.VERSION = "0.2.0"
 ns.SCHEMA = 2 -- esquema de SavedVariables con bandeja (Storage.lua)
 
 local SNAPSHOT_THROTTLE = 120 -- segundos minimos entre dos snapshots (fuera de combate)
@@ -184,6 +184,8 @@ function ns.SnapshotAll()
     local key = ns.CharKey()
     if not key then return false end
     local db = CompaneroWoWDB
+    -- Un registro guardado sin reino (de una sesion en la que el juego no lo dio) se une al de la clave completa.
+    if ns.Storage then ns.Storage.AdoptRealmless(db, ns.PlayerName(), key) end
     local c = db.characters[key]
     if type(c) ~= "table" then
         c = {}
@@ -217,6 +219,8 @@ function ns.SnapshotAll()
         ns.SafeCall(ns.RequestNativeExport)
         -- Exportacion de WhatsTraining / SkillUpForever: mismo criterio (Integrations.lua).
         ns.SafeCall(ns.RequestIntegrationsExport)
+        -- Monedas, hermandad e info del personaje (Extras.lua): el estado se guarda aqui abajo.
+        ns.SafeCall(ns.RequestExtrasExport, true)
     end
     -- Estado actual (characters[k].state): la ultima copia de cada bloque, sobrescrita (Storage.lua).
     if ns.Storage then ns.Storage.SaveState(c) end
@@ -338,7 +342,7 @@ local function showHelp()
     say("  /compa sync reload - igual, y además recarga la interfaz (escribe SavedVariables)")
     say("  /compa enviar - comparte los datos que han cambiado durante 20 s (igual que la tecla Compañero: compartir datos)")
     say("  /compa strip on|off - on: compartir con la tecla (por defecto); off: no compartir nunca")
-    say("  /compa canal captura|tira - captura: datos en capturas de pantalla (por defecto); tira: franja de píxeles en vivo")
+    say("  /compa canal captura||tira - captura: datos en capturas de pantalla (por defecto); tira: franja de píxeles en vivo")
     say("  /compa estado - muestra el estado actual (datos guardados y bandeja)")
     say("  /compa limpiar - vacía la bandeja de envío (pide confirmación: /compa limpiar si)")
     say("  /compa marca <x> <y> [texto] - marca un punto en tu mapa (x e y de 0 a 100)")
@@ -396,6 +400,7 @@ local function showStatus()
     if ns.MacrosStatusLine then say(ns.MacrosStatusLine()) end
     if ns.SheetStatusLine then say(ns.SheetStatusLine()) end
     if ns.WorldStatusLine then say(ns.WorldStatusLine()) end
+    if ns.ExtrasStatusLine then say(ns.ExtrasStatusLine()) end
     if ns.HealthStatusLine then say(ns.HealthStatusLine()) end
     if ns.BridgeDebugLines then
         for _, line in ipairs(ns.BridgeDebugLines()) do say(line) end
@@ -462,6 +467,7 @@ local function handleSlash(msg)
         if ns.ExportBarsNow then ns.ExportBarsNow() end -- barras de accion (actionBars)
         if ns.ExportMacrosNow then ns.ExportMacrosNow() end -- macros de cuenta y personaje (Macros.lua)
         if ns.ExportSheetNow then ns.ExportSheetNow() end -- hoja de personaje y hechizos (Sheet.lua)
+        if ns.ExportExtrasNow then ns.ExportExtrasNow() end -- banco y recetas (si su ventana esta abierta), monedas, hermandad
         ns.SnapshotAll()
         if rest == "reload" then
             say("Datos guardados. Recargando la interfaz...")

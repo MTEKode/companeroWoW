@@ -341,6 +341,36 @@ if ab then
     eq("barras visibles: principal y multibarra inferior izquierda", table.concat(ab.visibleBars, ","), "1,2")
 end
 
+-- Una macro que lanza un hechizo: GetActionInfo da el id del hechizo (subType "spell"), no el indice.
+outln("Bars: macros cuyo slot devuelve el id del hechizo")
+newWorld()
+layout()
+BARS.macros[121] = { name = "abrumar", body = "/cast Abrumar" }
+BARS.macros[100] = { name = "Otra", body = "/cast Y" }
+BARS.numGlobal, BARS.numChar = 1, 1
+BARS.actions[10] = { type = "macro", id = 7384, subType = "spell", text = "abrumar" }
+-- El id del hechizo (100) coincide con el indice de otra macro: no debe confundirse con ella.
+BARS.actions[11] = { type = "macro", id = 100, subType = "spell", text = "Tele" }
+BARS.actions[12] = { type = "macro", id = 6547, subType = "spell", text = "Borrada" }
+ns.Bars.ExportNow()
+ab = chars()[CHAR].actionBars
+eq("macro de hechizo: nombre de la macro", ab.slots[10].name, "abrumar")
+eq("macro de hechizo: indice de la macro, no el id del hechizo", ab.slots[10].id, 121)
+eq("id que coincide con otro indice: nombre correcto", ab.slots[11].name, "Tele")
+eq("id que coincide con otro indice: indice correcto", ab.slots[11].id, 1)
+eq("macro no localizable: conserva el nombre", ab.slots[12].name, "Borrada")
+eq("macro no localizable: sin indice", ab.slots[12].id, nil)
+eq("macro normal sigue igual", ab.slots[3].id, 1)
+-- Sin GetActionText: una macro de hechizo queda sin identificar en vez de con datos erroneos.
+local savedText = _G.GetActionText
+_G.GetActionText = nil
+ns.Bars.ExportNow()
+_G.GetActionText = savedText
+ab = chars()[CHAR].actionBars
+eq("sin GetActionText: macro de hechizo sin nombre", ab.slots[10].name, nil)
+eq("sin GetActionText: macro de hechizo sin indice", ab.slots[10].id, nil)
+eq("sin GetActionText: macro normal por indice", ab.slots[3].name, "Tele")
+
 outln("Bars: exportacion con disparadores (login, ACTIONBAR_SLOT_CHANGED con throttle, combate, sync)")
 newWorld()
 layout()

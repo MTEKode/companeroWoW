@@ -124,6 +124,8 @@ local function writeBlock(block)
     if not c then return false end
     if block.available == false and type(c.macros) == "table" and c.macros.available ~= false then return true end
     c.macros = block
+    -- Las macros tambien van al estado guardado: llegan a la app con una recarga, sin depender del canal.
+    if ns.Storage then ns.Storage.SaveState(c) end
     return true
 end
 

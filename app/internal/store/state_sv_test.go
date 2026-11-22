@@ -105,3 +105,52 @@ func TestCharStateNewestWinsBetweenChannelAndSavedVarsState(t *testing.T) {
 		t.Fatalf("newer saved state did not replace the channel sheet: %v", sheet)
 	}
 }
+
+// The action bars and the macros of the saved state fill their tables, so a reload delivers them
+// without the channel.
+func TestSavedVarsStateFillsActionBarsAndMacros(t *testing.T) {
+	st := openCharStateStore(t)
+	sv := &bridge.SavedVars{Raw: map[string]any{
+		"schema":      float64(2),
+		"schemaMinor": float64(1),
+		"characters": map[string]any{
+			"G-Reino": map[string]any{
+				"updatedAt": float64(100),
+				"state": map[string]any{
+					"at": float64(5000),
+					"actionBars": map[string]any{
+						"exportedAt": float64(4990),
+						"slots": map[string]any{
+							"52": map[string]any{"slot": float64(52), "kind": "macro", "id": float64(121), "name": "abrumar", "key": "F"},
+						},
+					},
+					"macros": map[string]any{
+						"character": map[string]any{"used": float64(1), "max": float64(18), "list": []any{
+							map[string]any{"index": float64(121), "name": "abrumar", "body": "/cast Abrumar"},
+						}},
+					},
+				},
+			},
+		},
+	}}
+	if _, err := st.IngestSavedVars(sv, time.Unix(9000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	var name, key string
+	var id int64
+	if err := st.db.QueryRow(`SELECT name, item_id, key FROM action_bars WHERE char_key = 'G-Reino' AND slot = 52`).
+		Scan(&name, &id, &key); err != nil {
+		t.Fatalf("action bar slot 52: %v", err)
+	}
+	if name != "abrumar" || id != 121 || key != "F" {
+		t.Fatalf("slot 52 = %q %d %q, want abrumar 121 F", name, id, key)
+	}
+	var body string
+	if err := st.db.QueryRow(`SELECT body FROM macros WHERE scope = 'character' AND char_key = 'G-Reino' AND idx = 121`).
+		Scan(&body); err != nil {
+		t.Fatalf("macro 121: %v", err)
+	}
+	if body != "/cast Abrumar" {
+		t.Fatalf("macro body = %q", body)
+	}
+}
