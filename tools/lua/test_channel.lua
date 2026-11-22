@@ -102,7 +102,7 @@ do
     end
     check("N + 1 bloque cabe siempre en el ancho disponible", bad == nil, bad)
 end
--- Capacidad sigue a N (v3.1: 7 bloques fijos): N = 859 (3440 px a 4 px, con margen) -> 1231 bytes.
+-- Capacidad sigue a N (7 bloques fijos): N = 859 (3440 px a 4 px, con margen) -> 1231 bytes.
 eq("capacidad con N=StripBlocks(3440,4)=859 = 1231 bytes", C.Capacity(ns.StripBlocks(3440, 4)), 1231)
 eq("capacidad con N=860 = 1232 bytes", C.Capacity(860), 1232)
 eq("capacidad con N=5 = 0", C.Capacity(5), 0)
@@ -116,7 +116,8 @@ local body = "hola mundo, esto es un mensaje de prueba"
 local chunk = { type = 2, id = 513, index = 1, count = 4, data = bytesOf(body) }
 local frame = C.BuildFrame(status, 77, N, chunk)
 check("trama construida", frame ~= nil)
-eq("version 4 (v3.1)", frame[1], 4)
+eq("version 5 (v3.2)", frame[1], 5)
+eq("C.VERSION = 5", C.VERSION, 5)
 eq("seq", frame[2], 77)
 eq("N lo", frame[3], 860 % 256)
 eq("N hi", frame[4], math.floor(860 / 256))
@@ -150,13 +151,13 @@ check("sin trozo: ParseFrame ok", C.ParseFrame(idle) ~= nil)
 check("trozo mayor que la capacidad -> nil", C.BuildFrame(status, 1, 6, chunk) == nil)
 
 -- Trama -> colores -> nibbles (lo que ve el lector de pantalla).
-local colors = ns.EncodeFrameColors(frame, N, {})
+local colors = ns.EncodeStripColors(frame, N, {})
 eq("bloque 1 = magia R", math.floor(colors[1] / 65536), 255)
 eq("bloque 2 = magia G", math.floor(colors[2] / 256) % 256, 255)
--- v3.1: bloques 1..7 fijos (magia x2, calibracion x4 con niveles 0/37/73/110, blanco).
+-- v3.2: bloques 1..7 fijos (magia x2, calibracion x4 con niveles 22/52/82/112, blanco).
 local fixedWant = {
     { 255, 0, 255 }, { 0, 255, 255 },
-    { 0, 37, 73 }, { 37, 73, 110 }, { 73, 110, 0 }, { 110, 0, 37 },
+    { 22, 52, 82 }, { 52, 82, 112 }, { 82, 112, 22 }, { 112, 22, 52 },
     { 255, 255, 255 },
 }
 local fixedOK = true
@@ -167,21 +168,34 @@ for i = 1, 7 do
         if rgb[ch] ~= fixedWant[i][ch] then fixedOK = false end
     end
 end
-check("bloques 1..7 fijos: magia, calibracion (0/37/73/110) y blanco", fixedOK)
-eq("bloque 3 calibracion R = 0", math.floor(colors[3] / 65536), 0)
--- Los nibbles dibujados llegan a 110 como mucho (con una ganancia de x2.2 quedan bajo 255).
-local maxData = 0
+check("bloques 1..7 fijos: magia, calibracion (22/52/82/112) y blanco", fixedOK)
+eq("bloque 3 calibracion R = 22 (ningun nivel de calibracion es 0)", math.floor(colors[3] / 65536), 22)
+-- Cada canal ve los cuatro niveles de calibracion: el lector ajusta ganancia y desplazamiento por canal.
+local calLevelsOK = true
+for ch = 1, 3 do
+    local seen = {}
+    for i = 3, 6 do seen[fixedWant[i][ch]] = true end
+    if not (seen[22] and seen[52] and seen[82] and seen[112]) then calLevelsOK = false end
+end
+check("calibracion: cada canal ve 22, 52, 82 y 112", calLevelsOK)
+-- Los nibbles dibujados van de 22 a 112: el suelo los aleja de la zona que el brillo/contraste del
+-- juego aplasta en negro, y con una ganancia de x2.2 el techo queda bajo 255 (246).
+local maxData, minData = 0, 255
 for b = 8, N do
     local c = colors[b]
     maxData = math.max(maxData, math.floor(c / 65536), math.floor(c / 256) % 256, c % 256)
+    minData = math.min(minData, math.floor(c / 65536), math.floor(c / 256) % 256, c % 256)
 end
-check("nibbles de datos <= 110 (v3.1)", maxData <= 110)
+check("nibbles de datos <= 112 (v3.2)", maxData <= 112, maxData)
+check("nibbles de datos >= 22 (v3.2): ninguno en la zona aplastada", minData >= 22, minData)
+check("techo: x2.2 no satura (112 * 2.2 < 250)", 112 * 2.2 < 250)
+check("suelo: el caso medido Contraste 60 / Brillo 45 (1.75 v - 7.75) deja el nibble 0 en 30", 1.75 * 22 - 7.75 > 30)
 local decodedNibbles = {}
 for b = 8, N do
     local c = colors[b]
     local rgb = { math.floor(c / 65536), math.floor(c / 256) % 256, c % 256 }
-    -- nibble = valor * 15 / 110 (el valor es round(n * 110 / 15))
-    for ch = 1, 3 do decodedNibbles[#decodedNibbles + 1] = math.floor(rgb[ch] * 15 / 110 + 0.5) end
+    -- nibble = (valor - 22) / 6 (el valor es 22 + 6 * n)
+    for ch = 1, 3 do decodedNibbles[#decodedNibbles + 1] = (rgb[ch] - 22) / 6 end
 end
 local decodedBytes = {}
 for k = 1, #frame do

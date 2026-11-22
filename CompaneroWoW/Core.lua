@@ -4,7 +4,7 @@ ns = ns or {}
 
 local Call, Num, Clean = ns.Call, ns.Num, ns.Clean
 
-ns.VERSION = "0.2.0"
+ns.VERSION = "0.2.1"
 ns.SCHEMA = 2 -- esquema de SavedVariables con bandeja (Storage.lua)
 
 local SNAPSHOT_THROTTLE = 120 -- segundos minimos entre dos snapshots (fuera de combate)

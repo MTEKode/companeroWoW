@@ -1,6 +1,10 @@
--- gen_channel_fixture.lua: genera app/testdata/channel_v31_fixture.json con el addon real (Channel.lua,
+-- gen_channel_fixture.lua: genera app/testdata/channel_v32_fixture.json con el addon real (Channel.lua,
 -- Bridge.lua, Json.lua) en luajit. Cada trama se guarda como colores de los N bloques (6 hex por bloque),
--- tal como se pintan en pantalla; el test de Go decodifica esas tramas y compara con los mensajes esperados.
+-- tal como se pintan en pantalla (franja v3.2, version 5: ns.EncodeStripColors); un lector decodifica
+-- esas tramas y compara con los mensajes esperados.
+-- app/testdata/channel_v31_fixture.json es la misma ventana con la franja v3.1 (version 4) y queda
+-- congelada: la escribio este script antes de la v3.2 y la lee el test de app/ (que solo entiende la
+-- version 4). No se regenera: el addon ya no pinta esos colores en la franja.
 -- Ejecutar desde la raiz del repo:  luajit tools/lua/gen_channel_fixture.lua
 package.path = "tools/lua/?.lua;" .. package.path
 require("wowstub")
@@ -93,7 +97,7 @@ for i = 1, 400 do
     if chunk then
         seq = (seq + 1) % 256
         local frame = C.BuildFrame(status, seq, N, chunk)
-        colorsBuf = ns.EncodeFrameColors(frame, N, colorsBuf)
+        colorsBuf = ns.EncodeStripColors(frame, N, colorsBuf)
         frames[#frames + 1] = colorsHex(colorsBuf)
         sent = sent + 1
     elseif i > 40 and pending == 0 then
@@ -129,7 +133,7 @@ for i, e in ipairs(expected) do
 end
 out[#out + 1] = "}\n}\n"
 
-local path = "app/testdata/channel_v31_fixture.json"
+local path = "app/testdata/channel_v32_fixture.json"
 local f = assert(io.open(path, "wb"))
 f:write(table.concat(out))
 f:close()

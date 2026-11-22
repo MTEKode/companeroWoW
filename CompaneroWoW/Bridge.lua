@@ -1,14 +1,23 @@
 -- Bridge.lua: franja de pixeles (addon -> app).
--- Protocolo v3.1 (activo, version 4): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo
+-- Protocolo v3.2 (activo, version 5): una fila de bloques cuadrados de BLOCK_PX px fisicos a lo
 -- ancho de la pantalla: N = min(floor(anchoDisponible / bloque) - 1, 1024) bloques, medidos en
 -- unidades del propio marco (no en pixeles fisicos estimados). Bloques 1..7 = magia (2),
--- calibracion (4: cada canal ve los niveles 0, 37, 73 y 110) y blanco (1); bloques 8..N = flujo de
--- nibbles (3 por bloque). Cada nibble n se dibuja como round(n * 110 / 15), de 0 a 110: asi una
--- ganancia de hasta x2.2 no satura el 255. El contenido del flujo lo construye Channel.lua
--- (cabecera, estado, trozo de mensaje y CRC-16).
+-- calibracion (4: cada canal ve los niveles 22, 52, 82 y 112) y blanco (1); bloques 8..N = flujo de
+-- nibbles (3 por bloque). Cada nibble n se dibuja como 22 + 6 * n, de 22 a 112 (EncodeStripColors).
+-- Por que no se parte de 0: el brillo y el contraste del juego mueven los colores por una recta con
+-- desplazamiento (visto = ganancia * nivel + desplazamiento) y lo que cae por debajo de 0 se aplasta
+-- en negro. Con Contraste 60 / Brillo 45 la recta medida es 1.75 * v - 7.75: el nibble 1 de la v3.1
+-- (nivel 7) se confundia con el 0 y la trama no se podia leer. Con el suelo en 22 ese caso se ve en
+-- 30 y aun queda margen; el techo en 112 hace que una ganancia de x2.2 no sature el 255 (246).
+-- Ningun bloque de calibracion vale 0: el lector ajusta ganancia y desplazamiento por canal con
+-- cuatro puntos que no se aplastan. El contenido del flujo lo construye Channel.lua (cabecera,
+-- estado, trozo de mensaje y CRC-16).
+-- Protocolo v3.1 (version 4; niveles round(n * 110 / 15), calibracion 0/37/73/110): la franja ya no
+-- lo emite. Sus colores siguen en EncodeFrameColors porque el panel de capturas (Shot.lua) los usa:
+-- una captura no pasa por el brillo de la pantalla y su lector no cambia.
 -- Protocolo v2 (solo codificador de referencia para tests; el addon ya no lo emite; ver EncodeBlocks).
--- BuildPayload, EncodeBlocks, EncodeFrameColors, StripBlocks y ComputePixelSize son funciones
--- puras (testeables offline). GameWindowSize consulta la API y se prueba con stubs.
+-- BuildPayload, EncodeBlocks, EncodeFrameColors, EncodeStripColors, StripBlocks y ComputePixelSize
+-- son funciones puras (testeables offline). GameWindowSize consulta la API y se prueba con stubs.
 -- Los arrays son 1-based: byte k (0-based del contrato) = array[k + 1].
 local ADDON_NAME, ns = ...
 ns = ns or {}
@@ -19,22 +28,33 @@ local min, max = math.min, math.max
 
 local PAYLOAD_LEN = 32
 local PROTOCOL_V2 = 2
-local PROTOCOL_V31 = 4          -- version de la trama v3.1 (la unica que emite el addon)
 local BLOCK_COUNT_V2 = 29       -- v2: 5 de magia/calibracion + 24 de datos
 local BLOCK_PX = 4              -- lado nominal de cada bloque, en pixeles fisicos
-local MAX_BLOCKS = 1024         -- tope de bloques de la fila (v3.1)
+local MAX_BLOCKS = 1024         -- tope de bloques de la fila
 local DEFAULT_BLOCKS = 256      -- ancho desconocido: fila de 1024 px fisicos
-local CALIB_BLOCKS = 7          -- v3.1: bloques 1..7 fijos (magia, calibracion y blanco)
+local CALIB_BLOCKS = 7          -- bloques 1..7 fijos (magia, calibracion y blanco)
 local REFRESH_SEC = 0.2
 local REFERENCE_UNITS = 768     -- fallback: 1 pixel fisico = 768 / altura fisica unidades de UI
 local NIBBLE_STEP = 17          -- v2: nibble n se codifica como n * 17 (0..255)
 local NIBBLE_TOP = 110          -- v3.1: el nibble 15 se dibuja como 110 (ver NIBBLE_VALUE)
+local STRIP_FLOOR = 22          -- v3.2 (franja): el nibble 0 se dibuja como 22, lejos del negro
+local STRIP_STEP = 6            -- v3.2 (franja): cada nibble sube 6; el 15 se dibuja como 112
 
 -- Colores de los bloques 1..7 de v3.1: magia, magia, calibracion x4 (niveles 0, 37, 73 y 110 en
 -- cuadrado latino: cada canal ve los cuatro) y blanco (referencia y deteccion de saturacion).
 local CAL_COLORS = {
     { 255, 0, 255 }, { 0, 255, 255 },
     { 0, 37, 73 }, { 37, 73, 110 }, { 73, 110, 0 }, { 110, 0, 37 },
+    { 255, 255, 255 },
+}
+
+-- Colores de los bloques 1..7 de la franja (v3.2). La magia y el blanco no cambian (el lector
+-- detecta la franja por ellos). La calibracion usa los niveles de los nibbles 0, 5, 10 y 15 (22, 52,
+-- 82 y 112) en cuadrado latino: cada canal ve el mas bajo, dos intermedios y el mas alto, y ninguno
+-- es 0, asi que el lector ajusta una recta con desplazamiento por canal sin puntos aplastados.
+local STRIP_CAL_COLORS = {
+    { 255, 0, 255 }, { 0, 255, 255 },
+    { 22, 52, 82 }, { 52, 82, 112 }, { 82, 112, 22 }, { 112, 22, 52 },
     { 255, 255, 255 },
 }
 
@@ -50,6 +70,13 @@ local V2_CAL_COLORS = {
 local NIBBLE_VALUE = {}
 for n = 0, 15 do
     NIBBLE_VALUE[n] = floor(n * NIBBLE_TOP / 15 + 0.5)
+end
+
+-- Valor de color de cada nibble en la franja (v3.2): 22 + 6 * n, indexado por n (0..15). Pasos
+-- enteros e iguales: la distancia entre niveles vecinos es la misma en toda la escala.
+local STRIP_VALUE = {}
+for n = 0, 15 do
+    STRIP_VALUE[n] = STRIP_FLOOR + STRIP_STEP * n
 end
 
 ns.bridge = ns.bridge or {}
@@ -153,25 +180,36 @@ local function nibbleAt(frame, nbytes, k)
     return byte % 16
 end
 
--- Trama v3.1 (bytes, 1-based) -> colores de los N bloques (codigo r*65536+g*256+b).
--- Escribe en out (reutilizable) y lo devuelve. Bloques 1..7 fijos; 8..N = nibbles (NIBBLE_VALUE).
--- Nibbles mas alla de la trama valen 0.
-function ns.EncodeFrameColors(frame, N, out)
+-- Trama (bytes, 1-based) -> colores de los N bloques (codigo r*65536+g*256+b), con los bloques
+-- fijos cal (1..7) y la tabla de niveles values (indexada por nibble). Escribe en out
+-- (reutilizable) y lo devuelve. Nibbles mas alla de la trama valen 0.
+local function encodeColors(frame, N, out, cal, values)
     out = out or {}
     for i = 1, CALIB_BLOCKS do
-        local c = CAL_COLORS[i]
+        local c = cal[i]
         out[i] = colorCode(c[1], c[2], c[3])
     end
     local nbytes = #frame
     for b = CALIB_BLOCKS + 1, N do
         local k = (b - CALIB_BLOCKS - 1) * 3 -- nibble del canal R (0-based)
-        local r = NIBBLE_VALUE[nibbleAt(frame, nbytes, k)]
-        local g = NIBBLE_VALUE[nibbleAt(frame, nbytes, k + 1)]
-        local bl = NIBBLE_VALUE[nibbleAt(frame, nbytes, k + 2)]
+        local r = values[nibbleAt(frame, nbytes, k)]
+        local g = values[nibbleAt(frame, nbytes, k + 1)]
+        local bl = values[nibbleAt(frame, nbytes, k + 2)]
         out[b] = colorCode(r, g, bl)
     end
     for i = N + 1, #out do out[i] = nil end
     return out
+end
+
+-- Colores v3.1 (niveles 0..110, calibracion con ceros): los del panel de capturas (Shot.lua). La
+-- franja ya no los usa (ver EncodeStripColors).
+function ns.EncodeFrameColors(frame, N, out)
+    return encodeColors(frame, N, out, CAL_COLORS, NIBBLE_VALUE)
+end
+
+-- Colores de la franja, v3.2 (niveles 22..112, calibracion 22/52/82/112): lo que pinta BridgeRefresh.
+function ns.EncodeStripColors(frame, N, out)
+    return encodeColors(frame, N, out, STRIP_CAL_COLORS, STRIP_VALUE)
 end
 
 -- payload (32 bytes) + seq -> 29 bloques {r, g, b} (protocolo v2, solo referencia).
@@ -388,7 +426,7 @@ function ns.BridgeDebugLines()
         string.format("Marco de la franja: escala efectiva %s; ancho disponible %s unidades",
             num(B.frS, "%.4f"), num(B.avail, "%.1f")),
         string.format("Bloque: %s unidades (%d px fisicos nominales)", num(B.block, "%.4f"), BLOCK_PX),
-        string.format("Franja v3.1: N = %d bloques (tope %d)", B.blocks or 0, MAX_BLOCKS),
+        string.format("Franja v3.2: N = %d bloques (tope %d)", B.blocks or 0, MAX_BLOCKS),
         string.format("Pitch esperado: %s px; franja de %s px%s", num(pitch, "%.2f"), num(stripPx, "%.0f"),
             B.physW and string.format(" de %d", B.physW) or ""),
     }
@@ -515,7 +553,7 @@ function ns.BridgeRefresh()
         frame = ns.Channel.BuildFrame(payload, B.seq, n, chunk)
         B.bytes = frame
     end
-    B.colors = ns.EncodeFrameColors(frame, n, B.colors)
+    B.colors = ns.EncodeStripColors(frame, n, B.colors)
     paint(B.colors, n)
 end
 
