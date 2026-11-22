@@ -1,10 +1,12 @@
--- Channel.lua: canal de datos en vivo sobre la franja superior (protocolo v3.1), bajo demanda.
+-- Channel.lua: canal de datos en vivo sobre la franja superior (protocolo v3.2), bajo demanda.
 -- Parte pura (testeable offline): CRC-16, capacidad, trama y planificador de trozos.
 -- Parte de juego: el plan de envio de una activacion (tecla o /compa enviar). En reposo no hay
 -- nada que serializar: ni carrusel, ni JSON.
 --
--- Trama v3.1 (bytes, 1-based; todo big-endian salvo donde se indica):
---   [1] version=4  [2] seq  [3] N lo  [4] N hi            (N = bloques de la fila, u16 LE)
+-- Trama v3.2 (bytes, 1-based; todo big-endian salvo donde se indica). Los bytes son los de la v3.1
+-- (version 4) salvo la version: el 5 avisa al lector de que los colores son los de
+-- ns.EncodeStripColors (niveles 22..112, Bridge.lua) y no los de la v3.1 (0..110).
+--   [1] version=5  [2] seq  [3] N lo  [4] N hi            (N = bloques de la fila, u16 LE)
 --   [5..36]  estado (32 bytes, mismo layout y CRC-8 que v2; byte 30 = shareRemainingSec)
 --   [37] msgType  [38..39] msgId (LE)  [40..41] chunkIndex (LE)  [42..43] chunkCount (LE)
 --   [44..45] dataLen (LE)
@@ -39,7 +41,7 @@ local tinsert, tremove = table.insert, table.remove
 local C = {}
 ns.Channel = C
 
-C.VERSION = 4
+C.VERSION = 5              -- v3.2: mismos bytes que la 4, colores de la franja con suelo (Bridge.lua)
 C.STATUS_LEN = 32
 C.CHUNK_HEADER_LEN = 9
 C.OVERHEAD = 4 + 32 + 9 + 2 -- cabecera + estado + cabecera de trozo + CRC-16

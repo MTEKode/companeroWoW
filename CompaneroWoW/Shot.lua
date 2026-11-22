@@ -32,7 +32,8 @@ local floor, ceil, max, min = math.floor, math.ceil, math.max, math.min
 local Shot = {}
 ns.Shot = Shot
 
-Shot.VERSION = 5              -- trama de captura (la franja usa 4)
+Shot.VERSION = 5              -- trama de captura. La franja v3.2 tambien lleva un 5, pero con otra
+                              -- cabecera (4 bytes) y otros colores: cada lector solo valida la suya (CRC)
 Shot.HEADER_LEN = 6           -- [version, seq, Nlo, Nhi, shotIdLo, shotIdHi]
 Shot.STATUS_LEN = 32
 Shot.CHUNK_HEADER_LEN = 9

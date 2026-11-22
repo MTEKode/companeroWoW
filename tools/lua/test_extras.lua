@@ -482,9 +482,9 @@ pass(500)
 ns.ExportExtrasNow()
 ns.SnapshotAll()
 eq("sin cambios: el estado no se reescribe", state().at, at)
-eq("version del addon", ns.VERSION, "0.2.0")
+eq("version del addon", ns.VERSION, "0.2.1")
 local toc = io.open("CompaneroWoW/CompaneroWoW.toc"):read("*a")
-check("toc: version y fichero nuevo", string.find(toc, "## Version: 0.2.0", 1, true) ~= nil and string.find(toc, "\nExtras.lua", 1, true) ~= nil)
+check("toc: version y fichero nuevo", string.find(toc, "## Version: 0.2.1", 1, true) ~= nil and string.find(toc, "\nExtras.lua", 1, true) ~= nil)
 check("linea de estado", string.find(ns.ExtrasStatusLine(), "Extras: bolsas", 1, true) ~= nil)
 
 -- ---------------------------------------------------------------------------

@@ -417,6 +417,123 @@ _G.UIParent = nil
 setPhysical(function() return 1920, 1080 end)
 
 -- ---------------------------------------------------------------------------
+print("(j) Colores de la franja v3.2: suelo 22, paso 6, calibracion 22/52/82/112")
+local function rgbOf(c) return math.floor(c / 65536), math.floor(c / 256) % 256, c % 256 end
+-- Trama de prueba con los 16 nibbles: bytes 0x01, 0x23, ..., 0xEF.
+local allNibbles = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF }
+local sc = ns.EncodeStripColors(allNibbles, 20, {})
+eq("franja: 20 bloques", #sc, 20)
+local wantFixed = {
+    { 255, 0, 255 }, { 0, 255, 255 },
+    { 22, 52, 82 }, { 52, 82, 112 }, { 82, 112, 22 }, { 112, 22, 52 },
+    { 255, 255, 255 },
+}
+local fixedOK, calMin = true, 255
+for i = 1, 7 do
+    local r, g, b = rgbOf(sc[i])
+    if r ~= wantFixed[i][1] or g ~= wantFixed[i][2] or b ~= wantFixed[i][3] then fixedOK = false end
+    if i >= 3 and i <= 6 then calMin = math.min(calMin, r, g, b) end
+end
+check("franja: magia y blanco como en v3.1, calibracion 22/52/82/112 en cuadrado latino", fixedOK)
+eq("franja: ningun nivel de calibracion por debajo del suelo", calMin, 22)
+-- Los 16 nibbles, en orden, salen como 22 + 6 * n.
+local levelsOK = true
+for n = 0, 15 do
+    local blockIdx = 8 + math.floor(n / 3)
+    local r, g, b = rgbOf(sc[blockIdx])
+    local got = ({ r, g, b })[n % 3 + 1]
+    if got ~= 22 + 6 * n then levelsOK = false end
+end
+check("franja: nibble n -> 22 + 6 * n", levelsOK)
+do
+    local r, g, b = rgbOf(sc[14]) -- nibbles 18, 19 y 20: mas alla de la trama
+    check("franja: nibbles sobrantes = nibble 0 = nivel 22 (nunca negro)", r == 22 and g == 22 and b == 22)
+end
+-- Las dos rectas medidas en el juego (visto = ganancia * nivel + desplazamiento; por debajo de 0, negro):
+-- con v3.1 la de Contraste 60 / Brillo 45 junta los nibbles 0 y 1; con v3.2 todos quedan separados.
+local function minGap(level, gain, offset)
+    local worst, lowest = math.huge, nil
+    for n = 0, 15 do
+        local v = math.max(0, math.min(255, gain * level(n) + offset))
+        if n == 0 then lowest = v end
+        if n > 0 then
+            local prev = math.max(0, math.min(255, gain * level(n - 1) + offset))
+            worst = math.min(worst, v - prev)
+        end
+    end
+    return worst, lowest
+end
+local function v32(n) return 22 + 6 * n end
+local function v31(n) return math.floor(n * 110 / 15 + 0.5) end
+local gapA, lowA = minGap(v32, 1.75, -7.75)
+check("franja v3.2 con 1.75 v - 7.75: niveles vecinos a 10.5 y el mas bajo en 30.75",
+    math.abs(gapA - 10.5) < 1e-9 and math.abs(lowA - 30.75) < 1e-9, gapA .. " / " .. lowA)
+local gapB = minGap(v32, 1.70, 11.3)
+check("franja v3.2 con 1.70 v + 11.3: niveles vecinos a 10.2", math.abs(gapB - 10.2) < 1e-9, tostring(gapB))
+local gapOld = minGap(v31, 1.75, -7.75)
+check("v3.1 con 1.75 v - 7.75: los nibbles 0 y 1 quedan a menos de 5 (el fallo que arregla la v3.2)", gapOld < 5, tostring(gapOld))
+local _, topSeen = minGap(function() return 112 end, 2.2, 0)
+check("franja v3.2: el techo con ganancia x2.2 no satura", topSeen < 250, tostring(topSeen))
+
+-- EncodeFrameColors sigue siendo v3.1 (panel de capturas): sin cambios.
+local oc = ns.EncodeFrameColors(allNibbles, 20, {})
+do
+    local r, g, b = rgbOf(oc[3])
+    check("v3.1 (capturas): calibracion 0/37/73 intacta", r == 0 and g == 37 and b == 73)
+    local r8, g8, b8 = rgbOf(oc[8])
+    check("v3.1 (capturas): nibbles 0, 1, 2 -> 0, 7, 15", r8 == 0 and g8 == 7 and b8 == 15)
+    local _, _, b12 = rgbOf(oc[12])
+    local r13 = rgbOf(oc[13])
+    check("v3.1 (capturas): nibbles 14 y 15 -> 103 y 110", b12 == 103 and r13 == 110)
+end
+check("out reutilizable: recorta lo que sobra", #ns.EncodeStripColors(allNibbles, 10, sc) == 10)
+
+-- BridgeRefresh pinta la franja con los colores v3.2 (y la trama lleva la version 5).
+do
+    load("CompaneroWoW/Json.lua")
+    load("CompaneroWoW/Channel.lua")
+    local painted = {}
+    local function recTexture(i)
+        local t = fakeTexture()
+        t.SetColorTexture = function(_, r, g, b) painted[i] = { r, g, b } end
+        return t
+    end
+    local count = 0
+    local f = fakeFrame(1)
+    f.CreateTexture = function() count = count + 1 return recTexture(count) end
+    _G.CreateFrame = function() return f end
+    _G.UIParent = { GetWidth = function() return 256 end, GetHeight = function() return 768 end,
+        GetEffectiveScale = function() return 1 end }
+    setPhysical(function() return 256, 768 end)
+    local B = ns.bridge
+    B.frame, B.tex, B.blocks, B.painted, B.bytes = nil, {}, 0, {}, nil
+    CompaneroWoWDB = { settings = {} }
+    ns.InitBridge()
+    ns.BridgeRefresh()
+    local n = B.blocks
+    check("refresco: hay franja", n > 7, tostring(n))
+    eq("refresco: la trama lleva la version 5", B.bytes and B.bytes[1], 5)
+    local function px(i, ch) return painted[i] and math.floor(painted[i][ch] * 255 + 0.5) end
+    check("refresco: bloque 3 = calibracion (22, 52, 82)", px(3, 1) == 22 and px(3, 2) == 52 and px(3, 3) == 82)
+    check("refresco: bloque 7 = blanco", px(7, 1) == 255 and px(7, 2) == 255 and px(7, 3) == 255)
+    -- Bloque 8: nibbles de la version (0 y 5) y nibble alto de seq.
+    check("refresco: bloque 8 empieza por la version 5 (22, 52)", px(8, 1) == 22 and px(8, 2) == 22 + 6 * 5)
+    local lowOK = true
+    for i = 8, n do
+        for ch = 1, 3 do
+            local v = px(i, ch)
+            if not v or v < 22 or v > 112 or (v - 22) % 6 ~= 0 then lowOK = false end
+        end
+    end
+    check("refresco: todos los bloques de datos en 22..112, en pasos de 6", lowOK)
+    _G.CreateFrame = origCreateFrame
+    B.frame, B.tex, B.blocks, B.painted, B.bytes = nil, {}, 0, {}, nil
+    _G.UIParent = nil
+    CompaneroWoWDB = nil
+    setPhysical(function() return 1920, 1080 end)
+end
+
+-- ---------------------------------------------------------------------------
 if failures > 0 then
     print("FAILED: " .. failures .. " check(s)")
     os.exit(1)
